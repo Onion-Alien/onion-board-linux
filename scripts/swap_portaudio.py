@@ -1,6 +1,8 @@
 """Put the app's own PortAudio (scripts/build_portaudio.sh: ALSA only) in place of
 the distribution's copy PyInstaller collected, and remove the system libraries only
 that copy needed (libjack, and Berkeley DB through it). build-linux.sh runs this.
+ALSA's own library is the user's (prune_build_linux.HOST_LIBS): the new PortAudio
+may need it without the build carrying it.
 
 Usage: python scripts/swap_portaudio.py dist/OnionBoard build/portaudio/libportaudio.so.2
 Exit 1 if a library the new PortAudio needs isn't there, or one that's removed is
@@ -13,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prune_build_linux import elf_needed  # noqa: E402
+from prune_build_linux import HOST_LIBS, elf_needed  # noqa: E402
 
 NAME = "libportaudio.so.2"
 SYSTEM = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "ld-linux")
@@ -40,7 +42,8 @@ def swap(app_dir: Path, new_lib: Path, needed_of=elf_needed) -> list[str]:
             todo += needed_of(loose[n])
     shutil.copyfile(new_lib, target)
     target.chmod(0o755)
-    missing = [n for n in needed_of(target) if n not in loose and not n.startswith(SYSTEM)]
+    missing = [n for n in needed_of(target)
+               if n not in loose and not n.startswith(SYSTEM + HOST_LIBS)]
     if missing:
         raise SystemExit(f"ERROR: the new PortAudio needs {', '.join(missing)}, not in the build")
     # drop what nothing else needs any more, until nothing changes

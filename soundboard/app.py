@@ -109,6 +109,9 @@ def selftest() -> int:
     # build.ps1 ships only that part of it
     for mod in ("numpy", "scipy.fft", "sounddevice", "soundfile", "soxr", "yt_dlp"):
         __import__(mod)
+    for msg in soundboard.linux.selftest_problems():   # Linux: its own PortAudio…
+        print(f"FAIL: {msg}", file=sys.stderr)
+        return 1
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWebEngineWidgets import QWebEngineView

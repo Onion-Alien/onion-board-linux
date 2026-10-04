@@ -14,6 +14,10 @@ build's 704 MB. This removes what the app never loads:
 - Chromium's developer-tools resources
 - Qt's translations and every WebEngine locale except en-US
 - PyInstaller's links to removed libraries in `_internal/`
+- ALSA's and Mesa's libraries (`HOST_LIBS`): those must be the user's own
+
+Every kept file's libraries must then be in the build or be ones every desktop has
+(`FROM_SYSTEM`).
 
 Usage: python scripts/prune_build_linux.py dist/OnionBoard [--dry-run]
 Exit 1 if a kept file needs a library that would be missing afterwards, so a change
@@ -38,6 +42,23 @@ KEEP_PLATFORMS = frozenset({"libqxcb.so", "libqwayland.so", "libqoffscreen.so"})
 DROP_PLUGIN_DIRS = ("qmltooling", "position", "generic", "egldeviceintegrations")
 # the touch-screen keyboard (QML) and PDFs as images: Qt Pdf, Virtual Keyboard go too
 DROP_PLUGINS = ("platforminputcontexts/libqtvirtualkeyboardplugin.so", "imageformats/libqpdf.so")
+
+# Libraries that must be the user's own, never the build machine's: each loads
+# parts of the user's system from a folder compiled into it. libasound: ALSA's
+# plugins (the "pulse" device the app plays through), in
+# /usr/lib/x86_64-linux-gnu/alsa-lib on the Ubuntu that builds the app but
+# /usr/lib64/alsa-lib on Fedora and /usr/lib/alsa-lib on Arch. libgbm: Mesa's
+# graphics driver, which must match it (and it needs libwayland-server, which the
+# build didn't carry: the app didn't start without it). Every desktop has both.
+HOST_LIBS = ("libasound.so", "libgbm.so")
+# what the app may take from the user's system: the C library, the graphics stack
+# (drivers' own libraries), the display server's client libraries and HOST_LIBS.
+# A kept file needing anything else that isn't in the build is a problem: the
+# AppImage would start only where the user happens to have it.
+FROM_SYSTEM = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so",
+               "ld-linux", "libGL.so", "libEGL.so", "libGLX.so", "libOpenGL.so", "libdrm.so",
+               "libxcb.so", "libxcb-dri3.so", "libwayland-client.so", "libwayland-cursor.so",
+               "libwayland-egl.so") + HOST_LIBS
 
 DT_NEEDED, DT_STRTAB_SECTION = 1, 3   # d_tag of a needed library; SHT_STRTAB
 SHT_DYNAMIC = 6
@@ -106,6 +127,8 @@ def plan(app_dir: Path, needed_of: Callable[[Path], list[str]] = elf_needed
     for p in (qt / "translations" / "qtwebengine_locales").glob("*.pak"):
         if p.name not in KEEP_LOCALES:
             drop.append(p)
+    for folder in (internal, qt / "lib"):
+        drop += [p for p in folder.glob("*.so*") if p.name.startswith(HOST_LIBS)]
 
     # 3. libraries nothing left behind needs. Roots: every kept ELF file in the
     # PySide6 tree (modules, plugins, the WebEngine helper) and shiboken6
@@ -141,8 +164,17 @@ def plan(app_dir: Path, needed_of: Callable[[Path], list[str]] = elf_needed
     problems = []
     for f in roots + [pool[n] for n in needed]:
         for name in needed_of(f):
-            if name in gone and name not in left:
+            if name in gone and name not in left and not name.startswith(HOST_LIBS):
                 problems.append(f"{f.relative_to(app_dir)} needs {name}, which would be removed")
+    # 6. nothing kept needs a library that's neither in the build nor the system's own
+    elf = [p for p in [app_dir / "OnionBoard", *internal.rglob("*")]
+           if p.is_file() and not p.is_symlink() and kept(p)
+           and (".so" in p.name or p.parent.name == "libexec" or p.parent == app_dir)]
+    for f in elf:
+        for name in needed_of(f):
+            if name not in left and name not in gone and not name.startswith(FROM_SYSTEM):
+                problems.append(f"{f.relative_to(app_dir)} needs {name}, which isn't in the "
+                                "build (a user's system may not have it)")
     return drop, problems
 
 
