@@ -47,7 +47,13 @@ def main() -> int:
         while b := rec.stdout.read(4096):
             chunks.append(b)
     threading.Thread(target=read, daemon=True).start()
-    time.sleep(0.4)
+    # PulseAudio's null sink (the cable) takes up to ~2 s to start feeding a new
+    # recording; after that it flows steadily. Play once it does.
+    deadline = time.monotonic() + 5
+    while not chunks and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.2)
+    chunks.clear()
     beep = (0.1 * np.sin(2 * np.pi * 660 * np.arange(SR * 2) / SR)).astype(np.float32)
     beep = np.repeat(beep[:, None], 2, axis=1)
     eng.prepare("check", beep)
