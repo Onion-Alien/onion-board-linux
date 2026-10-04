@@ -110,6 +110,31 @@ def test_plan_reports_a_kept_file_that_would_lose_a_library(tmp_path):
     assert problems and "libqvnc.so" in problems[0]
 
 
+def test_alsa_and_mesa_are_the_users_own(tmp_path):
+    """libasound looks for ALSA's plugins (the "pulse" device) in the build
+    machine's folder, which Fedora and Arch don't have; libgbm must match the
+    user's graphics driver and needed libwayland-server, which wasn't shipped."""
+    app = make_tree(tmp_path)
+    internal = app / "_internal"
+    for name in ("libasound.so.2", "libgbm.so.1"):
+        (internal / name).write_bytes(b"x")
+    needs = dict(NEEDED, **{"libQt6WebEngineCore.so.6": ["libQt6Quick.so.6", "libgbm.so.1"],
+                            "libgbm.so.1": ["libwayland-server.so.0"]})
+    drop, problems = pbl.plan(app, needed_of=lambda p: needs.get(p.name, []))
+    assert problems == []
+    assert {internal / "libasound.so.2", internal / "libgbm.so.1"} <= set(drop)
+
+
+def test_plan_reports_a_library_neither_built_in_nor_the_systems(tmp_path):
+    """A library PyInstaller left out on purpose: the app would start only where
+    the user happens to have it."""
+    app = make_tree(tmp_path)
+    needs = dict(NEEDED, **{"libQt6Core.so.6": ["libicuuc.so.73", "libc.so.6", "libGL.so.1",
+                                                "libwayland-server.so.0"]})
+    _drop, problems = pbl.plan(app, needed_of=lambda p: needs.get(p.name, []))
+    assert len(problems) == 1 and "libwayland-server.so.0" in problems[0]
+
+
 def test_main_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
     app = make_tree(tmp_path)
     monkeypatch.setattr(pbl, "elf_needed", fake_needed)
@@ -173,7 +198,16 @@ def test_our_portaudio_replaces_the_distributions_and_jack_goes_with_it(tmp_path
     removed = swap_portaudio.swap(internal.parent, new, needed)
     assert sorted(removed) == ["libdb-5.3.so", "libjack.so.0"]
     assert (internal / "libportaudio.so.2").read_bytes() == b"new"
-    assert (internal / "libasound.so.2").exists()          # the new one needs it too
+
+
+def test_our_portaudio_takes_alsa_from_the_users_system(tmp_path):
+    """libasound isn't shipped (prune_build_linux.HOST_LIBS): its absence from the
+    build doesn't stop it."""
+    import swap_portaudio
+    internal, new, needed = _pa_tree(tmp_path)
+    (internal / "libasound.so.2").unlink()
+    assert sorted(swap_portaudio.swap(internal.parent, new, needed)) == [
+        "libdb-5.3.so", "libjack.so.0"]
 
 
 def test_a_library_something_else_still_needs_is_kept(tmp_path):
@@ -186,6 +220,9 @@ def test_a_library_something_else_still_needs_is_kept(tmp_path):
 def test_a_portaudio_needing_what_isnt_bundled_stops_the_build(tmp_path):
     import swap_portaudio
     internal, new, needed = _pa_tree(tmp_path)
-    (internal / "libasound.so.2").unlink()
-    with pytest.raises(SystemExit, match="libasound"):
-        swap_portaudio.swap(internal.parent, new, needed)
+    (internal / "libportaudio.so.2").write_bytes(b"old")
+    new.write_bytes(b"needs-sndio")
+    with pytest.raises(SystemExit, match="libsndio"):
+        swap_portaudio.swap(internal.parent, new, lambda p: (
+            ["libsndio.so.7", "libasound.so.2"] if p.read_bytes() == b"needs-sndio"
+            else needed(p)))

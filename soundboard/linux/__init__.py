@@ -70,7 +70,48 @@ def config_home() -> str:
     return os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
 
 
+def use_bundled_portaudio() -> str | None:
+    """In a built copy, make sounddevice load the PortAudio the build ships
+    (build-linux.sh: ALSA only, no JACK) instead of searching the system for one.
+
+    sounddevice asks ctypes.util.find_library("portaudio"), which only knows the
+    system's libraries: without the distribution's libportaudio2 (most desktops)
+    the app stopped at start with "PortAudio library not found", and with it the
+    app ran on that copy, not its own. Returns the path used, or None (from source,
+    or no bundled copy). Must run before sounddevice is imported."""
+    import os
+    if not getattr(sys, "frozen", False):
+        return None
+    path = os.path.join(getattr(sys, "_MEIPASS", ""), "libportaudio.so.2")
+    if not os.path.isfile(path):
+        return None
+    import ctypes.util
+    find = ctypes.util.find_library
+    if getattr(find, "_bundled", None) == path:
+        return path
+
+    def find_library(name):
+        return path if name == "portaudio" else find(name)
+    find_library._bundled = path
+    ctypes.util.find_library = find_library
+    return path
+
+
+def selftest_problems() -> list[str]:
+    """What `--selftest` checks on top of upstream's on Linux (a built copy)."""
+    problems = []
+    if LINUX and getattr(sys, "frozen", False):
+        import os
+        import sounddevice
+        here = os.path.realpath(getattr(sys, "_MEIPASS", ""))
+        lib = os.path.realpath(sounddevice._libname)
+        if os.path.dirname(lib) != here:
+            problems.append(f"PortAudio came from {lib}, not the build's own")
+    return problems
+
+
 if not WIN:
+    use_bundled_portaudio()
     # Every "%APPDATA%\OnionBoard" in the app (library, splash, tor, ytdl…) reads the
     # APPDATA variable: pointing it at the XDG data folder puts all of it in
     # ~/.local/share/OnionBoard without touching those modules. app.py imports this

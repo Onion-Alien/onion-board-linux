@@ -123,6 +123,39 @@ def test_appdata_is_the_xdg_data_folder():
     assert os.environ.get("APPDATA") == data_home() or "APPDATA" in os.environ
 
 
+# ------------------------------------------------------------------ the build's PortAudio
+def test_a_built_copy_loads_its_own_portaudio(tmp_path, monkeypatch):
+    """sounddevice only searched the system: without the distribution's
+    libportaudio2 the AppImage stopped at start ("PortAudio library not found")."""
+    import ctypes.util
+
+    from soundboard import linux
+    lib = tmp_path / "libportaudio.so.2"
+    lib.write_bytes(b"")
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    assert linux.use_bundled_portaudio() is None            # from source: untouched
+    assert ctypes.util.find_library("portaudio") is None
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert linux.use_bundled_portaudio() == str(lib)
+    assert linux.use_bundled_portaudio() == str(lib)         # twice: wrapped once
+    assert ctypes.util.find_library("portaudio") == str(lib)
+    assert ctypes.util.find_library("sndfile") is None       # anything else: as before
+
+
+def test_selftest_fails_on_the_systems_portaudio(tmp_path, monkeypatch):
+    import sounddevice
+
+    from soundboard import linux
+    assert linux.selftest_problems() == []                   # from source: nothing to check
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(sounddevice, "_libname", "/usr/lib/libportaudio.so.2")
+    assert "not the build's own" in linux.selftest_problems()[0]
+    monkeypatch.setattr(sounddevice, "_libname", str(tmp_path / "libportaudio.so.2"))
+    assert linux.selftest_problems() == []
+
+
 # ------------------------------------------------------------------ Tor
 def test_torrc_bridges_use_linux_paths():
     from soundboard import tor
