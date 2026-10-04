@@ -199,6 +199,12 @@ def lib():
                 c_void_p, c_ulong, c_ulong, c_long, c_long, c_int, c_ulong, POINTER(c_ulong),
                 POINTER(c_int), POINTER(c_ulong), POINTER(c_ulong), POINTER(c_void_p)]
             x.XFree.argtypes = [c_void_p]
+            x.XGetGeometry.argtypes = [c_void_p, c_ulong, POINTER(c_ulong), POINTER(c_int),
+                                       POINTER(c_int), POINTER(c_uint), POINTER(c_uint),
+                                       POINTER(c_uint), POINTER(c_uint)]
+            x.XTranslateCoordinates.argtypes = [c_void_p, c_ulong, c_ulong, c_int, c_int,
+                                                POINTER(c_int), POINTER(c_int),
+                                                POINTER(c_ulong)]
             x.XSetErrorHandler.restype = c_void_p
             x.XSetErrorHandler.argtypes = [_ErrorHandler]
             x.XInitThreads()
@@ -329,6 +335,20 @@ class Display:
         finally:
             if data.value:
                 self.x.XFree(data)
+
+    def window_rect(self, window: int) -> tuple[int, int, int, int] | None:
+        """A window's (left, top, width, height) on the screen, in X's (native) pixels;
+        None if it's gone."""
+        root, x, y = c_ulong(), c_int(), c_int()
+        w, h, border, depth = c_uint(), c_uint(), c_uint(), c_uint()
+        if not self.x.XGetGeometry(self.dpy, window, byref(root), byref(x), byref(y),
+                                   byref(w), byref(h), byref(border), byref(depth)):
+            return None
+        child = c_ulong()
+        if not self.x.XTranslateCoordinates(self.dpy, window, self.root, 0, 0, byref(x),
+                                            byref(y), byref(child)):
+            return None
+        return x.value, y.value, w.value, h.value
 
     def detectable_autorepeat(self):
         ok = c_int(0)

@@ -65,6 +65,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Self-update | the release's `OnionBoard-x86_64.AppImage` (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
 | Import from other soundboards | Soundux for Linux's own config (`~/.config/Soundux`, or its Flatpak's), its hotkeys X key codes turned into Windows ones; EXP Soundboard's last board from Java's preferences file; Soundpad and Resanance (and Soundux for Windows) in Wine / Proton prefixes (`$WINEPREFIX`, `~/.wine`, Steam's `compatdata`). A board's Windows paths are found here: `\` turned into `/`, `Z:` is `/`, another drive is that drive in the board's own prefix (else `$WINEPREFIX` / `~/.wine`); a file's name comes out right even when it's missing | `linux/otherboards.py`, `linux/soundux.py`, `linux/expboard.py`, `linux/wine.py` |
 | Triggers tab | hidden (not removed: everything that looks it up still finds it), and it never nudges. Onion Watch (its own repo) captures the screen with DXGI / GDI; 0.6.5's module zip does install and load here without errors, but only says it works on Windows. Porting it (X11 capture: XShm, XComposite for one window; a portal on Wayland) is its own project, in that repo; then this tab comes back | `linux/ui.py` |
+| Overlay on the game's monitor | "The one the game is on" follows the X11 window in front (its middle picks the monitor; `overlay.pick_screen` matches it as on Windows). Upstream only asks on Windows, so `linux/ui.py` patches the overlay's screen choice. A Wayland window in front: its chosen screen | `linux/keys.py`, `linux/voicesdk.py`, `linux/ui.py` |
 | Voice engine suggestion | *Who's listening* suggests the game in front's voice engine: the X11 active window (`_NET_ACTIVE_WINDOW`, so games under XWayland too) → `_NET_WM_PID` → a Proton / Wine game's .exe from its command line (`Z:\` is `/`, another drive in its `WINEPREFIX`), a native program's `/proc/<pid>/exe`; the scan is upstream's. Desktop and Wine programs (`/usr`, `C:\windows`) don't count. A native libvivoxsdk.so isn't looked for; Wayland windows give nothing | `linux/voicesdk.py`, `linux/x11.py`, `linux/ui.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server. Upstream's suite runs on 4 workers (pytest-xdist); each test's Xvfb picks a free display itself (`-displayfd`) and each dbus-daemon has its own address, so workers never share one | |
@@ -88,14 +89,10 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    `tests/test_linux_wording.py` now also catches VB-Cable / "CABLE …" text and only
    skips the guide's installer strings, not the whole guide. Left: clicking through
    it on a real desktop with a real Discord.
-3. **Overlay on the game's monitor.** Settings → Overlay's "The one the game is on"
-   uses `keys.foreground_monitor_info()`, which says nothing on Linux, so the overlay
-   opens on its chosen screen. `linux/voicesdk.py` now finds the active X11 window:
-   its geometry could pick the monitor.
-4. **Wayland without XWayland, on a real desktop**: try the portal hotkeys on KDE
+3. **Wayland without XWayland, on a real desktop**: try the portal hotkeys on KDE
    Plasma and GNOME 48+ (first bind shows the desktop's dialog; check hold-to-play
    and a changed set of hotkeys). The overlay is X11 / XWayland only.
-5. **Release**: ready for the first one after launch. Publishing a release runs
+4. **Release**: ready for the first one after launch. Publishing a release runs
    `linux.yml`, which builds the AppImage from the tag and attaches it as
    `OnionBoard-x86_64.AppImage` (job `release`); the README and the website link
    `releases/latest/download/OnionBoard-x86_64.AppImage`, and DEVELOPING.md's release

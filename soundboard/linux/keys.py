@@ -304,7 +304,21 @@ def exclusive_fullscreen() -> bool:
 
 
 def foreground_monitor_info() -> tuple[str, tuple[int, int, int, int] | None]:
-    return "", None   # the overlay then uses its chosen screen
+    """The monitor the window in front (the game) is on: ('', its rectangle in native
+    pixels), which overlay.pick_screen matches as on Windows; ('', None) when that
+    can't be told (no X11, a Wayland window in front)."""
+    from PySide6.QtGui import QGuiApplication
+    from soundboard.linux import voicesdk
+    r = voicesdk.active_window_rect()
+    if not r:
+        return "", None
+    cx, cy = r[0] + r[2] // 2, r[1] + r[3] // 2
+    for sc in QGuiApplication.screens():
+        g, k = sc.geometry(), sc.devicePixelRatio()
+        x, y, w, h = g.left(), g.top(), round(g.width() * k), round(g.height() * k)
+        if x <= cx < x + w and y <= cy < y + h:
+            return "", (x, y, w, h)
+    return "", None
 
 
 def foreground_monitor() -> str:
