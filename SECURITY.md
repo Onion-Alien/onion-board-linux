@@ -78,6 +78,8 @@ So you know what normal looks like when auditing it:
 | You press *Send feedback*, *Report a problem* or *Report a security issue* (Settings → Add-ons & help, and Settings → About), a *Report it* link beside an error message, or *Website* / *Source code* / *Licenses* (Settings → About) | `tally.so` (the no-account feedback form), `github.com` or `onion-alien.github.io`, in your own web browser | opens that page with the app's version (and, for *Report it*, the error's text) filled in; the app sends nothing itself, and nothing is posted unless you submit it there | — (your browser) |
 | While a module runs (e.g. live voice) | `127.0.0.1` only | module link, guarded by a random per-launch secret | — (this PC) |
 | You turn on *Remote control* (Settings → Remote; off by default) | listens on `127.0.0.1` only (port 7474 unless you change it) | lets a Stream Deck, AutoHotkey or a script on this PC play / stop / pause sounds and list them. Every request needs the key shown in Settings. Unlike the sockets above the key survives restarts (a Stream Deck button has to keep working), so it's stored in `config.json`; it's never exported with a backup or logged, and *New key* replaces it. Requests for any other `Host` are refused and no CORS headers are sent, so web pages can't use it | — (this PC) |
+| You click *Get Onion Pocket* (Settings → Remote) | `api.github.com`, then `github.com` → GitHub's release download server | the same as *Get Onion Watch* above, for the Onion Pocket project: its latest release, then `OnionPocket-module.zip` (only from `github.com/Onion-Alien/onion-pocket/releases/download/`, HTTPS only), checked against the SHA-256 GitHub lists for it and unpacked into `%APPDATA%\OnionBoard\modules\onion-pocket\` only if every file stays inside that folder. The zip is deleted afterwards | `addons` |
+| You install the Onion Pocket add-on and turn it on (Settings → Remote → *Let phones on this Wi-Fi use it*; off by default) | listens on this PC's address on the local network only (port 7475 unless you change it); answers only local-network addresses (private / link-local) | serves the phone page and lets a phone on your Wi-Fi list, play, stop and pause sounds, change the volume and category, and mute you; never the mic, the voice changer or the replay. It has its own key, separate from *Remote control*'s, given to the phone in the QR code's `#fragment` (browsers never send that part); every request needs it, and an address that gets it wrong 5 times in a row is ignored for a minute. Stored in `config.json`, never exported with a backup or logged; *Forget phones* replaces it. **Plain HTTP**: someone else on the same network who can read its traffic could take the key, so use it at home, not on public Wi-Fi. The page loads nothing from anywhere else (hash-only Content-Security-Policy, `connect-src 'self'`). Turning it on (or *Let it through Windows Firewall*) adds one inbound rule after Windows' admin prompt, which Onion Board itself asks for (`OnionBoard.exe --firewall-rule`, so the prompt names it): that port and this program, TCP, Private networks, local subnet only | — (this network) |
 | Always | a local named pipe (`OnionBoard.App`) | single instance: a second launch asks the first to come to the front. It only accepts that one request | — (this PC) |
 
 To see it happen, Settings → Connection → *Network activity* lists every
@@ -118,6 +120,13 @@ off, so it only uses a speech model it already has). Sounds from the web also ha
 switch per site (YouTube, SoundCloud, Myinstants, other links). Everything is on by
 default, except what was already opt-in (yt-dlp's automatic updates, play counts).
 
+A change applies to what's already running, not only to what starts next: switching
+a feature off, turning on *Offline mode* or changing the Connection setting cuts that
+feature's open connections, so a download in progress (an update, a model, a sound)
+stops instead of finishing the old way, and a playing radio station stops (or, after
+a Connection change, reconnects the new way). The update download also checks its
+switch between chunks.
+
 Not covered: links you open in your own browser (Support, feedback and report
 buttons, Report on GitHub, release pages), the installer's own downloads (FFmpeg, VB-Cable, live voice), and
 Windows Update installing a voice or the PowerShell VB-Cable download (they can't go
@@ -144,7 +153,17 @@ The relay is a small HTTP proxy inside the app that listens on `127.0.0.1` only,
 needs a random per-launch secret (Basic auth, compared with
 `secrets.compare_digest`) and makes every onward connection through the proxy. It
 refuses targets on this PC or the home network (loopback, private and link-local
-addresses, `.local`, `.lan`). Without the setting it isn't started.
+addresses, `.local`, `.lan`).
+
+In Direct mode the relay still carries FFmpeg's and Qt's connections (that's where
+their switches are enforced). There, names are looked up on this PC anyway, so the
+relay looks a name up first and refuses one that leads to this PC or the home network:
+a radio station (or a stream redirect) whose name resolves to `127.0.0.1` or a router
+address isn't played. FFmpeg's environment has no `no_proxy` list, so a redirect to
+`127.0.0.1` or `localhost` goes through the relay too instead of straight to this PC,
+and the relay refuses it in every mode: every station comes from Radio Browser, so
+nothing the radio plays lives on this PC. (For the other features, Direct mode keeps
+this PC reachable through the relay, as it was before the relay ran there.)
 
 - **Fails closed.** If the proxy is unreachable, refuses, or its address can't be
   used, the request fails with a message saying so. Nothing falls back to a
@@ -156,7 +175,8 @@ addresses, `.local`, `.lan`). Without the setting it isn't started.
   addresses instead.
 - **Stays direct:** `127.0.0.1`, `::1` and `localhost` (a custom voice server on
   this PC, module links, the remote-control API). A custom voice server elsewhere
-  on your network goes through the proxy like anything else.
+  on your network goes through the proxy like anything else. Radio streams are the
+  exception: nothing a station sends the player to on this PC is reached.
 - **Switching** applies at once: Qt's network managers are switched and their kept
   connections dropped, open relayed connections are closed, and a playing radio
   station reconnects.

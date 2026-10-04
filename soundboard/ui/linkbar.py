@@ -111,6 +111,8 @@ class LinkBar(QFrame):
         url = ytdl.as_link(text)
         if url == self.url:
             return
+        if self._queued:   # a pick waiting its turn is dropped: its row stops waiting
+            self.done.emit(self.url, self._queued, False)
         self.url = url
         self.title = ""
         self._queued = ""
@@ -299,7 +301,9 @@ class LinkBar(QFrame):
                 f"Couldn't {'add' if kind == 'add' else 'play'} it: {e}")))
         except Exception as e:  # noqa: BLE001 - shown in the bar, logged
             log.warning("link %s failed for %s: %s", kind, url, e)
-            hint = ("" if not isinstance(e, ytdl.FetchError) or auto_update else
+            # a bot check or rate limit is about the user's address, not yt-dlp
+            hint = ("" if not isinstance(e, ytdl.FetchError) or auto_update
+                    or ytdl.blocked_by_site(f"{e} {getattr(e, 'raw', '')}") else
                     " A newer yt-dlp may fix this: Settings → Updates → Update now.")
             doing = "add" if kind == "add" else "play"
             # rich text: the plain words, and a "Report it" link when it's one for us

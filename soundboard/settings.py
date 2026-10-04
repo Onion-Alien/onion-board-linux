@@ -2,6 +2,7 @@
 general options."""
 from __future__ import annotations
 
+import logging
 import threading
 
 from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
@@ -21,6 +22,8 @@ from soundboard.ui import overlay as ovl
 from soundboard.wheelguard import no_wheel
 from soundboard.winkeys import Hotkeys
 from soundboard import errors
+
+log = logging.getLogger(__name__)
 
 # Global hotkey actions: (config attribute, action id, label, what it does).
 # Grouped for the Settings window; the action ids go to MainWindow.on_hotkey.
@@ -325,7 +328,10 @@ class ThemeGrid(QWidget):
 class SettingsDialog(QDialog):
     """All settings in one place. `mw` is the MainWindow; changes apply immediately."""
 
-    def __init__(self, mw, page: str = "privacy"):
+    def __init__(self, mw, page: str = "privacy", lazy: bool = False):
+        """`lazy`: build only `page` now and each other page the first time it's shown.
+        Building all twelve under the app's style sheet took a second or two on every
+        click of the cog; the tests build them all at once."""
         super().__init__(mw)
         fit.watch(self)   # grows to fit its text (ui/fit.py)
         self.mw = mw
@@ -353,8 +359,14 @@ class SettingsDialog(QDialog):
         self.categories.setAccessibleName("Settings categories")
         self.categories.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.categories.setFixedWidth(196)
-        for i, (_key, title, icon, build) in enumerate(pages):
-            self.tabs.addTab(self._scroll(build()), title)
+        self._unbuilt: dict[int, object] = {}   # tab index -> its page's builder
+        for i, (key, title, icon, build) in enumerate(pages):
+            sa = self._scroll()
+            if lazy and key != page:
+                self._unbuilt[i] = build
+            else:
+                self._fill(sa, build())
+            self.tabs.addTab(sa, title)
             icons.set_tab_icon(self.tabs, i, icon)
             item = QListWidgetItem(icons.icon(icon), title.replace("&&", "&"))
             item.setData(Qt.UserRole, icon)
@@ -363,10 +375,12 @@ class SettingsDialog(QDialog):
         self._category_icons()
         self.tabs.tabBar().hide()
         self.categories.currentRowChanged.connect(self.tabs.setCurrentIndex)
+        self.tabs.currentChanged.connect(self._build_page)
         self.tabs.currentChanged.connect(self.categories.setCurrentRow)
         keys = self._page_keys = [p[0] for p in pages]
         self.categories.setCurrentRow(keys.index(page) if page in keys else 0)
         self.tabs.setCurrentIndex(keys.index(page) if page in keys else 0)
+        self._build_page(self.tabs.currentIndex())   # an unknown page: the first one
         content = QHBoxLayout()
         content.setSpacing(16)
         content.addWidget(self.categories)
@@ -393,20 +407,29 @@ class SettingsDialog(QDialog):
 
     # ------------------------------------------------------------------ pages
     @staticmethod
-    def _scroll(page: QWidget) -> QScrollArea:
+    def _scroll() -> QScrollArea:
         """Pages scroll: a tall one (Hotkeys) otherwise gets squashed, rows on top of
         each other, whenever the window can't grow to fit it (maximized, small screen)."""
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setFrameShape(QScrollArea.NoFrame)
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        return sa
+
+    @staticmethod
+    def _fill(sa: QScrollArea, page: QWidget):
         for label in page.findChildren(QLabel):
             label.setWordWrap(True)
         for combo in page.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
         sa.setWidget(page)
-        return sa
+
+    def _build_page(self, i: int):
+        """A lazy page, the first time it's shown."""
+        build = self._unbuilt.pop(i, None)
+        if build is not None:
+            self._fill(self.tabs.widget(i), build())
 
     def _initial_size(self):
         """Open big enough for the tallest page, as far as the screen allows (a scroll
@@ -416,8 +439,12 @@ class SettingsDialog(QDialog):
         # wide enough to show every tab (the bar scrolls only when the screen is too
         # narrow for that)
         width = 1020
-        need = 0
+        # a page not built yet counts as tall (most are): switching to it later doesn't
+        # resize the window
+        need = 10_000 if self._unbuilt else 0
         for i in range(self.tabs.count()):
+            if i in self._unbuilt:
+                continue
             lay = self.tabs.widget(i).widget().layout()
             need = max(need, lay.totalSizeHint().height(),
                        lay.totalHeightForWidth(width - 260) if lay.hasHeightForWidth() else 0)
@@ -974,6 +1001,8 @@ class SettingsDialog(QDialog):
     def _remote(self):
         w, v = self._page()
         v.addWidget(self._remote_card())
+        for card in self._remote_addon_cards():
+            v.addWidget(card)
         v.addWidget(self._remote_easy_card())
         v.addStretch(1)
         return w
@@ -1083,10 +1112,10 @@ class SettingsDialog(QDialog):
             tab.remove()                    # asks first
             refresh()
         self.addon_remove.clicked.connect(remove)
-        refresh()
         row.addWidget(self.addon_label, 1)
         row.addWidget(self.addon_remove)
         cv.addLayout(row)
+        refresh()   # in the card first: shown without a parent, it's a window of its own
         return card
 
     # ------------------------------------------------------------------ support
@@ -1559,12 +1588,13 @@ class SettingsDialog(QDialog):
         """Grey out what's under a switch that's off (everything, in Offline mode), and
         the buttons on other pages that would go online for it."""
         from soundboard import net, torget
-        body = getattr(self, "_net_body", None)
-        if body is None or not qt_valid(body):
-            return
-        self._net_body.setEnabled(not net.offline())
-        for key, sub in self._net_subs.items():
-            sub.setEnabled(key not in self.mw.cfg.net_off)
+        body = getattr(self, "_net_body", None)   # None until its page is first shown
+        if body is not None:
+            if not qt_valid(body):
+                return
+            body.setEnabled(not net.offline())
+            for key, sub in self._net_subs.items():
+                sub.setEnabled(key not in self.mw.cfg.net_off)
         for keys, attr in ((("app_update",), "upd_btn"), (("app_update",), "upd_chk"),
                            (("ytdlp_update",), "ytdlp_auto_box")):
             w = getattr(self, attr, None)
@@ -2047,6 +2077,73 @@ class SettingsDialog(QDialog):
         copy.clicked.connect(copy_link)
         refresh()
         self.remote_on = on   # the streamer guide can turn it on: keep the box in step
+        return card
+
+    def _remote_addon_cards(self) -> list:
+        """The cards of the "remote" add-ons (soundboard.modules), e.g. Onion Pocket.
+        They're optional: one that's broken is left out (it's in the log), never an
+        error box. Without a working Onion Pocket, a card offering to get it."""
+        from soundboard import pocketaddon
+        out, have = [], set()
+        for info, addon in getattr(self.mw, "remote_addons", []):
+            card = self._addon_card(info, addon)
+            if card is not None:
+                out.append(card)
+                have.add(info.id)
+        if pocketaddon.MODULE_ID not in have and pocketaddon.offered():
+            out.append(self._get_pocket_card())
+        return out
+
+    def _addon_card(self, info, addon):
+        if addon is None:
+            log.info("remote add-on %s left out of Settings: %s", info.id, info.error)
+            return None
+        try:
+            return addon.card(self)
+        except Exception as e:  # noqa: BLE001 - an add-on can't break Settings
+            log.exception("add-on %s couldn't make its card", info.id)
+            info.error = f"its settings failed: {errors.plain(e)}"
+            return None
+
+    def _get_pocket_card(self):
+        """*Get Onion Pocket* (soundboard.pocketaddon): downloads, installs and starts
+        it, then its own card takes this one's place. If that fails, this card just
+        goes away; Onion Pocket is optional."""
+        from soundboard import netlog, pocketaddon
+
+        class Relay(QObject):
+            done = Signal(object)
+
+        card, cv = self._card("Onion Pocket: your pads on your phone",
+                              "Scan a code with your phone's camera and tap a pad on the "
+                              "phone to play it here. iPhone or Android, in the browser: "
+                              "nothing to install on the phone. A free add-on from GitHub.")
+        get = QPushButton("Get Onion Pocket")
+        row = _button_row()
+        row.addWidget(get)
+        cv.addLayout(row)
+        relay = Relay(card)
+
+        def finish(info):
+            if not qt_valid(card):
+                return
+            addon = self.mw.load_remote_addon(info) if info is not None else None
+            new = self._addon_card(info, addon) if addon is not None else None
+            lay = card.parentWidget().layout() if card.parentWidget() else None
+            if new is not None and lay is not None:
+                lay.insertWidget(lay.indexOf(card), new)
+            card.hide()
+            card.deleteLater()
+
+        def run():
+            busy.hold(get, "Getting Onion Pocket…")
+            netlog.cause(pocketaddon.FEATURE, "You clicked to get Onion Pocket "
+                                              "(Settings > Remote)")
+            threading.Thread(target=lambda: relay.done.emit(pocketaddon.get()),
+                             daemon=True, name="onion-pocket").start()
+        relay.done.connect(finish)
+        get.clicked.connect(run)
+        self.get_pocket = get
         return card
 
     def _remote_easy_card(self):

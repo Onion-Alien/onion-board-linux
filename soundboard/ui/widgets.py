@@ -216,6 +216,22 @@ _HANN = np.hanning(FFT_N).astype(np.float32)
 _FREQS = np.fft.rfftfreq(FFT_N, 1 / SR)
 
 
+class TabInfoCorner(QWidget):
+    """Give Qt's corner the tab row's height so its button is vertically centered."""
+
+    def __init__(self, tabs, button):
+        super().__init__()
+        self.tabs = tabs
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(button, 0, Qt.AlignVCenter)
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        size.setHeight(max(size.height(), self.tabs.tabBar().sizeHint().height()))
+        return size
+
+
 class SteadyTabs(QObject):
     """Keeps a QTabWidget from repainting all of itself when nothing it lays out
     changed. It answers every layout request from inside (a label's new text, a
@@ -889,6 +905,19 @@ class PadGrid(QWidget):
             if isinstance(area, QScrollArea):
                 area.ensureWidgetVisible(shown[i])
 
+    def _drop_target(self, pos) -> int:
+        """Where a dragged pad dropped at ``pos`` goes: the pad under it, else (a gap
+        between pads, the margin) the nearest one; below the last row, the end."""
+        shown = [(i, p.geometry()) for i, p in enumerate(self.pads) if p.isVisible()]
+        if not shown or pos.y() > max(r.bottom() for _i, r in shown):
+            return len(self.pads) - 1
+
+        def dist(r) -> int:
+            dx = max(r.left() - pos.x(), 0, pos.x() - r.right())
+            dy = max(r.top() - pos.y(), 0, pos.y() - r.bottom())
+            return dx * dx + dy * dy
+        return min(shown, key=lambda ir: dist(ir[1]))[0]
+
     def dragEnterEvent(self, e):
         md = e.mimeData()
         if md.hasFormat(PAD_MIME) or md.hasUrls():
@@ -911,12 +940,7 @@ class PadGrid(QWidget):
         if md.hasFormat(PAD_MIME):
             sid = bytes(md.data(PAD_MIME)).decode()
             pos = e.position().toPoint()
-            target = len(self.pads) - 1
-            for i, p in enumerate(self.pads):
-                if p.isVisible() and p.geometry().contains(pos):
-                    target = i
-                    break
-            self.reorder.emit(sid, target)
+            self.reorder.emit(sid, self._drop_target(pos))
             e.acceptProposedAction()
         elif md.hasUrls():
             files = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]

@@ -45,6 +45,12 @@ class Sites:
                     self.send_error(404)
                     return
                 body, kind = hit
+                if kind == "redirect":   # body: where to
+                    self.send_response(302)
+                    self.send_header("Location", body.decode())
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(len(body)))
@@ -270,7 +276,10 @@ def test_radio_fails_closed_with_a_readable_reason(qapp, sites, monkeypatch):
     s.bind(("127.0.0.1", 0))
     dead = s.getsockname()[1]
     s.close()
-    monkeypatch.setattr("soundboard.radio.CONNECT_S", 3.0)
+    # Windows takes ~2 s to refuse a connection to a closed port, even on 127.0.0.1:
+    # with FFmpeg slow to start on a busy machine, a 3 s watchdog said "the station
+    # didn't answer" before the relay knew why. The answer still comes after ~2 s.
+    monkeypatch.setattr("soundboard.radio.CONNECT_S", 12.0)
     net.configure(net.PROXY, f"socks5h://127.0.0.1:{dead}")
     try:
         sites.routes["/stream.wav"] = (wav_bytes(), "audio/wav")
@@ -283,7 +292,7 @@ def test_radio_fails_closed_with_a_readable_reason(qapp, sites, monkeypatch):
 
 
 def test_a_stream_sent_into_the_home_network_is_refused(qapp, sites, socks, monkeypatch):
-    monkeypatch.setattr("soundboard.radio.CONNECT_S", 3.0)
+    monkeypatch.setattr("soundboard.radio.CONNECT_S", 12.0)   # the refusal says why first
     p, chunks, errors = play(qapp, f"http://127.0.0.2:{sites.port}/stream.wav")
     p.stop()
     assert not chunks and errors and "home network" in errors[0]

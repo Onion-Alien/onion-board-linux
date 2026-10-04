@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Recently deleted keeps Close beside its other actions. Sound pad menus no longer
+  include Preview, and Apps / Triggers information is centered on the tab row.
+- Newer Onion Watch cards can show each sound's volume and hotkey.
+- **Your pads on your phone, with Onion Pocket:** Settings → Remote → *Get Onion
+  Pocket* downloads the free add-on from GitHub (checked like Onion Watch). Scan its
+  code with your phone's camera and your pads appear in the phone's browser (iPhone
+  or Android, nothing to install): a tap plays the sound on the PC. Off by default;
+  it has its own key, only answers phones on your home network, and never touches
+  your mic. Windows' admin prompt for its firewall rule names Onion Board. It's
+  optional: if it can't be downloaded or doesn't load, its card is simply left out.
+- Settings: card headings line up with the text under them (they sat 3 px to the
+  right).
+- The control API's `/api/sounds` also gives each pad's colour.
+- Radio: a station (or its redirect) pointing at this PC (`127.0.0.1`, `localhost`)
+  is refused in Direct mode too, as it already was through a proxy or Tor.
+
+## 1.6.8 — 2026-10-04
+
+- **Searching YouTube no longer gets you taken for a bot so easily.** Since 1.6.5 every
+  YouTube search looked up each result's likes and comments the way a Play does
+  (the video page, then several of YouTube's player APIs and its player script):
+  dozens of requests within seconds, enough for YouTube to answer the next *Play*
+  or *Add* with "Sign in to confirm you're not a bot". Each look-up is now a single
+  page, one at a time, a second apart, and they stop for 30 minutes the moment
+  YouTube asks for a bot check or slows requests down (your own *Play* and *Add*
+  still go through). The message no longer suggests updating yt-dlp, which can't
+  help with that, and says what causes it.
+
 ## 1.6.7 — 2026-10-04
 
 - **A much better voice changer.**

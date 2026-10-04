@@ -73,6 +73,9 @@ HEAD_LIMIT = 64 * 1024              # a request head bigger than this isn't FFmp
 ENV_KEYS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
 LOOPBACK_NAMES = ("localhost", "localhost.")
 DIRECT_LOGIN = "direct-"   # relay login "direct-<feature>": not through the proxy / Tor
+# features with nothing on this PC: the relay refuses them 127.x / localhost in every
+# mode (every station comes from Radio Browser, so one leading here is a redirect)
+NEVER_THIS_PC = frozenset({"radio"})
 
 # Everything that goes online, by the key its requests carry: its switch in Settings >
 # Privacy & security (cfg.net_off lists the ones switched off).
@@ -191,6 +194,10 @@ _offline = False                     # cfg.net_offline: all of them
 _generation = 0                      # bumped by every change of the Connection setting
 _last_failure: tuple[float, str] = (0.0, "")
 _tor_gate: Callable[[float], Proxy] | None = None   # soundboard.tor: waits, then its port
+# urlopen()'s open sockets to sites -> the feature: a change of the setting (or a
+# switch) cuts them off, as it does the relay's
+_live: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_live_lock = threading.Lock()
 
 
 def mode() -> str:
@@ -230,6 +237,7 @@ def configure(new_mode: str, proxy_url: str = "") -> None:
     _last_failure = (0.0, "")
     log.info("connection: %s", describe())
     _relay_drop_all()
+    _drop_live(lambda _feature: True)
     for nam in list(_nams.keys()):
         _apply_nam(nam)
     _notify()
@@ -257,6 +265,7 @@ def configure_features(off=(), offline: bool = False) -> None:
              else ", ".join(sorted(_off)) or "nothing")
     if _relay is not None:
         _relay.drop(lambda feature: not allowed(feature))
+    _drop_live(lambda feature: not allowed(feature))
     for nam in list(_nams.keys()):
         _apply_nam(nam)
     _notify()
@@ -609,11 +618,45 @@ def _timeout(t):
     return t if isinstance(t, int | float) else None   # socket._GLOBAL_DEFAULT_TIMEOUT
 
 
-class _Counted:
-    """A response's file, counting what's read into its activity entry."""
+def _track_live(sock: socket.socket, feature: str) -> None:
+    with _live_lock:
+        _live[sock] = feature
 
-    def __init__(self, fp, entry: netlog.Entry):
-        self._fp, self._entry = fp, entry
+
+def _drop_live(which: Callable[[str], bool]) -> None:
+    """Cut off urlopen()'s open connections of the features `which` picks: a read
+    waiting on one returns, and its response raises ProxyError (see _Counted)."""
+    with _live_lock:
+        socks = [s for s, f in list(_live.items()) if which(f)]
+    for s in socks:
+        try:
+            socket.socket.shutdown(s, socket.SHUT_RDWR)   # the TCP one, under any TLS
+        except (OSError, ValueError):   # closed already
+            pass
+
+
+class _Counted:
+    """A response's file, counting what's read into its activity entry. `stale` says
+    why the connection mustn't carry on (the setting changed, or its switch went off)
+    and makes every read raise ProxyError from then on."""
+
+    def __init__(self, fp, entry: netlog.Entry, stale: Callable[[], str] | None = None):
+        self._fp, self._entry, self._stale = fp, entry, stale
+
+    def _guard(self):
+        why = self._stale() if self._stale is not None else ""
+        if why:
+            raise _failed(why)
+
+    def _do(self, fn, *a):
+        self._guard()
+        try:
+            data = fn(*a)
+        except (OSError, ValueError):   # e.g. cut off by _drop_live
+            self._guard()
+            raise
+        self._guard()
+        return data
 
     def _count(self, data):
         if data:
@@ -621,16 +664,16 @@ class _Counted:
         return data
 
     def read(self, *a):
-        return self._count(self._fp.read(*a))
+        return self._count(self._do(self._fp.read, *a))
 
     def read1(self, *a):
-        return self._count(self._fp.read1(*a))
+        return self._count(self._do(self._fp.read1, *a))
 
     def readline(self, *a):
-        return self._count(self._fp.readline(*a))
+        return self._count(self._do(self._fp.readline, *a))
 
     def readinto(self, b):
-        n = self._fp.readinto(b)
+        n = self._do(self._fp.readinto, b)
         if n:
             self._entry.add_received(n)
         return n
@@ -644,10 +687,11 @@ class _Counted:
 
 
 class _Response(http.client.HTTPResponse):
-    def __init__(self, sock, *a, entry: netlog.Entry | None = None, **kw):
+    def __init__(self, sock, *a, entry: netlog.Entry | None = None,
+                 stale: Callable[[], str] | None = None, **kw):
         super().__init__(sock, *a, **kw)
         if entry is not None:
-            self.fp = _Counted(self.fp, entry)
+            self.fp = _Counted(self.fp, entry, stale)
 
 
 class _Logged:
@@ -656,6 +700,24 @@ class _Logged:
     entry: netlog.Entry | None = None
     answered = False   # a response has the entry now: its close() closes it
     asking = ("", "")  # the request line: put before the (lazy) connect
+    gen = -1           # the Connection setting's generation() it connected under
+    feature = ""
+
+    def _connecting(self):
+        self.gen = _generation
+
+    def _stale(self) -> str:
+        """Why this connection mustn't carry on, or "": its switch went off, or the
+        Connection setting changed since it connected (it goes the old way). A
+        connection on this PC isn't routed, so it's never stale."""
+        if is_loopback(self.host):
+            return ""
+        if not allowed(self.feature):
+            return off_message(self.feature)
+        if self.gen != _generation:
+            return ("Stopped: the connection setting changed while this was downloading, "
+                    "so it didn't carry on the old way. Try again.")
+        return ""
 
     def putrequest(self, method, url, *a, **kw):
         self.asking = (method, url)
@@ -667,6 +729,8 @@ class _Logged:
         self.entry = entry
         if self.asking[0]:
             entry.request(*self.asking)
+        if self.sock is not None and not is_loopback(self.host):
+            _track_live(self.sock, self.feature)
 
     def send(self, data):
         super().send(data)   # connects first, if it hasn't yet
@@ -675,7 +739,8 @@ class _Logged:
 
     def getresponse(self):
         entry = self.entry
-        self.response_class = (lambda sock, *a, **kw: _Response(sock, *a, entry=entry, **kw))
+        self.response_class = (lambda sock, *a, **kw: _Response(sock, *a, entry=entry,
+                                                                 stale=self._stale, **kw))
         r = super().getresponse()
         self.answered = True
         if entry is not None:
@@ -694,6 +759,7 @@ class _HTTPConnection(_Logged, http.client.HTTPConnection):
         self.feature, self.direct = feature, direct
 
     def connect(self):
+        self._connecting()
         self.sock, entry = _open(self.host, self.port, _timeout(self.timeout),
                                  feature=self.feature, direct=self.direct)
         self._opened(entry)
@@ -705,8 +771,10 @@ class _HTTPSConnection(_Logged, http.client.HTTPSConnection):
         self.feature, self.direct = feature, direct
 
     def connect(self):
+        self._connecting()
         sock, entry = _open(self.host, self.port, _timeout(self.timeout),
                             feature=self.feature, direct=self.direct)
+        self.sock = sock
         self._opened(entry)
         try:
             self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
@@ -714,6 +782,8 @@ class _HTTPSConnection(_Logged, http.client.HTTPSConnection):
             sock.close()
             self.entry.failed(f"secure connection failed ({errors.plain(e)})")
             raise
+        if not is_loopback(self.host):
+            _track_live(self.sock, self.feature)   # the TLS socket now (sock is detached)
         self.entry.set_tls(_tls_text(self.sock))
 
 
@@ -962,12 +1032,21 @@ class _Relay:
                 self.seen.append((feature, host, "off"))
                 netlog.blocked(feature, host, int(port), off_message(feature), netlog.RELAY)
                 return self._refuse(c, 403, str(_failed(off_message(feature))))
-            if _local_target(host) and not (_mode == DIRECT and is_loopback(host)):
+            if _local_target(host) and not (_mode == DIRECT and is_loopback(host)
+                                            and feature not in NEVER_THIS_PC):
                 # nothing the app fetches through the relay lives on this PC or the
                 # home network; a stream redirecting there is refused. (In Direct mode
-                # this PC stays reachable, as it was before the relay ran in it.)
+                # this PC stays reachable, as it was before the relay ran in it, except
+                # for the features in NEVER_THIS_PC.)
                 self.seen.append((feature, host, "local"))
                 why = f"Not connecting to {host}: it's on this PC or your home network"
+                netlog.blocked(feature, host, int(port), why, netlog.RELAY)
+                return self._refuse(c, 403, str(_failed(why)))
+            if (_mode == DIRECT or direct) and _name_leads_home(host):
+                # going direct, the name is looked up on this PC anyway: one that leads
+                # into this PC / the home network (a stream redirecting there) is refused
+                self.seen.append((feature, host, "local"))
+                why = f"Not connecting to {host}: it leads to this PC or your home network"
                 netlog.blocked(feature, host, int(port), why, netlog.RELAY)
                 return self._refuse(c, 403, str(_failed(why)))
             try:
@@ -1092,6 +1171,24 @@ def _local_target(host: str) -> bool:
             or ip.is_multicast or ip.is_reserved)
 
 
+def _name_leads_home(host: str) -> bool:
+    """Does the name `host` resolve to an address on this PC or the home network? Only
+    for connections that go direct (the lookup is made on this PC either way). An
+    address, "localhost", or a name that doesn't resolve isn't refused here."""
+    if is_loopback(host):
+        return False
+    try:
+        ipaddress.ip_address(host.split("%")[0])
+        return False   # an address: _local_target decides
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return False
+    return any(_local_target(str(info[4][0])) for info in infos)
+
+
 _relay: _Relay | None = None
 
 
@@ -1122,7 +1219,13 @@ def relay_seen() -> list[tuple[str, str, str]]:
 def _set_env():
     """FFmpeg finds the relay in http_proxy & co., with the radio's login: the only
     FFmpeg in this process is the radio player. The user's own values are kept for
-    own_env()."""
+    own_env().
+
+    No no_proxy: FFmpeg would connect straight to anything it lists, so a station
+    redirecting to 127.0.0.1 / localhost would step around the relay (and its switch
+    and home-network checks). Nothing else in this process reads these variables:
+    urlopen() ignores them, Qt is given the relay itself (apply_qt), and the child
+    processes that go online get child_env(), which keeps this PC direct."""
     global _env_saved
     if _env_saved is None:
         _env_saved = {k: os.environ.get(k) for k in ENV_KEYS}
@@ -1130,7 +1233,7 @@ def _set_env():
     os.environ["http_proxy"] = url
     os.environ["https_proxy"] = url
     os.environ["all_proxy"] = url
-    os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
+    os.environ.pop("no_proxy", None)
 
 
 def _without_proxy_vars(env: dict[str, str]) -> dict[str, str]:

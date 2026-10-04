@@ -1,11 +1,34 @@
 """The Settings window's layout: pages scroll instead of squashing their rows."""
-from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea
+from contextlib import contextmanager
+
+from PySide6.QtCore import QEvent, QObject
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea
 
 from conftest import process_events
 from soundboard import net
 from soundboard.settings import SettingsDialog
 from soundboard.ui import busy
 from test_mainwindow import window  # noqa: F401  (the real MainWindow fixture)
+
+
+@contextmanager
+def windows_shown():
+    """The class names of the windows shown meanwhile (a widget shown before it has a
+    parent pops up as a window of its own)."""
+    shown = []
+
+    class Spy(QObject):
+        def eventFilter(self, obj, ev):   # noqa: N802 - Qt API
+            if ev.type() == QEvent.Show and obj.isWidgetType() and obj.isWindow():
+                shown.append(type(obj).__name__)
+            return False
+    spy = Spy()
+    app = QApplication.instance()
+    app.installEventFilter(spy)
+    try:
+        yield shown
+    finally:
+        app.removeEventFilter(spy)
 
 
 def test_a_short_window_scrolls_a_page_instead_of_squashing_it(window, qapp):  # noqa: F811
@@ -53,6 +76,27 @@ def test_each_page_opens_by_name_and_holds_its_cards(window):  # noqa: F811
         d.close()
     d = SettingsDialog(window, "nonsense")
     assert d.tabs.currentIndex() == 0
+    d.close()
+
+
+def test_the_cog_builds_only_the_page_it_opens_and_the_rest_when_shown(window):  # noqa: F811
+    """Building all twelve pages under the app's style sheet took a second or two on
+    every click of the cog: the window builds the others when they're first picked."""
+    from soundboard import net
+    net.configure_features(["app_update"], False)   # its button is on a page built later
+    with windows_shown() as shown:
+        d = SettingsDialog(window, "audio", lazy=True)
+    assert shown == []
+    built = [i for i in range(d.tabs.count()) if d.tabs.widget(i).widget() is not None]
+    assert built == [d._page_keys.index("audio")]
+    assert d.size().height() >= 600   # sized for the tall pages it hasn't built yet
+    d.categories.setCurrentRow(d._page_keys.index("updates"))
+    page = d.tabs.currentWidget().widget()
+    assert page is not None and "APP UPDATES" in {lb.text() for lb in page.findChildren(QLabel)}
+    assert not d.upd_btn.isEnabled()   # greyed by Privacy, though that page isn't built
+    d.close()
+    d = SettingsDialog(window, "nonsense", lazy=True)
+    assert d.tabs.currentIndex() == 0 and d.tabs.widget(0).widget() is not None
     d.close()
 
 
@@ -106,7 +150,11 @@ def test_onion_watch_can_be_removed_from_settings(window, monkeypatch):  # noqa:
         removed.append(True)
         tab.info = None
     monkeypatch.setattr(tab, "remove", fake_remove)
-    d = SettingsDialog(window, "help")
+    with windows_shown() as shown:
+        d = SettingsDialog(window, "help")
+    # its button was shown before it was in the dialog: a little blank window of its own
+    # flashed up on every click of the cog
+    assert shown == []
     assert d.addon_remove.isVisibleTo(d) and "9.9 is installed" in d.addon_label.text()
     d.addon_remove.click()
     assert removed and not d.addon_remove.isVisibleTo(d)
@@ -300,4 +348,31 @@ def test_live_tabs_comes_first_on_appearance_tint_or_dot(window, qapp):  # noqa:
     assert window.cfg.live_tab_green is False
     d.live_green.click()
     assert window.cfg.live_tab_green is True
+
+
+def _ink_left(lbl) -> int | None:
+    """The first column of a label's picture with text in it."""
+    img = lbl.grab().toImage()
+    bg = img.pixelColor(img.width() - 1, img.height() - 1)
+    for x in range(img.width()):
+        for y in range(img.height()):
+            c = img.pixelColor(x, y)
+            diff = abs(c.red() - bg.red()) + abs(c.green() - bg.green())
+            if diff + abs(c.blue() - bg.blue()) > 60:
+                return x
+    return None
+
+
+def test_card_headings_line_up_with_the_text_under_them(qapp, window):  # noqa: F811
+    """A heading's padding-top made Qt indent its text 3 px past the card's text."""
+    d = SettingsDialog(window, "remote")
+    d.show()
+    process_events(qapp, lambda: False, timeout=0.2)
+    page = d.tabs.currentWidget().widget()
+    heads = [lb for lb in page.findChildren(QLabel) if lb.objectName() == "section"]
+    assert heads
+    for h in heads:
+        h.setText("HELLO")                     # one shape: no letter's own bearing to compare
+        qapp.processEvents()
+        assert _ink_left(h) is not None and _ink_left(h) <= 1, h.text()
     d.close()
