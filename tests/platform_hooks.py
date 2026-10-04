@@ -79,6 +79,10 @@ WINDOWS_ONLY = {
         "the RunOnce registry entry",
     "tests/test_setupwizard.py::test_resumed_guide_with_the_cable_still_missing_offers_to_install_again":
         "reopening after VB-Cable's restart",
+    "tests/test_net_switches.py::test_setup_downloads_off_never_starts_the_cable_installer":
+        "VB-Cable's download (Linux makes the cable with none: tests/test_linux_ui.py)",
+    "tests/test_voicesdk.py::test_is_system_never_touches_the_disk":
+        "C:\\Windows paths (the voice engine watcher is off on Linux)",
 }
 
 
