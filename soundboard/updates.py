@@ -346,3 +346,7 @@ def cleanup() -> None:
             p.unlink()
         except OSError:
             pass
+
+
+if sys.platform != "win32":   # Linux: the AppImage updates itself
+    from soundboard.linux.updates import *  # noqa: E402,F403

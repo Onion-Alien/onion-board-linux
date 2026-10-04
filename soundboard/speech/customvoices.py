@@ -331,3 +331,7 @@ class VoiceSet(SapiTTS):
         if not text:
             return np.zeros(0, np.float32), TTS_RATE
         return cv.synth(text, rate)
+
+
+if __import__("sys").platform != "win32":   # Linux: Piper's Linux release, the README
+    from soundboard.linux.customvoices import *  # noqa: E402,F403

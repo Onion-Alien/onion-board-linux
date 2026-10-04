@@ -4,7 +4,8 @@ On Windows those download and run VB-Cable's installer (a permission prompt, oft
 restart). On Linux the app makes the cable itself in a moment (soundboard.linux.
 vcable): no download, so the "setup downloads" switch doesn't apply, no permission
 prompt, no restart. "Game has no microphone setting?" sets the cable as the default
-mic directly instead of walking the user through a control panel.
+mic directly instead of walking the user through a control panel. The Voice tab
+never offers Windows' voice installs.
 
 patch_main_window / patch_setup_wizard are called at the end of their modules,
 before any window exists, so the buttons connect to these versions.
@@ -52,6 +53,30 @@ def patch_main_window(cls):
     cls.__init__ = __init__
     cls.install_cable = install_cable
     cls.open_windows_mic = open_windows_mic
+    from soundboard.ui.voicepanel import SpeechPanel
+    patch_speech_panel(SpeechPanel)
+
+
+def patch_speech_panel(cls):
+    """The Voice tab's translation box: when the voice for a language is missing,
+    Windows offers an Install button (Windows Update) and a Windows settings button.
+    eSpeak's voices come with the distribution's package: say so, keep Reload."""
+    orig_refresh = cls._refresh_translation
+
+    def _refresh_translation(self):
+        orig_refresh(self)
+        if self.b_voice_install.isHidden():
+            return
+        self.b_voice_install.hide()
+        self.b_voices.hide()
+        m = self._lang()
+        name = (m.language_name or m.language) if m is not None else "this language"
+        self.lbl_tr.setText(f"\u26a0 There's no {name} voice here yet, so {name} can't be "
+                            "spoken properly. Install your distribution's espeak-ng "
+                            "package (or put a Piper voice in your voices folder), then "
+                            "press Reload voices.")
+
+    cls._refresh_translation = _refresh_translation
 
 
 def patch_setup_wizard(cls):

@@ -28,7 +28,9 @@ DISABLED`: nothing of the port goes public before launch), then
 `git fetch upstream main && git merge upstream/main`. The first release merged this
 way (21 commits, 35 files) went in with no conflicts. After a merge, grep the new
 upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`,
-`.exe`, `CREATE_NO_WINDOW`) and give anything new a Linux hook.
+`.exe`, `CREATE_NO_WINDOW`) and give anything new a Linux hook. New "Windows" text
+fails `tests/test_linux_wording.py`, which lists each string: reword it in
+`linux/wording.py`, or add it to the test's NOT_ON_LINUX with why it never shows.
 
 ## Done
 
@@ -47,11 +49,16 @@ upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`
 | Text-to-speech | eSpeak NG voices (short list: translation languages, English accents, the desktop's language); Piper / voice servers unchanged | `linux/tts.py` |
 | Audio devices | the sound server's devices by name (`pactl`); each stream opens on PortAudio's `pulse` device aimed with `PULSE_SINK` / `PULSE_SOURCE`; shows as "Onion Board" in volume mixers. Verified end to end on PipeWire. See `docs/LINUX-AUDIO-SPIKE.md` | `linux/audio.py`, `linux/engine.py` |
 | Apps tab and instant replay | PipeWire: each program's stream nodes (`pw-dump`) recorded with `pw-record --target`, several mixed; "everything but Onion Board" for replay. Verified on PipeWire. No per-program level meters on Linux (rows show playing / quiet) | `linux/appaudio.py` |
-| Virtual cable | made by the app: "Onion Board Cable Input" → "Onion Board Cable Output" (VB-Cable's naming, so the cable detection already works); pactl now, PipeWire drop-in / default.pa for every login | `linux/vcable.py` (not wired into the UI yet) |
-| Packaging | `build-linux.sh`: PyInstaller → `--selftest` → AppImage (`scripts/make_appdir.py`: AppRun, .desktop, icon painted by the app). Built and self-tested here (266 MB untrimmed); CI builds it on Ubuntu 22.04 and uploads it as an artifact | `build-linux.sh`, `scripts/make_appdir.py` |
+| Virtual cable | made by the app: "Onion Board Cable Input" → "Onion Board Cable Output" (VB-Cable's naming, so the cable detection already works); pactl now, PipeWire drop-in / default.pa for every login. The setup guide's and main window's cable buttons make it (no download, permission or restart) | `linux/vcable.py`, `linux/ui.py` |
+| Packaging | `build-linux.sh`: PyInstaller → fails if a library couldn't be bundled → `scripts/prune_build_linux.py` → `--selftest` → AppImage (`scripts/make_appdir.py`: AppRun, .desktop, icon painted by the app). The prune follows `prune_build.py`'s rules with ELF `DT_NEEDED` instead of pefile: unused Qt modules and libraries, QML, spare platform plugins (keeps xcb, wayland, offscreen), the touch keyboard, dev tools, translations; 695 → 521 MB unpacked (Chromium's library alone is 195 MB). Checked here: self-test, and the pruned app running on Xvfb (X11); CI builds it on Ubuntu 22.04 and uploads it as an artifact | `build-linux.sh`, `scripts/prune_build_linux.py`, `scripts/make_appdir.py` |
+| Wording | the app's "Windows" text, reworded as it reaches the screen: Qt's text calls (labels, buttons, tooltips, message boxes, combo items, tabs, tray, clipboard) go through one table. `tests/test_linux_wording.py` fails on any new "Windows" string upstream that's neither reworded nor listed as never shown on Linux. Upstream's own tests see upstream's text (`tests/platform_hooks.py` switches the table off for them) | `linux/wording.py` |
+| Voice tab | no Windows voice installs: a language eSpeak has no voice for says to install the distribution's espeak-ng package (or a Piper voice) and keeps Reload voices | `linux/ui.py` |
+| Custom voices | Piper's Linux download (`piper/piper` in the voices folder, exec bit given back if lost) or `piper` on PATH; the folder's README in Linux terms | `linux/customvoices.py` |
+| Add-ons (live voice) | the add-on's environment is `.venv/bin/python`; inside the AppImage (read-only, a new mount each run) it lives in `~/.local/share/OnionBoard/envs/<add-on>`, so its code comes from the running version and its packages survive updates. Made from the newest `python3` ≥ 3.11 on PATH. `modules/live-voice/install.sh` is the fallback. The build ships the add-ons and the licence files | `linux/modules.py`, `build-linux.sh` |
+| Self-update | the release's `OnionBoard-x86_64.AppImage` (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server | |
-| CI | `.github/workflows/linux.yml` (Ubuntu 24.04, Xvfb with keymap) | |
+| CI | `.github/workflows/linux.yml`: tests on Ubuntu 24.04 (Xvfb with keymap), the AppImage on 22.04. `checks.yml` runs the Windows tests | |
 
 ## Next, in order
 
@@ -59,23 +66,20 @@ upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`
    check plugging a headset in and out with the app running, a device that vanishes
    mid-stream (PipeWire may move the stream to the default device), and plain
    PulseAudio (only PipeWire was tested).
-2. **Setup guide, the rest.** The cable buttons already make the cable
-   (`linux/ui.py`); still Windows-worded: the guide's cable page text ("a free
-   add-on"), the Discord page, the Steam help. Try the whole guide once on a real
-   desktop (`python -m soundboard`, after asking: it opens windows).
-3. **Wording.** ~70 strings say "Windows" (Start with Windows, Windows voices, Task
-   Manager…). Plan: one table of Windows → Linux wording applied in one place, not
-   edits all over the upstream files.
-4. **Windows-only features to hide on Linux**: Windows voice installs
-   (`speech/winvoices.py`), shell icon / taskbar (`shellicon.py`), the VB-Cable 48 kHz
-   fix (`cableformat.py`), `voicesdk.py` (use `/proc/<pid>/exe`; Proton games are
-   Windows exes, so the checks mostly still apply).
-5. **Packaging, the rest**: a Linux `prune_build.py` (ELF `NEEDED` instead of
-   pefile; keep `libqxcb`, `libqwayland-*`, `libqoffscreen`; PySide6 is 522 of the
-   704 MB), self-update replacing the AppImage file (`updates.py`, a Linux asset name),
-   the `live-voice` add-on's `install.sh`, and the README / website download button.
-6. **Wayland without XWayland**: the GlobalShortcuts portal for hotkeys; the overlay is
-   X11 / XWayland only.
+2. **Setup guide on a real desktop.** The cable buttons make the cable and the
+   wording table covers the text; try the whole guide once (`python -m soundboard`,
+   after asking: it opens windows), including the Discord page and the Steam help.
+3. **Wayland without XWayland**: the GlobalShortcuts portal for hotkeys (QtDBus is
+   kept in the build for it); the overlay is X11 / XWayland only.
+4. **Release**: a release needs `OnionBoard-x86_64.AppImage` attached next to
+   `OnionBoardSetup.exe` (the self-update looks for that name), and the README /
+   website download button.
+5. **Smaller**: the voice engine suggestion (`voicesdk.py`) is off on Linux: it
+   could use the X11 active window's `_NET_WM_PID` and, for Proton games, the
+   Windows exe in `/proc/<pid>/cmdline`. Settings' "Virtual cable download" switch
+   does nothing on Linux (its text says so); it could be hidden. A frozen copy that
+   can't update itself (a folder build, an AppImage in a read-only folder) says it
+   "runs from source".
 
 ## Checking on a real Linux desktop
 

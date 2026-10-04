@@ -77,3 +77,7 @@ if not WIN:
     # package before anything reads it.
     import os as _os
     _os.environ.setdefault("APPDATA", data_home())
+    # the app's Windows wording, reworded for Linux as it reaches the screen
+    # (soundboard/linux/wording.py: one table, no edits in the upstream modules)
+    from soundboard.linux import wording as _wording
+    _wording.install()

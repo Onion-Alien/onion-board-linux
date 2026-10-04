@@ -3,6 +3,8 @@
 - tests that check Windows itself (its memory layouts, drive-letter paths, its
   case-insensitive environment) are skipped off Windows, each with its reason; what
   those modules do on Linux is tested in tests/test_linux_*.py
+- upstream's tests see upstream's text: soundboard/linux/wording.py is off for
+  them (tests/test_linux_wording.py checks it)
 - the Linux versions of conftest's "never touch the real thing" guards: real MIDI
   devices, the real autostart folder, the real sound server (a stand-in with
   speakers, a mic and the cable answers instead)"""
@@ -16,6 +18,8 @@ REAL: dict = {}   # what the guards replace, for the tests of those very functio
 if sys.platform != "win32":
     from soundboard.linux.tts import EspeakTTS
     REAL["tts_warm_up"] = EspeakTTS.warm_up   # conftest stubs it outside test_speech.py
+    from soundboard import updates as _updates
+    REAL["start_install"] = _updates.start_install   # conftest's guard replaces it
 
 WINDOWS_ONLY = {
     "tests/test_appaudio.py::test_guid_bytes_keep_zero_bytes":
@@ -81,6 +85,26 @@ WINDOWS_ONLY = {
         "reopening after VB-Cable's restart",
     "tests/test_net_switches.py::test_setup_downloads_off_never_starts_the_cable_installer":
         "VB-Cable's download (Linux makes the cable with none: tests/test_linux_ui.py)",
+    # Windows' voice installs (Windows Update); Linux says to install eSpeak's package
+    "tests/test_voicepanel.py::test_downloaded_language_needs_a_windows_voice_and_uses_it":
+        "Windows' voice install (Linux: tests/test_linux_wording.py)",
+    "tests/test_voicepanel.py::test_voice_installed_in_windows_settings_is_found_on_return":
+        "Windows' speech settings",
+    "tests/test_voicepanel.py::test_one_click_voice_install_then_its_picked_up":
+        "Windows' voice install",
+    "tests/test_voicepanel.py::test_voice_install_cancelled_or_failed_says_so":
+        "Windows' voice install",
+    "tests/test_customvoices.py::test_folder_gets_a_readme_and_load_reads_every_kind":
+        "piper.exe in the voices folder (Linux: tests/test_linux_wording.py)",
+    # the release's Windows installer; Linux takes its AppImage (tests/test_linux_updates.py)
+    "tests/test_trim_updates_autostart.py::test_latest_finds_the_installer_and_its_checksum":
+        "OnionBoardSetup.exe (Linux: tests/test_linux_updates.py)",
+    "tests/test_trim_updates_autostart.py::test_an_installer_under_the_old_repo_name_is_still_trusted":
+        "OnionBoardSetup.exe under the old repo name",
+    "tests/test_trim_updates_autostart.py::test_latest_takes_the_checksum_from_the_notes_without_a_digest":
+        "OnionBoardSetup.exe (Linux: tests/test_linux_updates.py)",
+    "tests/test_speech.py::test_service_command_uses_the_modules_own_python":
+        ".venv\\Scripts\\python.exe (Linux: tests/test_linux_modules.py)",
     "tests/test_voicesdk.py::test_is_system_never_touches_the_disk":
         "C:\\Windows paths (the voice engine watcher is off on Linux)",
 }
@@ -131,10 +155,14 @@ STAND_IN_INFO = "Default Sink: test_speakers\nDefault Source: test_mic\n"
 
 
 @pytest.fixture(autouse=True)
-def _linux_never_touches_the_real_desktop(monkeypatch, tmp_path):
+def _linux_never_touches_the_real_desktop(request, monkeypatch, tmp_path):
     if sys.platform == "win32":
         yield
         return
+    # upstream's tests check upstream's text; the Linux wording has its own tests
+    if not request.node.module.__name__.rsplit(".", 1)[-1].startswith("test_linux_"):
+        from soundboard.linux import wording
+        monkeypatch.setattr(wording, "active", False)
     # XDG autostart, the PipeWire / PulseAudio drop-ins and the Trash live under these
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "guard" / "xdg-config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "guard" / "xdg-data"))
