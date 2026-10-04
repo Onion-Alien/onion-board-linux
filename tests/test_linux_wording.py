@@ -168,3 +168,27 @@ def test_voices_folder_readme_is_in_linux_terms():
     from soundboard.speech import customvoices
     assert "piper.exe" not in customvoices.README and "C:/" not in customvoices.README
     assert "piper_linux_x86_64" in customvoices.README
+
+
+# built at run time, not literals: settings.pretty_key title-cases "windows" key names
+_BUILT = {"Windows+", "Windows", "Left Windows", "Right Windows"}
+
+
+def test_every_rewording_still_matches_upstreams_text():
+    """An upstream merge that rewords a text leaves its entry here matching nothing,
+    and the Windows wording back on screen: each entry must still be in the source."""
+    from soundboard.linux import wording
+    consts = []
+    for f in ROOT.joinpath("soundboard").rglob("*.py"):
+        if "linux" in f.relative_to(ROOT).parts:
+            continue
+        for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                consts.append(n.value)
+            elif isinstance(n, ast.JoinedStr):   # an f-string: its fixed parts
+                consts.append("".join(v.value if isinstance(v, ast.Constant) else "\0"
+                                      for v in n.values))
+    text = "\n".join(consts)
+    stale = [old for old, _ in wording.PHRASES if old not in text and old not in _BUILT]
+    stale += [w for w in wording.WHOLE if w not in consts and w not in _BUILT]
+    assert not stale, f"reworded upstream, update soundboard/linux/wording.py: {stale}"
