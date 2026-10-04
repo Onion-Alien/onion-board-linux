@@ -494,3 +494,7 @@ def install(info: ModuleInfo, on_line: Callable[[str], None]) -> bool:
             return False
     log.info("installed module %s", info.id)
     return True
+
+
+if sys.platform != "win32":   # Linux: .venv/bin/python, a python3 that's new enough
+    from soundboard.linux.modules import *  # noqa: E402,F403

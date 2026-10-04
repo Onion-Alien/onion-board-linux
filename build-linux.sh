@@ -53,6 +53,20 @@ fi
 QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX="${QTWEBENGINE_DISABLE_SANDBOX:-0}" \
     dist/OnionBoard/OnionBoard --selftest
 
+# add-ons ship with the app, as source (an add-on's environment is made on the user's
+# PC by its Install button; inside the AppImage it goes to the data folder)
+rm -rf dist/OnionBoard/modules
+for m in modules/*/; do
+  name="$(basename "$m")"
+  mkdir -p "dist/OnionBoard/modules/$name"
+  (cd "$m" && find . \( -name .venv -o -name __pycache__ \) -prune -o -type f ! -name '*.pyc' ! -name '*.bat' \
+     -exec cp --parents {} "../../dist/OnionBoard/modules/$name/" \;)
+done
+
+# licences travel with the binaries (Qt is LGPL; see scripts/make_notices.py)
+cp LICENSE dist/OnionBoard/LICENSE.txt
+"$py" scripts/make_notices.py dist/OnionBoard/THIRD-PARTY-NOTICES.txt
+
 [ "$appimage" = 1 ] || exit 0
 tool="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
 [ -n "$tool" ] || { echo "appimagetool not found: set APPIMAGETOOL or use --no-appimage" >&2; exit 1; }
