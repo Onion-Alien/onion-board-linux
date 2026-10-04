@@ -4,7 +4,8 @@
   case-insensitive environment) are skipped off Windows, each with its reason; what
   those modules do on Linux is tested in tests/test_linux_*.py
 - the Linux versions of conftest's "never touch the real thing" guards: real MIDI
-  devices, the real autostart folder, the real sound server (cable, device list)"""
+  devices, the real autostart folder, the real sound server (a stand-in with
+  speakers, a mic and the cable answers instead)"""
 import sys
 
 import pytest
@@ -97,6 +98,34 @@ def _alive(pid: int) -> bool:
         return False
 
 
+STAND_IN_SINKS = """Sink #1
+\tName: test_speakers
+\tDescription: Speakers
+\tSample Specification: float32le 2ch 48000Hz
+Sink #4
+\tName: onionboard_cable
+\tDescription: Onion Board Cable Input
+\tSample Specification: float32le 2ch 48000Hz
+"""
+STAND_IN_SOURCES = """Source #2
+\tName: test_speakers.monitor
+\tDescription: Monitor of Speakers
+\tSample Specification: float32le 2ch 48000Hz
+\tMonitor of Sink: test_speakers
+Source #3
+\tName: test_mic
+\tDescription: Microphone
+\tSample Specification: float32le 1ch 48000Hz
+\tMonitor of Sink: n/a
+Source #5
+\tName: onionboard_cable_out
+\tDescription: Onion Board Cable Output
+\tSample Specification: float32le 2ch 48000Hz
+\tMonitor of Sink: n/a
+"""
+STAND_IN_INFO = "Default Sink: test_speakers\nDefault Source: test_mic\n"
+
+
 @pytest.fixture(autouse=True)
 def _linux_never_touches_the_real_desktop(monkeypatch, tmp_path):
     if sys.platform == "win32":
@@ -131,7 +160,12 @@ def _linux_never_touches_the_real_desktop(monkeypatch, tmp_path):
     from soundboard.linux import audio
     REAL.setdefault("audio_pactl", audio._pactl)
     monkeypatch.setattr(vcable, "_pactl", lambda *a: None)
-    monkeypatch.setattr(audio, "_pactl", lambda *a: "")
+    # a set-up machine's sound server: speakers, a mic and the Onion Board cable;
+    # streams on them reach conftest's silent stream, PortAudio's index 0
+    answers = {("list", "sinks"): STAND_IN_SINKS, ("list", "sources"): STAND_IN_SOURCES,
+               ("info",): STAND_IN_INFO}
+    monkeypatch.setattr(audio, "_pactl", lambda *a: answers.get(a, ""))
+    monkeypatch.setattr(audio, "_pcm_index", lambda: 0)
     monkeypatch.setattr(audio, "_devices", None)
     yield
 

@@ -23,8 +23,12 @@ its end, so importing it at the top would get a half-loaded copy.
 `~/.local/share/OnionBoard` without touching those modules.
 
 Upstream: `git remote add upstream https://github.com/Onion-Alien/onion-board.git`
-(push to it is disabled in the working copy), then `git fetch upstream main &&
-git merge upstream/main`.
+(set its push URL to something invalid, e.g. `git remote set-url --push upstream
+DISABLED`: nothing of the port goes public before launch), then
+`git fetch upstream main && git merge upstream/main`. The first release merged this
+way (21 commits, 35 files) went in with no conflicts. After a merge, grep the new
+upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`,
+`.exe`, `CREATE_NO_WINDOW`) and give anything new a Linux hook.
 
 ## Done
 
@@ -44,6 +48,7 @@ git merge upstream/main`.
 | Audio devices | the sound server's devices by name (`pactl`); each stream opens on PortAudio's `pulse` device aimed with `PULSE_SINK` / `PULSE_SOURCE`; shows as "Onion Board" in volume mixers. Verified end to end on PipeWire. See `docs/LINUX-AUDIO-SPIKE.md` | `linux/audio.py`, `linux/engine.py` |
 | Apps tab and instant replay | PipeWire: each program's stream nodes (`pw-dump`) recorded with `pw-record --target`, several mixed; "everything but Onion Board" for replay. Verified on PipeWire. No per-program level meters on Linux (rows show playing / quiet) | `linux/appaudio.py` |
 | Virtual cable | made by the app: "Onion Board Cable Input" → "Onion Board Cable Output" (VB-Cable's naming, so the cable detection already works); pactl now, PipeWire drop-in / default.pa for every login | `linux/vcable.py` (not wired into the UI yet) |
+| Packaging | `build-linux.sh`: PyInstaller → `--selftest` → AppImage (`scripts/make_appdir.py`: AppRun, .desktop, icon painted by the app). Built and self-tested here (266 MB untrimmed); CI builds it on Ubuntu 22.04 and uploads it as an artifact | `build-linux.sh`, `scripts/make_appdir.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server | |
 | CI | `.github/workflows/linux.yml` (Ubuntu 24.04, Xvfb with keymap) | |
@@ -54,10 +59,10 @@ git merge upstream/main`.
    check plugging a headset in and out with the app running, a device that vanishes
    mid-stream (PipeWire may move the stream to the default device), and plain
    PulseAudio (only PipeWire was tested).
-2. **Setup guide and the cable in the UI.** The VB-Cable install step becomes "Make the
-   virtual cable" (`vcable.install()`), its restart / permission steps go, Discord's
-   input becomes "Onion Board Cable Output". `tests/platform_hooks.py` lists the
-   VB-Cable tests skipped until then.
+2. **Setup guide, the rest.** The cable buttons already make the cable
+   (`linux/ui.py`); still Windows-worded: the guide's cable page text ("a free
+   add-on"), the Discord page, the Steam help. Try the whole guide once on a real
+   desktop (`python -m soundboard`, after asking: it opens windows).
 3. **Wording.** ~70 strings say "Windows" (Start with Windows, Windows voices, Task
    Manager…). Plan: one table of Windows → Linux wording applied in one place, not
    edits all over the upstream files.
@@ -65,9 +70,10 @@ git merge upstream/main`.
    (`speech/winvoices.py`), shell icon / taskbar (`shellicon.py`), the VB-Cable 48 kHz
    fix (`cableformat.py`), `voicesdk.py` (use `/proc/<pid>/exe`; Proton games are
    Windows exes, so the checks mostly still apply).
-5. **Packaging**: PyInstaller on Linux → AppImage built on Ubuntu 22.04 in CI
-   (`--selftest` after), a Linux `prune_build.py`, self-update replacing the AppImage
-   (`updates.py`), `live-voice` add-on `install.sh`.
+5. **Packaging, the rest**: a Linux `prune_build.py` (ELF `NEEDED` instead of
+   pefile; keep `libqxcb`, `libqwayland-*`, `libqoffscreen`; PySide6 is 522 of the
+   704 MB), self-update replacing the AppImage file (`updates.py`, a Linux asset name),
+   the `live-voice` add-on's `install.sh`, and the README / website download button.
 6. **Wayland without XWayland**: the GlobalShortcuts portal for hotkeys; the overlay is
    X11 / XWayland only.
 
