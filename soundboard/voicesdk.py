@@ -231,3 +231,7 @@ class Watcher:
 
 __all__ = ["NAMES", "ORDER", "SIGNATURES", "Watcher", "engine_of_files", "foreground_process",
            "install_root", "scan"]
+
+
+if __import__("sys").platform != "win32":   # Linux: the X11 window in front, Proton games
+    from soundboard.linux.voicesdk import *  # noqa: E402,F403

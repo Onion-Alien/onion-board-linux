@@ -26,7 +26,10 @@ Upstream: `git remote add upstream https://github.com/Onion-Alien/onion-board.gi
 (set its push URL to something invalid, e.g. `git remote set-url --push upstream
 DISABLED`: nothing of the port goes public before launch), then
 `git fetch upstream main && git merge upstream/main`. The first release merged this
-way (21 commits, 35 files) went in with no conflicts. After a merge, grep the new
+way (21 commits, 35 files) went in with no conflicts; 1.6.5 (21 commits, with
+importing from other soundboards) had three small ones: the README's code layout
+moved to `docs/CODE.md` (the `soundboard/linux/` row went with it) and two test
+fixes upstream made the same way. After a merge, grep the new
 upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`,
 `.exe`, `CREATE_NO_WINDOW`) and give anything new a Linux hook. New "Windows" text
 fails `tests/test_linux_wording.py`, which lists each string: reword it in
@@ -56,10 +59,13 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Custom voices | Piper's Linux download (`piper/piper` in the voices folder, exec bit given back if lost) or `piper` on PATH; the folder's README in Linux terms | `linux/customvoices.py` |
 | Add-ons (live voice) | the add-on's environment is `.venv/bin/python`; inside the AppImage (read-only, a new mount each run) it lives in `~/.local/share/OnionBoard/envs/<add-on>`, so its code comes from the running version and its packages survive updates. Made from the newest `python3` ≥ 3.11 on PATH. `modules/live-voice/install.sh` is the fallback. The build ships the add-ons and the licence files: `scripts/linux_notices.py` adds jeepney and, via dpkg, each bundled system library's package and copyright file | `linux/modules.py`, `build-linux.sh`, `scripts/linux_notices.py` |
 | Self-update | the release's `OnionBoard-x86_64.AppImage` (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
+| Import from other soundboards | Soundux for Linux's own config (`~/.config/Soundux`, or its Flatpak's), its hotkeys X key codes turned into Windows ones; EXP Soundboard's last board from Java's preferences file; Soundpad and Resanance (and Soundux for Windows) in Wine / Proton prefixes (`$WINEPREFIX`, `~/.wine`, Steam's `compatdata`). A board's Windows paths are found here: `\` turned into `/`, `Z:` is `/`, another drive is that drive in the board's own prefix (else `$WINEPREFIX` / `~/.wine`); a file's name comes out right even when it's missing | `linux/otherboards.py`, `linux/soundux.py`, `linux/expboard.py`, `linux/wine.py` |
+| Voice engine suggestion | *Who's listening* suggests the game in front's voice engine: the X11 active window (`_NET_ACTIVE_WINDOW`, so games under XWayland too) → `_NET_WM_PID` → a Proton / Wine game's .exe from its command line (`Z:\` is `/`, another drive in its `WINEPREFIX`), a native program's `/proc/<pid>/exe`; the scan is upstream's. Desktop and Wine programs (`/usr`, `C:\windows`) don't count. A native libvivoxsdk.so isn't looked for; Wayland windows give nothing | `linux/voicesdk.py`, `linux/x11.py`, `linux/ui.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
-| Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server | |
+| Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server. Upstream's suite runs on 4 workers (pytest-xdist); each test's Xvfb picks a free display itself (`-displayfd`) and each dbus-daemon has its own address, so workers never share one | |
 | Dependencies | `requirements-linux.txt` = `requirements.txt` + jeepney (kept apart so upstream merges never touch `requirements.txt`) | |
-| CI | `.github/workflows/linux.yml`: tests on Ubuntu 24.04 (Xvfb with keymap), the AppImage on 22.04. `checks.yml` runs the Windows tests | |
+| CI | `.github/workflows/linux.yml`: tests on Ubuntu 24.04 (Xvfb with keymap), the AppImage on 22.04, and on a published release the AppImage attached to it. `checks.yml` runs the Windows tests | |
+| Download links | README (*Download*, *On Linux*) and the website: `releases/latest/download/OnionBoard-x86_64.AppImage` | `README.md`, `docs/index.html` |
 
 ## Next, in order
 
@@ -73,12 +79,12 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 3. **Wayland without XWayland, on a real desktop**: try the portal hotkeys on KDE
    Plasma and GNOME 48+ (first bind shows the desktop's dialog; check hold-to-play
    and a changed set of hotkeys). The overlay is X11 / XWayland only.
-4. **Release**: a release needs `OnionBoard-x86_64.AppImage` attached next to
-   `OnionBoardSetup.exe` (the self-update looks for that name), and the README /
-   website download button.
-5. **Smaller**: the voice engine suggestion (`voicesdk.py`) is off on Linux: it
-   could use the X11 active window's `_NET_WM_PID` and, for Proton games, the
-   Windows exe in `/proc/<pid>/cmdline`. Settings' "Virtual cable download" switch
+4. **Release**: ready for the first one after launch. Publishing a release runs
+   `linux.yml`, which builds the AppImage from the tag and attaches it as
+   `OnionBoard-x86_64.AppImage` (job `release`); the README and the website link
+   `releases/latest/download/OnionBoard-x86_64.AppImage`, and DEVELOPING.md's release
+   steps say so. Not yet tried on a real release (this repo has none).
+5. **Smaller**: Settings' "Virtual cable download" switch
    does nothing on Linux (its text says so); it could be hidden. A frozen copy that
    can't update itself (a folder build, an AppImage in a read-only folder) says it
    "runs from source".
@@ -124,6 +130,9 @@ cable it made away again.
 ```
 python -m pytest                      # QT_QPA_PLATFORM=offscreen comes from conftest
 ```
+
+The whole suite runs on 4 workers (pytest-xdist, `-n auto` in pyproject, about 75 s
+here); one or two files run in one process; `-n 0` turns the workers off.
 
 As root (containers), Chromium needs `QTWEBENGINE_DISABLE_SANDBOX=1` or the radio
 globe test aborts the run. A machine whose own `https_proxy` / `no_proxy` are set can
