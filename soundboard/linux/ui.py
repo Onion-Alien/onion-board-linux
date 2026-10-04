@@ -8,7 +8,8 @@ mic directly instead of walking the user through a control panel. The Voice tab
 never offers Windows' voice installs. The game watcher behind Who's listening's
 suggestion runs on X11 too (linux/voicesdk.py). Settings has no switch for the
 cable's download (there is none). The Triggers tab is hidden: Onion Watch has no Linux
-version yet. The overlay's "the one the game is on" follows the game on X11.
+version yet. The overlay's "the one the game is on" follows the game on X11, and its
+preview lets clicks through as on Windows.
 
 patch_main_window / patch_setup_wizard are called at the end of their modules,
 before any window exists, so the buttons connect to these versions.
@@ -95,8 +96,26 @@ def patch_overlay(cls):
         return orig_screen(self, follow_game)
 
     cls._screen = _screen
+    from soundboard.ui.overlay import Overlay
+    patch_overlay_preview(Overlay)
 
 
+def patch_overlay_preview(cls):
+    """Show preview lets clicks through to what's under it while it's up (it's only
+    to look at); upstream does that with a Windows window style. Here it's Qt's own
+    flag on the window: an empty input shape on X11, an empty input region on
+    Wayland."""
+    orig = cls._set_previewing
+
+    def _set_previewing(self, on: bool):
+        from PySide6.QtCore import Qt
+        orig(self, on)
+        w = self._window
+        h = w.windowHandle() if w is not None else None
+        if h is not None:
+            h.setFlag(Qt.WindowTransparentForInput, self._previewing)
+
+    cls._set_previewing = _set_previewing
 
 
 def patch_speech_panel(cls):

@@ -140,3 +140,102 @@ def test_no_triggers_tab_until_onion_watch_runs_on_linux(window, qapp):
     for _ in range(5):
         qapp.processEvents()
     assert "Onion Watch" not in w.status.text()
+
+
+class _OverlayHost:
+    def __init__(self):
+        from soundboard.library import Config
+        self.cfg = Config()
+        self.audio = {}
+        self.registered = 0
+
+    def register_hotkeys(self):
+        self.registered += 1
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def test_overlay_preview_lets_clicks_through(qapp, monkeypatch):
+    """Show preview is only to look at: upstream makes it click-through with a Windows
+    window style, here it's Qt's flag, while the preview is up and no longer."""
+    from PySide6.QtCore import Qt
+    from soundboard import winkeys
+    from soundboard.ui import mainwindow  # noqa: F401  (applies the Linux patches)
+    from soundboard.ui.overlay import Overlay
+    monkeypatch.setattr(winkeys, "exclusive_fullscreen", lambda: False)
+    ov = Overlay(_OverlayHost(), None)
+    try:
+        def through():
+            return bool(ov.window.windowHandle().flags() & Qt.WindowTransparentForInput)
+        ov.preview(30)
+        assert ov.window.isVisible() and through()
+        ov._end_preview()
+        assert not through()
+        ov.preview(30)
+        ov.open()            # the real overlay takes clicks
+        assert ov.is_open and not through()
+    finally:
+        ov.shutdown()
+
+
+XCB_CHECK = r"""
+import ctypes, sys, time
+from PySide6.QtWidgets import QApplication
+app = QApplication([])
+from soundboard import winkeys
+from soundboard.ui import mainwindow
+from soundboard.ui.overlay import Overlay
+sys.path.insert(0, "tests")
+from test_linux_ui import _OverlayHost
+winkeys.exclusive_fullscreen = lambda: False
+X, Xe = ctypes.CDLL("libX11.so.6"), ctypes.CDLL("libXext.so.6")
+X.XOpenDisplay.restype = ctypes.c_void_p
+Xe.XShapeGetRectangles.restype = ctypes.c_void_p
+d = ctypes.c_void_p(X.XOpenDisplay(None))
+ov = Overlay(_OverlayHost(), None)
+
+def input_rects():
+    for _ in range(10):
+        app.processEvents()
+        time.sleep(0.02)
+    X.XSync(d, 0)
+    n, order = ctypes.c_int(), ctypes.c_int()
+    Xe.XShapeGetRectangles(d, ctypes.c_ulong(int(ov.window.winId())), 2,  # ShapeInput
+                           ctypes.byref(n), ctypes.byref(order))
+    return n.value
+ov.preview(30)
+during = input_rects()
+ov._end_preview()
+print("RECTS", during, input_rects())
+ov.shutdown()
+"""
+
+
+def test_overlay_preview_has_no_input_shape_on_x11(tmp_path):
+    """On a real X server (a private Xvfb): while the preview is up its window has an
+    empty input shape, so a click goes to the window under it; then it's whole again."""
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+    if not shutil.which("Xvfb"):
+        pytest.skip("needs Xvfb")
+    from xvfb import start_xvfb
+    proc, n = start_xvfb()
+    try:
+        root = Path(__file__).resolve().parent.parent
+        env = {**os.environ, "DISPLAY": f":{n}", "QT_QPA_PLATFORM": "xcb",
+               "APPDATA": str(tmp_path), "XDG_DATA_HOME": str(tmp_path),
+               "XDG_CONFIG_HOME": str(tmp_path)}
+        r = subprocess.run([sys.executable, "-c", XCB_CHECK], cwd=root, env=env,
+                           capture_output=True, text=True, timeout=60)
+    finally:
+        proc.kill()
+        proc.wait()
+    if "could not load the Qt platform plugin" in r.stderr.lower():
+        pytest.skip("Qt's xcb plugin can't load here (libxcb-icccm4 / -keysyms1)")
+    line = [s for s in r.stdout.splitlines() if s.startswith("RECTS")]
+    assert line, r.stderr[-2000:]
+    during, after = map(int, line[0].split()[1:])
+    assert during == 0 and after >= 1
