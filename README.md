@@ -1,10 +1,13 @@
 # Onion Board
 
-A free soundboard for Windows. Press a pad or a hotkey, even in-game, and **your
+A free soundboard for Windows and Linux. Press a pad or a hotkey, even in-game, and **your
 friends in Discord or your game hear the sound through your mic**, with your voice
 or without it.
 
 ## ⬇️ [Download Onion Board for Windows](../../releases/latest/download/OnionBoardSetup.exe)
+
+🐧 **Linux**: [download the AppImage](../../releases/latest/download/OnionBoard-x86_64.AppImage)
+(64-bit PC, any distribution from Ubuntu 22.04 on; see [On Linux](#on-linux))
 
 <!-- release -->
 Version **1.6.5** · Windows 10 / 11 · free, no account, no ads, no tracking ·
@@ -51,6 +54,15 @@ The full list is in [docs/FEATURES.md](docs/FEATURES.md).
 > **Windows or your browser may warn you.** That's normal for a free app that isn't
 > code-signed (that costs hundreds a year). Edge / Chrome: **⋯ → Keep**. Blue
 > *"Windows protected your PC"* box: **More info → Run anyway**.
+
+### On Linux
+
+Make the AppImage runnable (`chmod +x OnionBoard-x86_64.AppImage`, or *Properties →
+Allow executing* in your file manager) and start it; it updates itself from then on.
+Bun's guide makes the virtual cable in one click (nothing to install), and in Discord
+or your game the microphone is **`Onion Board Cable Output`**. Hotkeys work on X11
+and in games under XWayland; on a Wayland desktop with no X, KDE Plasma and GNOME 48+
+ask you once to allow them. Your sounds and settings live in `~/.local/share/OnionBoard/`.
 
 ### Something's not right?
 
