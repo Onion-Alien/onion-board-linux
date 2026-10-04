@@ -21,7 +21,8 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends \
             libportaudio2 libsndfile1 libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
             libfontconfig1 libglib2.0-0t64 libdbus-1-3 libnss3 libxcomposite1 libxdamage1 \
-            libxrandr2 libxtst6 libxkbfile1 libasound2t64 libxcb-cursor0 xvfb ffmpeg
+            libxrandr2 libxtst6 libxkbfile1 libasound2t64 libxcb-cursor0 ffmpeg \
+            xvfb xkb-data x11-xkb-utils   # Xvfb needs its keymap for the hotkey tests
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: ruff check .
       - run: python -m pytest

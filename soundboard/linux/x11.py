@@ -141,6 +141,26 @@ def _on_error(_dpy, ev):
 
 
 _handler = _ErrorHandler(_on_error)   # kept alive for the process
+_IOExitHandler = ctypes.CFUNCTYPE(None, c_void_p, c_void_p)
+lost: set[int] = set()     # displays whose X server went away
+
+
+def _on_io_exit(dpy, _user):
+    # Xlib's default here is exit(): a vanished X server (a logout, a test's Xvfb)
+    # must not take the app with it. The connection is just marked lost.
+    lost.add(dpy or 0)
+
+
+_io_handler = _IOExitHandler(_on_io_exit)
+_IOErrorHandler = ctypes.CFUNCTYPE(c_int, c_void_p)
+
+
+def _on_io_error(dpy):
+    lost.add(dpy or 0)   # the default prints "XIO: fatal IO error" and exits
+    return 0
+
+
+_io_error = _IOErrorHandler(_on_io_error)
 
 
 def lib():
@@ -177,6 +197,12 @@ def lib():
             x.XSetErrorHandler.argtypes = [_ErrorHandler]
             x.XInitThreads()
             x.XSetErrorHandler(_handler)
+            x.XSetIOErrorHandler.restype = c_void_p
+            x.XSetIOErrorHandler.argtypes = [_IOErrorHandler]
+            _set_io_exit = getattr(x, "XSetIOErrorExitHandler", None)   # libX11 1.7+
+            if _set_io_exit is not None:
+                _set_io_exit.argtypes = [c_void_p, _IOExitHandler, c_void_p]
+                x.XSetIOErrorHandler(_io_error)   # only safe with an exit handler to follow
             _lib = x
         return _lib or None
 
@@ -208,11 +234,18 @@ class Display:
         self.dpy = x.XOpenDisplay(None) if x is not None and os.environ.get("DISPLAY") else None
         if not self.dpy:
             raise OSError("no X display")
+        if hasattr(x, "XSetIOErrorExitHandler"):
+            x.XSetIOErrorExitHandler(self.dpy, _io_handler, None)
         self.root = x.XDefaultRootWindow(self.dpy)
+
+    @property
+    def alive(self) -> bool:
+        return bool(self.dpy) and self.dpy not in lost
 
     def close(self):
         if self.dpy:
-            self.x.XCloseDisplay(self.dpy)
+            if self.dpy not in lost:
+                self.x.XCloseDisplay(self.dpy)
             self.dpy = None
 
     def keycode(self, vk: int) -> int:

@@ -5,7 +5,9 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
@@ -28,9 +30,19 @@ def xserver():
     old = os.environ.get("DISPLAY")
     os.environ["DISPLAY"] = f":{n}"
     from soundboard.linux import keys
-    keys._display = None
+    keys.close_shared()
+    made = []
+    real = keys.Hotkeys.__init__
+
+    def tracked(self, *a, **k):   # every Hotkeys made here lets go before Xvfb ends
+        made.append(self)
+        real(self, *a, **k)
+    keys.Hotkeys.__init__ = tracked
     yield f":{n}"
-    keys._display = None
+    keys.Hotkeys.__init__ = real
+    for hk in made:
+        hk.stop(wait=2)
+    keys.close_shared()
     if old is None:
         os.environ.pop("DISPLAY", None)
     else:
@@ -156,3 +168,39 @@ def test_event_vk_uses_the_unshifted_key(qapp, xserver):
     kc1 = d.keycode(winkeys.VK["1"])
     assert winkeys.event_vk(E(kc1, 0x21)) == winkeys.VK["1"]   # Shift+1 reports "!"
     assert winkeys.event_vk(E(0, 0xFFC6)) == winkeys.VK["f9"]  # keysym fallback
+
+
+def test_the_x_server_going_away_doesnt_end_the_app(qapp, tmp_path):
+    """Xlib exits the process when its X server vanishes; the app must carry on (a
+    logout, or this test's own Xvfb). Run in a child so a failure can't end pytest."""
+    script = tmp_path / "xgone.py"
+    script.write_text(textwrap.dedent(f"""
+        import os, subprocess, sys, time
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        n = int(sys.argv[1])
+        x = subprocess.Popen(["Xvfb", f":{{n}}", "-nolisten", "tcp"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        while not os.path.exists(f"/tmp/.X11-unix/X{{n}}"):
+            time.sleep(0.05)
+        os.environ["DISPLAY"] = f":{{n}}"
+        from PySide6.QtWidgets import QApplication
+        app = QApplication([])
+        from soundboard import winkeys
+        hk = winkeys.Hotkeys()
+        hk.register({{"f9": "x"}})
+        winkeys.is_down(0x41)            # the shared connection too
+        app.processEvents()
+        time.sleep(0.3)
+        x.kill(); x.wait()
+        time.sleep(0.5)
+        winkeys.is_down(0x41)
+        app.processEvents()
+        print("still here", flush=True)
+    """))
+    for n in range(121, 160):
+        if not os.path.exists(f"/tmp/.X11-unix/X{n}"):
+            break
+    out = subprocess.run([sys.executable, str(script), str(n)], capture_output=True,
+                         text=True, timeout=60)
+    assert "still here" in out.stdout, out.stderr[-2000:]

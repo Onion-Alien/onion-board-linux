@@ -34,7 +34,7 @@ def _w():
     from soundboard import winkeys
     return winkeys
 
-__all__ = ["Hotkeys", "event_vk", "key_char", "press", "release", "is_down",
+__all__ = ["Hotkeys", "close_shared", "event_vk", "key_char", "press", "release", "is_down",
            "exclusive_fullscreen", "foreground_monitor_info", "foreground_monitor",
            "make_overlay", "raise_topmost"]
 
@@ -62,8 +62,10 @@ class Hotkeys(QObject):
         self._quit = False
         self._alive = False
         self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
         if x11.available():
-            threading.Thread(target=self._loop, daemon=True, name="hotkeys").start()
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="hotkeys")
+            self._thread.start()
             if not self._ready.wait(2):
                 log.error("hotkey thread didn't start; global hotkeys won't work this session")
         else:
@@ -89,10 +91,13 @@ class Hotkeys(QObject):
     def pause(self):
         self.register({})
 
-    def stop(self):
+    def stop(self, wait: float = 0.0):
+        """Let every hotkey go; `wait` seconds for the thread to have done so."""
         self.midi.close_all()
         self._quit = True
         self._wake()
+        if wait and self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(wait)
 
     def _wake(self):
         try:
@@ -125,14 +130,14 @@ class Hotkeys(QObject):
             self._alive = True
             self._ready.set()
             fd = d.fileno()
-            while not self._quit:
+            while not self._quit and d.alive:
                 timeout = _w().HELD_POLL_MS / 1000 if held else None
                 if not d.pending():
                     r, _w2, _x = select.select([fd, self._wake_r], [], [], timeout)
                     if self._wake_r in r:
                         os.read(self._wake_r, 64)
                         self._apply(d, grabs)
-                while d.pending():
+                while d.alive and d.pending():
                     ev = d.next_event()
                     if ev.type == x11.KeyPress:
                         k = ev.xkey
@@ -141,7 +146,7 @@ class Hotkeys(QObject):
                         if hit and k.keycode not in held:
                             held[k.keycode] = hit
                             self.fired.emit(hit[0])
-                if held:
+                if held and d.alive:
                     keymap = d.keymap()
                     for kc, (act, _vk) in list(held.items()):
                         if not keymap[kc >> 3] & (1 << (kc & 7)):
@@ -153,11 +158,12 @@ class Hotkeys(QObject):
         finally:
             self._alive = False
             self._ready.set()
-            for kc, mods in list(grabs):
-                try:
-                    d.ungrab(kc, mods)
-                except Exception:  # noqa: BLE001
-                    pass
+            if d.alive:
+                for kc, mods in list(grabs):
+                    try:
+                        d.ungrab(kc, mods)
+                    except Exception:  # noqa: BLE001
+                        pass
             d.close()
 
     def _apply(self, d: x11.Display, grabs: dict):
@@ -195,12 +201,23 @@ def _shared() -> x11.Display | None:
     """A connection for the UI thread's queries and key presses."""
     global _display
     with _display_lock:
+        if _display is not None and not _display.alive:
+            _display = None   # its X server went away: try a new one
         if _display is None and x11.available():
             try:
                 _display = x11.Display()
             except OSError:
                 _display = None
         return _display
+
+
+def close_shared():
+    """Close the UI thread's X connection (tests, before their X server goes)."""
+    global _display
+    with _display_lock:
+        if _display is not None:
+            _display.close()
+            _display = None
 
 
 def event_vk(e) -> int:
