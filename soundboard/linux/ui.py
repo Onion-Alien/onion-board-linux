@@ -5,7 +5,8 @@ restart). On Linux the app makes the cable itself in a moment (soundboard.linux.
 vcable): no download, so the "setup downloads" switch doesn't apply, no permission
 prompt, no restart. "Game has no microphone setting?" sets the cable as the default
 mic directly instead of walking the user through a control panel. The Voice tab
-never offers Windows' voice installs.
+never offers Windows' voice installs. The game watcher behind Who's listening's
+suggestion runs on X11 too (linux/voicesdk.py).
 
 patch_main_window / patch_setup_wizard are called at the end of their modules,
 before any window exists, so the buttons connect to these versions.
@@ -15,7 +16,7 @@ from __future__ import annotations
 import html
 import logging
 
-from soundboard.linux import vcable
+from soundboard.linux import vcable, x11
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,12 @@ def patch_main_window(cls):
         orig_init(self, *a, **k)
         if getattr(self, "btn_install", None) is not None:
             self.btn_install.setText("Make the virtual cable")
+        # the game in front's voice engine (linux/voicesdk.py): needs X11 / XWayland
+        if getattr(self, "voice_watch", 0) is None and x11.available():
+            from soundboard import voicesdk
+            from soundboard.ui import mainwindow
+            self.voice_watch = voicesdk.Watcher()
+            self._voice_timer.start(mainwindow.VOICE_POLL_MS)
 
     def install_cable(self):
         if vcable.install():

@@ -193,6 +193,12 @@ def lib():
             x.XQueryKeymap.argtypes = [c_void_p, c_char * 32]
             x.XkbSetDetectableAutoRepeat.argtypes = [c_void_p, c_int, POINTER(c_int)]
             x.XUngrabKeyboard.argtypes = [c_void_p, c_ulong]
+            x.XInternAtom.restype = c_ulong
+            x.XInternAtom.argtypes = [c_void_p, c_char_p, c_int]
+            x.XGetWindowProperty.argtypes = [
+                c_void_p, c_ulong, c_ulong, c_long, c_long, c_int, c_ulong, POINTER(c_ulong),
+                POINTER(c_int), POINTER(c_ulong), POINTER(c_ulong), POINTER(c_void_p)]
+            x.XFree.argtypes = [c_void_p]
             x.XSetErrorHandler.restype = c_void_p
             x.XSetErrorHandler.argtypes = [_ErrorHandler]
             x.XInitThreads()
@@ -304,6 +310,25 @@ class Display:
 
     def fileno(self) -> int:
         return self.x.XConnectionNumber(self.dpy)
+
+    def cardinals(self, window: int, prop: str) -> list[int]:
+        """A window's 32-bit property (CARDINAL / WINDOW, e.g. _NET_WM_PID) as numbers;
+        [] when it has none (or the window is gone: the error handler takes BadWindow)."""
+        atom = self.x.XInternAtom(self.dpy, prop.encode(), 1)
+        if not atom:
+            return []
+        kind, fmt, n, after, data = c_ulong(), c_int(), c_ulong(), c_ulong(), c_void_p()
+        if self.x.XGetWindowProperty(self.dpy, window, atom, 0, 64, 0, 0, byref(kind),
+                                     byref(fmt), byref(n), byref(after), byref(data)) != 0:
+            return []
+        try:
+            if fmt.value != 32 or not data.value:
+                return []
+            # format 32 comes back as C longs, whatever their size
+            return [v & 0xFFFFFFFF for v in (c_long * n.value).from_address(data.value)]
+        finally:
+            if data.value:
+                self.x.XFree(data)
 
     def detectable_autorepeat(self):
         ok = c_int(0)
