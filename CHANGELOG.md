@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **No virtual cable needed: send your sounds anywhere.** Setup → Devices (and
+  Settings → Audio → Devices) has **Send to others through**: *The virtual cable*
+  (as before), *Another device* (Voicemeeter, a mixer, a capture card, a second
+  sound card or any output OBS captures) or *Nowhere* (only you hear them, plus the
+  stream output). With another device, Onion Board sends into the one you pick and
+  never swaps the cable back in, stops asking you to install the cable, and the
+  header pill turns green once it's sending (*Sending to: …*); the Setup tab says
+  how to pick it up in OBS. *Nowhere* is for streamers whose OBS takes the sounds
+  from Desktop Audio or the stream output: nothing goes out as a mic, and nothing
+  nags. The setup guide's cable step has the same choice (*I don't use the
+  cable*). The send device can't be your headphones (you'd hear everything twice,
+  your own voice included), and *Nowhere* frees the cable to be the stream output.
+  While nothing goes out to others, the header's Live switch says so (*Only you
+  hear sounds*, or *Live — stream output only*) instead of *others hear you*.
+- **Watch a pad's video:** a sound made from a video file, or from a link added
+  with *Also save the video* on, now has a **Video** button in the player. It
+  opens the video in its own window, in step with the sound: it plays, pauses,
+  seeks and speeds up with it. The sound still goes out as normal; the video is
+  only on your screen. Older versions of the app leave the links alone.
+- **Settings → About:** the version, links to the website, source and license,
+  ways to get in touch (feedback form, bug report, private security report), a
+  note from the author, and the fine print in plain words. Instant replay's
+  hotkey hint now also says to only keep clips of people who are fine with it.
 - **Send feedback opens a form that needs no account:** Settings → Add-ons &
   help → Send feedback now opens a short form with your version filled in,
   instead of a GitHub bug report. The app still sends nothing itself.
@@ -69,11 +92,10 @@
   are gone.
 - **A smaller download: only the part of scipy that's used ships.** The app's own
   code no longer uses scipy, and the Triggers tab (Onion Watch) needs only its FFTs,
-  so the build bundles scipy.fft and leaves out the rest (signal, ndimage, stats,
-  optimize and the others): the installer is about 16 MB smaller (198 → 182 MB)
-  and the installed app 35 MB. The Triggers tab needs an Onion Watch newer than
-  0.5.6: 0.5.6 and older use scipy.ndimage and won't load (*Get Onion Watch*
-  fetches the newest). Its matcher is also a little quicker: 50 pictures are
+  so the build bundles scipy.fft, plus scipy.ndimage for Onion Watch 0.5.6, and
+  leaves out the rest (signal, stats, optimize and the others): the installer is
+  about 15 MB smaller and the installed app over 30 MB. Onion Watch 0.5.6 keeps
+  working as it is. Its matcher is also a little quicker: 50 pictures are
   checked about every 300 ms at its 1% CPU share. Third-party effects modules that
   import other parts of scipy have to bring their own replacement; numpy, soxr and
   scipy.fft are still there.

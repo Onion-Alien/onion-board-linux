@@ -17,7 +17,7 @@ import numpy as np
 import sounddevice as sd
 from PySide6.QtCore import (QEvent, QFileSystemWatcher, QObject, QPropertyAnimation, QSize, Qt,
                             QTimer, QUrl, Signal)
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
@@ -29,7 +29,7 @@ from soundboard import theme, winkeys, ytdl
 from soundboard.engine import SR, Engine
 from soundboard.engine import is_virtual as is_virtual_cable
 from soundboard import (appaudio, autostart, backup, destination, library, midi, remote,
-                        soundfx, thumbs, trash, updates, voicesdk)
+                        soundfx, thumbs, trash, updates, videos, voicesdk)
 from soundboard import net, netlog, quality, shellicon, tor, watchaddon
 from soundboard.replay import InstantReplay
 from soundboard.library import (AUDIO_EXTS, PAD_COLORS, RESOURCE_DIR, Config, SoundMeta,
@@ -49,6 +49,7 @@ from soundboard.ui.panel import (EqPanel, VolumeControl, bar, card, hint_label, 
 from soundboard.ui.linkbar import PLAY_ID as LINK_ID
 from soundboard.ui.linkbar import LinkBar
 from soundboard.ui.livedot import is_tab_live, set_tab_live
+from soundboard.ui.livedot import set_tint as set_live_tint
 from soundboard.ui.logowidget import LogoWidget, glow_icon
 from soundboard.ui.ytsearch import SearchResults
 from soundboard.ui.padbatch import PadSelection
@@ -98,6 +99,27 @@ QUEUE_CHIPS = 5          # queued sounds shown by name above the pads (then "+n 
 RANDOM = "__random__:"   # hotkey action prefix: a random sound from the category after it
 ALL = "All"          # the category tab that shows every sound
 VOICE_POLL_MS = 3000  # how often the game in front is looked at (soundboard.voicesdk)
+# Setup -> Devices -> Send to others through (Config.route, library.ROUTES)
+ROUTE_CHOICES = (("The virtual cable (Discord, games)", "cable"),
+                 ("Another device (Voicemeeter, OBS, a mixer…)", "device"),
+                 ("Nowhere: only me (and the stream output)", "off"))
+
+
+class StatusLine(QLabel):
+    """The status message under the mixer. Hidden while there's nothing to say, so
+    the window doesn't keep an empty row at the bottom, and while the window is too
+    short for it (set_room)."""
+
+    room = True
+
+    def setText(self, text: str):
+        super().setText(text)
+        self.setVisible(self.room and bool(text))
+
+    def set_room(self, compact: bool):
+        self.room = not compact
+        self.setVisible(self.room and bool(self.text()))
+        responsive.touch(self)
 
 
 class Bridge(QObject):
@@ -400,9 +422,10 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(self.cfg.tab if 0 <= self.cfg.tab < self.tabs.count() else 0)
         self.tabs.currentChanged.connect(lambda i: self.set_option("tab", i))
         self.tabs.currentChanged.connect(lambda _i: self._update_status())
-        # a glowing dot (and a green name) on a tab while its feature is live — the
-        # voice changer, a radio station, a program being sent, the screen watched —
-        # so it's never left on without you noticing
+        # a green badge on a tab's icon (and, if picked in Settings, a green wash) while
+        # its feature is live — the voice changer, a radio station, a program being
+        # sent, the screen watched — so it's never left on without you noticing
+        set_live_tint(self.tabs, self.cfg.live_tab_tint)
         vi = self.tabs.indexOf(self.voice)
         self.voice.active_changed.connect(lambda on: set_tab_live(
             self.tabs, vi, on, "● ON: others hear your changed / computer voice",
@@ -435,9 +458,10 @@ class MainWindow(QMainWindow):
         self.voice.fx.tip_dismissed.connect(
             lambda: self.set_option("voice_discord_tip_shown", True))
 
-        self.status = QLabel()
+        self.status = StatusLine()
         self.status.setWordWrap(True)
         self.status.setObjectName("muted")
+        self.status.hide()
         rv.addWidget(self.status)
         self._pages.addWidget(self._build_mini())
 
@@ -717,6 +741,10 @@ class MainWindow(QMainWindow):
         # ---- "3 selected · Colour · Volume… · Delete": Ctrl / Shift+click picks pads
         self.selection = PadSelection(self, scroll)
         left.addWidget(self.selection.bar)
+        # Ctrl+V with a copied picture: it goes on the selected pad (or the picked ones)
+        paste = QShortcut(QKeySequence.Paste, scroll)
+        paste.setContext(Qt.WidgetWithChildrenShortcut)
+        paste.activated.connect(self.paste_picture)
 
         # ---- "now playing" chips: shown while 2+ sounds overlap, so every one of
         # them can be stopped (■) or taken into the player (name) without clicking
@@ -788,6 +816,16 @@ class MainWindow(QMainWindow):
         th.addWidget(self.np_name)
         th.addWidget(self.seek, 1)
         th.addWidget(self.np_time)
+        # only for a pad made from a video (soundboard.videos): shows it in step
+        self.btn_video = QPushButton("Video")
+        self.btn_video.setToolTip("Watch this sound's video while it plays. The sound "
+                                  "still goes out as normal; the video is only for you.")
+        icons.set_icon(self.btn_video, "video", size=16)
+        self.btn_video.clicked.connect(self.show_video)
+        self.btn_video.hide()
+        self._video_for: tuple[str | None, Path | None] = ("", None)   # (sid, its video)
+        self._video_win = None   # ui/videowindow.VideoWindow, made on first use
+        th.addWidget(self.btn_video)
         self.speed_btn = SpeedPitchButton(
             "sounds", "Changes every sound while it plays. To save a version, "
                       "right-click a pad → Effects.")
@@ -924,16 +962,17 @@ class MainWindow(QMainWindow):
         page.setFrameShape(QFrame.NoFrame)
         inner = QWidget()
         cols = self._setup_cols = QHBoxLayout(inner)
-        cols.setContentsMargins(0, 10, 4, 10)
-        cols.setSpacing(12)
+        cols.setContentsMargins(4, 12, 8, 12)
+        cols.setSpacing(16)
         lcol, rcol = QVBoxLayout(), QVBoxLayout()
         for col in (lcol, rcol):
-            col.setSpacing(12)
+            col.setSpacing(16)
             cols.addLayout(col, 1)
         page.setWidget(inner)
 
         # ---- how it works + the one thing to set in Discord
-        howcard, cv = card("YOUR VIRTUAL MIC")
+        howcard, cv = card("YOUR VIRTUAL MIC", roomy=True)
+        self.how_title = cv.itemAt(0).widget()   # renamed when not using the cable
         self.flow_mic = QLabel()
         self.flow_snd = QLabel("Your sounds, radio and voice effects")
         arrow = QLabel("↓   the app mixes them together")
@@ -965,39 +1004,53 @@ class MainWindow(QMainWindow):
         self.btn_rescan.clicked.connect(lambda: self.rescan_with_feedback(self.btn_rescan))
         icons.set_icon(self.btn_rescan, "reload")
         cv.addWidget(self.btn_rescan)
+        helpcard, hv = card("CONNECT YOUR CHAT",
+                            "Choose your app for the recommended microphone settings.", roomy=True)
         self.btn_chat = QPushButton("Make it sound clean in Discord")
         self.btn_chat.setToolTip("The Discord settings that stop it chopping up your sounds, "
                                  "and a check that listens to what Discord does to them")
         icons.set_icon(self.btn_chat, "headphones")
         self.btn_chat.clicked.connect(lambda: self.show_chat_guide("discord"))
-        cv.addWidget(self.btn_chat)
-        self.btn_game = QPushButton("…or in a game's voice chat")
+        hv.addWidget(self.btn_chat)
+        self.btn_game = QPushButton("Set up game voice chat")
         self.btn_game.clicked.connect(lambda: self.show_chat_guide("game"))
-        cv.addWidget(self.btn_game)
+        hv.addWidget(self.btn_game)
         self.btn_nomic = QPushButton("Game has no microphone setting?")
         self.btn_nomic.clicked.connect(self.open_windows_mic)
-        cv.addWidget(self.btn_nomic)
+        hv.addWidget(self.btn_nomic)
         guide = QPushButton("Step-by-step guide")
         guide.setToolTip("Walks you through mic, headphones, the cable and Discord")
         icons.set_icon(guide, "check")
         guide.clicked.connect(self.run_setup)
-        cv.addWidget(guide)
+        hv.addWidget(guide)
         lcol.addWidget(howcard)
+        lcol.addWidget(helpcard)
 
         # ---- devices
         devcard, av = card("DEVICES", "Already set up for you — only change these if "
-                                      "something's wrong.")
+                                      "something's wrong.", roomy=True)
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(6)
+        grid.setVerticalSpacing(12)
         self.cb_main, self.cb_mon, self.cb_mic = QComboBox(), QComboBox(), QComboBox()
+        # the cable, another device (Voicemeeter, OBS, a mixer) or nowhere (set_route)
+        self.cb_route = QComboBox()
+        for text, key in ROUTE_CHOICES:
+            self.cb_route.addItem(text, key)
+        self.cb_route.setToolTip("Where what others hear goes. Not using the virtual cable? "
+                                 "Pick another device (Voicemeeter, a mixer, a device OBS "
+                                 "captures) or nowhere (only you, and the stream output).")
+        self.main_row = []   # the "send into" row: relabelled or hidden with the route
         for r, (ic, text, cb) in enumerate((
+                ("live", "Send to others through", self.cb_route),
                 ("cable", "Send into (the cable)", self.cb_main),
                 ("headphones", "My headphones", self.cb_mon),
                 ("mic", "My real mic", self.cb_mic))):
-            grid.addWidget(icon_label(ic), r, 0)
-            grid.addWidget(QLabel(text), r, 1)
-            grid.addWidget(cb, r, 2)
+            row = (icon_label(ic), QLabel(text), cb)
+            for col, w in enumerate(row):
+                grid.addWidget(w, r, col)
+            if cb is self.cb_main:
+                self.main_row = row
             cb.setMinimumWidth(120)
         grid.setColumnStretch(2, 1)
         av.addLayout(grid)
@@ -1013,9 +1066,9 @@ class MainWindow(QMainWindow):
             lambda ok: "✓ Done" if ok and not self.cable_bad else "Couldn't — see below"))
         self.btn_cablefix.hide()
         av.addWidget(self.btn_cablefix, 0, Qt.AlignLeft)
-        no_wheel(self.cb_main, self.cb_mon, self.cb_mic)
+        no_wheel(self.cb_main, self.cb_mon, self.cb_mic, self.cb_route)
         for cb, attr in ((self.cb_main, "main_device"), (self.cb_mon, "mon_device"),
-                         (self.cb_mic, "mic_device")):
+                         (self.cb_mic, "mic_device"), (self.cb_route, "route")):
             cb.activated.connect(lambda _i, cb=cb, attr=attr: self.on_device(cb, attr))
         ref = QPushButton("Re-scan devices")
         icons.set_icon(ref, "reload")
@@ -1026,31 +1079,31 @@ class MainWindow(QMainWindow):
         # ---- who's listening: shape the sounds for the voice chat on the other end
         destcard, dv = card("WHO'S LISTENING", "Where people hear you. Your sounds are "
                                                "shaped to come through that voice chat's "
-                                               "compression clearly.")
+                                               "compression clearly.", roomy=True)
         from soundboard.ui.destpanel import DestPanel
         self.dest_panel = DestPanel(self)
         dv.addWidget(self.dest_panel)
-        lcol.addWidget(destcard)
         lcol.addStretch(1)
 
         # ---- test
         testcard, tv = card("TEST IT", "Talk while a sound plays. Records what Discord / the "
                                        "game actually receives, plays it back, and tells you "
-                                       "if your voice + sounds are in it.")
+                                       "if your voice + sounds are in it.", roomy=True)
         self.btn_rec = QPushButton("Record 6s → play back")
         self.btn_rec.setObjectName("primary")
         icons.set_icon(self.btn_rec, "record", "on_accent")
         self.btn_rec.clicked.connect(self.start_test)
         tv.addWidget(self.btn_rec)
         # a live check right here, the same switch as the mixer's at the bottom
-        live = QHBoxLayout()
+        live = QVBoxLayout()
+        live.setSpacing(10)
         self.btn_check_test = QPushButton("Hear what they hear")
         self.btn_check_test.setObjectName("miccheck")
         self.btn_check_test.setCheckable(True)
         self.btn_check_test.setToolTip("A live check: plays your output (your mic and sounds) "
                                        "into your headphones. Click again to stop.")
         icons.set_icon(self.btn_check_test, "ear", checked_color="#ffffff")
-        live.addWidget(self.btn_check_test)
+        live.addWidget(self.btn_check_test, 0, Qt.AlignLeft)
         live.addWidget(hint_label("Live: hear exactly what they hear, in your headphones."), 1)
         tv.addLayout(live)
         self.test_result = QLabel()
@@ -1062,19 +1115,22 @@ class MainWindow(QMainWindow):
         rcol.addWidget(testcard)
 
         # ---- sound shaping
-        eqcard, ev = card()
+        eqcard, ev = card(roomy=True)
         self.eq = EqPanel(c.eq_enabled, c.eq_target, c.eq_preset, c.eq_gains)
         self.eq.changed.connect(self.on_eq)
         ev.addWidget(self.eq)
+        rcol.addWidget(eqcard)
+        rcol.addWidget(destcard)
+        utilitycard, uv = card("VOLUME & SHORTCUTS", roomy=True)
         self.chk_level = QCheckBox("Level volumes (all sounds equally loud)")
         self.chk_level.setChecked(c.level_volumes)
         self.chk_level.toggled.connect(self.on_level_toggle)
-        ev.addWidget(self.chk_level)
+        uv.addWidget(self.chk_level)
         hk = QPushButton("Hotkeys && auto push-to-talk…")
         hk.setToolTip("Opens Settings → Hotkeys")
         hk.clicked.connect(lambda: self.open_settings("hotkeys"))
-        ev.addWidget(hk, 0, Qt.AlignLeft)
-        rcol.addWidget(eqcard)
+        uv.addWidget(hk, 0, Qt.AlignLeft)
+        rcol.addWidget(utilitycard)
         rcol.addStretch(1)
         self.on_eq(*self.eq.state())   # push the saved EQ into the engine
         destination.apply(self.cfg, self.engine)   # ...and the destination mode (Who's listening)
@@ -1104,7 +1160,7 @@ class MainWindow(QMainWindow):
                                 "Couldn't re-scan devices — "
                                 "restart the app to pick up new ones.</span>")
             return "Couldn't re-scan"
-        if not any(is_virtual_cable(d["name"]) for d in outs):
+        if self.cfg.route == "cable" and not any(is_virtual_cable(d["name"]) for d in outs):
             self.status.setText(f"<span style='color:{theme.status('warn')}'>"
                                 "Still no virtual cable. If you "
                                 "just installed it, restart your PC — Windows often only "
@@ -1140,7 +1196,10 @@ class MainWindow(QMainWindow):
         c = self.cfg
         if c.mic_device and is_virtual_cable(c.mic_device):
             c.mic_device = None   # was set to the cable: fall back to the real mic
-        if not c.main_device or eng.find_device("output", c.main_device) is None:
+        # only the cable route picks the cable for you: another device stays the one
+        # picked by hand, even while it's unplugged (it's retried until it's back)
+        if c.route == "cable" and (not c.main_device
+                                   or eng.find_device("output", c.main_device) is None):
             c.main_device = next(iter(eng.virtual_outputs()), None) or c.main_device
         if c.mon_follows_default:   # Windows' default now, not when PortAudio started
             c.mon_device = self._default_output() or c.mon_device
@@ -1155,13 +1214,14 @@ class MainWindow(QMainWindow):
         self._fill_combo(self.cb_main, outs, c.main_device)
         self._fill_combo(self.cb_mon, outs, c.mon_device)
         self._fill_combo(self.cb_mic, ins, c.mic_device)
+        self._show_route()
 
         e = self.engine
         e.sound_vol, e.mic_vol, e.mon_vol = c.sound_vol, c.mic_vol, c.mon_vol
         e.mic_enabled, e.monitor_sounds = c.mic_enabled, c.monitor_sounds
         e.obs_vol, e.obs_voice = c.obs_vol, c.obs_voice
         e.set_mic_device(c.mic_device)
-        e.set_main_device(c.main_device)
+        e.set_main_device(self._main_name())
         e.set_mon_device(c.mon_device)
         e.set_obs_device(self._obs_name(c.obs_device))
         self._check_cable_format()
@@ -1194,9 +1254,7 @@ class MainWindow(QMainWindow):
         c.mon_device = name
         self._fill_combo(self.cb_mon, [d["name"] for d in eng.list_devices("output")], name)
         self.engine.set_mon_device(name)
-        obs = self._obs_name(c.obs_device)
-        if self.engine.names["obs"] != obs:
-            self.engine.set_obs_device(obs)
+        self._apply_send_outputs()
         self._save_now()
         self._update_status()
         self.status.setText(f"You hear your sounds on {html.escape(name)} now: it's "
@@ -1205,7 +1263,7 @@ class MainWindow(QMainWindow):
     def _check_cable_format(self):
         """Note which ends of the cable in use aren't at 48 kHz (shown on the Setup tab)."""
         from soundboard import cableformat
-        main = self.cfg.main_device
+        main = self._main_name()
         vm = eng.virtual_mic_for(main)
         try:
             ends = cableformat.pair(cableformat.cable_ends(), main, vm) if vm else []
@@ -1252,29 +1310,87 @@ class MainWindow(QMainWindow):
 
     def on_device(self, cb, attr):
         name = cb.currentData()
+        if attr == "route":
+            self.set_route(name)
+            return
         setattr(self.cfg, attr, name)
-        if attr == "main_device":
-            self.engine.set_main_device(name)
-            self._check_cable_format()
-        elif attr == "mon_device":
+        if attr == "mon_device":
             self.engine.set_mon_device(name)
             # picking Windows' default keeps following it; anything else stays put
             self.cfg.mon_follows_default = name is not None and name == self._default_output()
-        else:
+        elif attr == "mic_device":
             self.engine.set_mic_device(name)
-        obs = self._obs_name(self.cfg.obs_device)   # never the cable or headphones too
-        if self.engine.names["obs"] != obs:
-            self.engine.set_obs_device(obs)
+        self._apply_send_outputs(force_main=attr == "main_device")
         self._save_now()
         self._update_status()
         self._prepare_all()
 
+    def set_route(self, route: str, device: str | None = None):
+        """Setup -> Devices -> Send to others through: the virtual cable, another device
+        (Voicemeeter, a mixer, a device OBS captures) or nowhere (only you, and the
+        stream output). `device`: send into that one too (the setup guide picks both at
+        once). Otherwise the picked device is kept, so switching back restores it."""
+        c = self.cfg
+        if route not in library.ROUTES or (route == c.route and device is None):
+            self._show_route()
+            return
+        log.info("send to others through: %s -> %s (%s)", c.route, route,
+                 device or c.main_device)
+        c.route = route
+        if device is not None:
+            c.main_device = device
+        elif route == "cable" and not is_virtual_cable(c.main_device):
+            c.main_device = next(iter(eng.virtual_outputs()), None) or c.main_device
+        self._fill_combo(self.cb_main, [d["name"] for d in eng.list_devices("output")],
+                         c.main_device)
+        self._show_route()
+        self._apply_send_outputs(force_main=True)
+        self._save_now()
+        self._update_status()
+        self._prepare_all()
+
+    def _show_route(self):
+        """The Setup tab follows the route: its picker, and the "send into" row (named
+        for the cable or not, hidden when sending nowhere)."""
+        route = self.cfg.route
+        self.cb_route.setCurrentIndex(max(0, self.cb_route.findData(route)))
+        self.main_row[1].setText(self.main_label())
+        for w in self.main_row:
+            w.setVisible(route != "off")
+        self.how_title.setText("YOUR VIRTUAL MIC" if route == "cable"
+                               else "WHERE YOUR SOUNDS GO")
+
+    def main_label(self) -> str:
+        """What the "send into" device row is called for the current route."""
+        return "Send into (the cable)" if self.cfg.route == "cable" else "Send to"
+
+    def _main_name(self) -> str | None:
+        """The device that gets what others hear: none when sending nowhere, and
+        never the headphones (you'd hear everything twice, your own voice included)."""
+        c = self.cfg
+        if c.route == "off" or not c.main_device or c.main_device == c.mon_device:
+            return None
+        return c.main_device
+
+    def _apply_send_outputs(self, force_main: bool = False):
+        """(Re)open what others hear and the stream output for the current devices and
+        route. Each is reopened only if its device changed (or `force_main`)."""
+        e = self.engine
+        main = self._main_name()
+        if force_main or e.names["main"] != main:
+            e.set_main_device(main)
+            self._check_cable_format()
+        obs = self._obs_name(self.cfg.obs_device)   # never the cable or headphones too
+        if e.names["obs"] != obs:
+            e.set_obs_device(obs)
+
     def _obs_name(self, name: str | None) -> str | None:
-        """The stream output's device, unless it's the cable (or another end of the
-        same cable: everyone in the call would get everything twice) or the
-        headphones (you'd hear it twice)."""
-        if (name in (None, self.cfg.main_device, self.cfg.mon_device)
-                or eng.same_cable(name, self.cfg.main_device)):
+        """The stream output's device, unless it's what others hear (or another end of
+        the same cable: everyone in the call would get everything twice) or the
+        headphones (you'd hear it twice). Sending nowhere frees the cable for it."""
+        main = self._main_name()
+        if (name in (None, main, self.cfg.mon_device)
+                or eng.same_cable(name, main)):
             return None
         return name
 
@@ -1300,9 +1416,21 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         e = self.engine
-        main = self.cfg.main_device or ""
+        c = self.cfg
+        main = self._main_name() or ""
         self.virtual_mic = eng.virtual_mic_for(main)
-        if self.virtual_mic:
+        if c.route == "off":
+            self.setup_hint.setText("Sending to others is off: your sounds play in your "
+                                    "headphones and on the stream output (Settings → "
+                                    "Audio) only.")
+        elif c.route == "device" and c.main_device and c.main_device == c.mon_device:
+            self.setup_hint.setText(f"<span style='color:{theme.status('warn')}'>"
+                                    "That's your headphones too, so nothing is sent "
+                                    "(you'd hear everything twice). Pick another device, "
+                                    "or pick <b>Nowhere</b>: your sounds already play in "
+                                    "your headphones, where OBS's Desktop Audio picks "
+                                    "them up.</span>")
+        elif self.virtual_mic:
             hint = (f"A virtual cable is a pipe: audio goes in at <b>{main}</b> "
                     f"and comes out at <b>{self.virtual_mic}</b>, which Discord "
                     "/ the game uses as your mic.")
@@ -1312,15 +1440,21 @@ class MainWindow(QMainWindow):
                          f"cable is on {rates}, so it converts your sound on the way "
                          "through. Fix it for the cleanest sound.</span>")
             self.setup_hint.setText(hint)
+        elif main and c.route == "device":
+            self.setup_hint.setText(f"Whatever listens to <b>{html.escape(main)}</b> gets "
+                                    "your sounds (and your voice, if you send it): OBS, "
+                                    "Voicemeeter, a mixer or a capture card.")
         elif main:
             self.setup_hint.setText(f"<span style='color:{theme.status('warn')}'>"
                                     "That's a normal speaker/headphone "
                                     "device, so only you will hear the sounds. Pick a virtual "
-                                    "cable here.</span>")
+                                    "cable here, or under <b>Send to others through</b> pick "
+                                    "<b>Another device</b> if that's on purpose.</span>")
         else:
             self.setup_hint.setText(f"<span style='color:{theme.status('warn')}'>"
                                     "Nothing picked — only you "
                                     "will hear sounds.</span>")
+        self.set_sending(self.btn_air.isChecked())   # its label follows the route
         self._update_flow()
         errs = [f"{'stream output' if k == 'obs' else k}: {v}"
                 for k, v in e.errors_snapshot().items()]
@@ -1352,8 +1486,44 @@ class MainWindow(QMainWindow):
         else:
             mic = f"Your mic  <b style='color:{ok}'>✓</b>"
         vm = self.virtual_mic
+        route = self.cfg.route
+        dev = self._main_name()
         any_cable = bool(eng.virtual_outputs())
-        if not any_cable:
+        if route == "off":
+            state = "off"
+            out = "Sent to others  <b>nowhere (your choice)</b>"
+            step = ("<b>Nothing goes out as a mic</b>, so Discord and games don't hear your "
+                    "sounds. They play in your headphones (OBS's <b>Desktop Audio</b> picks "
+                    "them up there) and on the <b>stream output</b> if you set one "
+                    "(Settings → Audio). To send them out, change <b>Send to others "
+                    "through</b> under Devices.")
+        elif route == "device" and dev and e.main_stream is not None and not vm:
+            state = "ok"
+            name = html.escape(dev)
+            out = f"<b style='color:{ok}'>{name}</b> — sending <b style='color:{ok}'>✓</b>"
+            step = (f"<b>Your sounds go to {name}.</b> Whatever listens there gets them. "
+                    "In OBS: Sources → + → <b>Audio Output Capture</b> → "
+                    f"<b>{name}</b>. In Voicemeeter or a mixer, send that input on "
+                    "to wherever it should go. Not going on to a voice chat? Untick "
+                    "<b>Send in mono</b> under Who's listening to keep it stereo.")
+        elif route == "device" and not (dev and e.main_stream is not None):
+            state = "unrouted"
+            if self.cfg.main_device and dev is None:
+                out = f"Sending  <b style='color:{bad}'>✗ same device as your headphones</b>"
+            elif dev:
+                out = f"Sending  <b style='color:{bad}'>✗ can't open {html.escape(dev)}</b>"
+            else:
+                out = f"Sending  <b style='color:{bad}'>✗ no device picked</b>"
+            step = (f"<b style='color:{theme.status('warn')}'>Almost:</b> under "
+                    "<b>Devices</b>, set “Send to” to the device that should get your "
+                    "sounds (and check it's plugged in).")
+        elif route == "device":   # another virtual cable: its other end is the mic
+            state = "ok"
+            out = (f"<b style='color:{ok}'>{vm}</b> — your new mic "
+                   f"<b style='color:{ok}'>✓ working</b>")
+            step = (f"<b>The only thing you set:</b> in Discord, your game or OBS, pick "
+                    f"<b style='color:{ok}'>{vm}</b> as the <b>microphone</b> / audio input.")
+        elif not any_cable:
             state = "missing"
             out = f"Virtual mic  <b style='color:{bad}'>✗ not installed yet</b>"
             step = (f"<b style='color:{theme.status('warn')}'>"
@@ -1380,25 +1550,36 @@ class MainWindow(QMainWindow):
         self.btn_install.setVisible(state == "missing")
         self._cable_follow_switch()
         self.btn_rescan.setVisible(state == "missing")
-        self.btn_nomic.setVisible(state == "ok")
-        self.btn_chat.setVisible(state == "ok")
-        self.btn_game.setVisible(state == "ok")
-        self.btn_cablefix.setVisible(state == "ok" and bool(self.cable_bad))
-        self.setup_state = state
+        mic_side = state == "ok" and bool(vm)   # Discord / the game picks a mic: help with it
+        self.btn_nomic.setVisible(mic_side)
+        self.btn_chat.setVisible(mic_side)
+        self.btn_game.setVisible(mic_side)
+        self.btn_cablefix.setVisible(mic_side and bool(self.cable_bad))
+        # "off" was picked on purpose: it's set up, as far as the rest of the app goes
+        self.setup_state = "ok" if state == "off" else state
         short = self._pill_short
-        if state == "ok":
+        if state == "off":
+            pill = "Only you" if short else "Not sending to others (only you hear sounds)"
+        elif state == "ok" and not vm:
+            pill = "Connected" if short else f"Sending to:  {dev}"
+        elif state == "ok":
             pill = "Connected" if short else f"Your mic in Discord / games:  {vm}"
         elif state == "missing":
             pill = ("Setup needed" if short
                     else "One-time setup needed — others can't hear you yet")
+        elif route == "device":
+            pill = ("Not connected" if short
+                    else "Not sending — pick a device on the Setup tab")
         else:
             pill = ("Not connected" if short
                     else "Not connected to the virtual cable — click to fix")
         if self.pill.text() != pill:
+            good = state in ("ok", "off")
             self.pill.setText(pill)
-            self.pill.setIcon(icons.icon("check", "ok_text") if state == "ok" else
+            self.pill.setIcon(icons.icon("headphones", "ok_text") if state == "off" else
+                              icons.icon("check", "ok_text") if good else
                               icons.icon("warn", "warn_text"))
-            self.pill.setProperty("state", "ok" if state == "ok" else "warn")
+            self.pill.setProperty("state", "ok" if good else "warn")
             self.pill.style().unpolish(self.pill)
             self.pill.style().polish(self.pill)
 
@@ -1569,6 +1750,10 @@ class MainWindow(QMainWindow):
         self.set_option("level_volumes", b)
         for m in self.cfg.sounds:
             self.engine.set_gain(m.id, self.gain_for(m))
+
+    def set_live_tab_tint(self, on: bool):
+        self.set_option("live_tab_tint", on)
+        set_live_tint(self.tabs, on)
 
     def on_top_toggle(self, b):
         self.set_option("always_on_top", b)
@@ -1925,12 +2110,31 @@ class MainWindow(QMainWindow):
         if self.btn_air.isChecked() != on:
             self.btn_air.setChecked(on)   # comes back here
             return
-        text = (("Live — others hear you", "Live", "") if on else
-                ("Muted — others hear nothing", "Muted", ""))[self._air_size]
-        self.btn_air.setText(text)
-        self.btn_air.setToolTip(
-            "Click to mute: nothing at all goes out to Discord / the game (you still hear "
-            "everything)" if on else "Click to go live again: others hear you and your sounds")
+        # sending nowhere (or the send device is the headphones): Live doesn't claim
+        # others hear you; muting still silences the stream output, if there is one
+        others = self._main_name() is not None
+        stream = bool(self.engine.names["obs"])
+        if not on:
+            text = ("Muted — others hear nothing", "Muted", "")
+        elif others:
+            text = ("Live — others hear you", "Live", "")
+        elif stream:
+            text = ("Live — stream output only", "Live", "")
+        else:
+            text = ("Only you hear sounds", "Only you", "")
+        self.btn_air.setText(text[self._air_size])
+        if not on:
+            tip = "Click to go live again: others hear you and your sounds"
+        elif others:
+            tip = ("Click to mute: nothing at all goes out to Discord / the game (you "
+                   "still hear everything)")
+        elif stream:
+            tip = ("Nothing goes out to others, only to the stream output. Click to mute "
+                   "that too (you still hear everything)")
+        else:
+            tip = ("Nothing goes out to others: pick where to send on the Setup tab "
+                   "(Send to others through)")
+        self.btn_air.setToolTip(tip)
         if hasattr(self, "mini_air"):
             self.mini_air.setChecked(on)
             self.mini_air.setToolTip(self.btn_air.toolTip())
@@ -2671,6 +2875,7 @@ class MainWindow(QMainWindow):
                         raise RuntimeError(f"already in your library as “{known[fp]}”")
                     meta, data = import_file(f, PAD_COLORS[(start + i) % len(PAD_COLORS)])
                     meta.image = thumbs.extract_art(f, meta.id)   # cover art / first frame
+                    videos.link_import(meta.id, f)   # the player can show a video file
                     if fp:
                         known[fp] = meta.name   # the same file twice in one drop
                     self.engine.prepare(meta.id, data)
@@ -2803,7 +3008,7 @@ class MainWindow(QMainWindow):
             a_nopic = pic.addAction("Remove picture")
         else:
             a_pic = add(("image",), "Add picture…", "Shown on the pad (you can also drop a "
-                        "picture on it)")
+                        "picture on it, or copy one, click the pad and press Ctrl+V)")
         menu.addSeparator()
         a_export = add(("folder",), "Export…", "Save it as a file to share with friends")
         a_del = add(("trash", "danger_text"), "Remove", "Goes to Recently deleted")
@@ -2854,6 +3059,28 @@ class MainWindow(QMainWindow):
             return
         self._save_now()
         self.pads[sid].update()
+
+    def paste_picture(self):
+        """Ctrl+V on the pads: the copied picture goes on the picked pads, or else
+        on the selected one."""
+        sids = [m.id for m in self.selection.sounds()] or (
+            [self.current] if self.current in self.pads else [])
+        if not sids:
+            return
+        img = thumbs.from_clipboard(QApplication.clipboard().mimeData())
+        if img is None:
+            self.status.setText("Nothing to paste: copy a picture first (in a browser: "
+                                "right-click it → Copy image), then press Ctrl+V on a pad.")
+            return
+        done = [sid for sid in sids if (m := self.meta(sid)) and thumbs.set_image(m, img)]
+        if not done:
+            return
+        self._save_now()
+        for sid in done:
+            self.pads[sid].update()
+        m = self.meta(done[0])
+        self.status.setText(f"Picture pasted on “{html.escape(m.name)}”." if len(done) == 1
+                            else f"Picture pasted on {len(done)} pads.")
 
     def ask_remove(self, sids: list[str]) -> bool:
         """Remove from the menu / picked pads: ask first. They go to Recently deleted."""
@@ -3106,6 +3333,7 @@ class MainWindow(QMainWindow):
         except OSError as e:
             errors.warn(self, "Couldn't copy the sound", e)
             return
+        videos.copy_link(m.id, new.id)
         d.apply(new)
         if new.name == m.name:
             new.name = f"{m.name} (edit)"[:40]
@@ -3686,9 +3914,14 @@ class MainWindow(QMainWindow):
 
     def start_test(self):
         if self.engine.main_stream is None:
-            QMessageBox.information(self, "Test",
-                                    "Set up the virtual cable first (Setup tab → "
-                                    "Step-by-step guide).")
+            route = self.cfg.route
+            QMessageBox.information(
+                self, "Test",
+                "Sending to others is off, so there's nothing to record. Change it under "
+                "Setup → Devices → Send to others through." if route == "off" else
+                "Pick the device to send to first (Setup tab → Devices → Send to)."
+                if route == "device" else
+                "Set up the virtual cable first (Setup tab → Step-by-step guide).")
             return
         # Capture the far end of the virtual cable too, so the test hears exactly
         # what Discord / the game hears (not just our internal mix).
@@ -3890,6 +4123,7 @@ class MainWindow(QMainWindow):
     def _update_transport(self, playing):
         sid = self.current
         m = self.meta(sid) if sid else None
+        self._update_video(sid, m, playing)
         enabled = m is not None
         for w in (self.btn_pp, self.btn_st, self.seek, self.mini_pp, self.mini_st,
                   self.mini_seek):
@@ -3907,6 +4141,53 @@ class MainWindow(QMainWindow):
                 slider.blockSignals(False)
             self.np_time.setText(fmt_pos(frac * m.duration, m.duration))
             self.mini_time.setText(self.np_time.text())
+
+    def _video_of(self, sid: str | None) -> Path | None:
+        """The current sound's video, looked up once per selection."""
+        if self._video_for[0] != sid:
+            self._video_for = (sid, videos.get(sid) if sid else None)
+        return self._video_for[1]
+
+    def _update_video(self, sid, m, playing):
+        path = self._video_of(sid) if m else None
+        if self.btn_video.isHidden() == (path is not None):
+            self.btn_video.setVisible(path is not None)
+        w = self._video_win
+        if w is None or not w.isVisible():
+            return
+        if path is not None and w.sid != sid:   # a newly picked video pad takes it over
+            w.show_for(sid, m.name, path)
+        shown = self.meta(w.sid)
+        data = self.audio.get(w.sid)
+        if shown is None or data is None:
+            w.follow(None, 0.0)
+            return
+        w.follow(playing.get(w.sid), len(data) / SR, self.engine.sound_speed)
+
+    def show_video(self):
+        """The player's Video button: open the current sound's video (and play the
+        sound if it isn't playing)."""
+        sid = self.current
+        m = self.meta(sid) if sid else None
+        path = videos.get(sid) if m else None
+        self._video_for = (sid, path)
+        if path is None:
+            self.btn_video.hide()
+            self.toast("This sound's video isn't there any more", "warn")
+            return
+        if self._video_win is None:
+            try:   # imported here: a build missing QtMultimediaWidgets must still start
+                from soundboard.ui.videowindow import VideoWindow
+            except ImportError:
+                log.exception("can't show videos")
+                self.btn_video.hide()
+                self.toast("Videos can't be shown in this copy of Onion Board", "warn")
+                return
+            self._video_win = VideoWindow(self)
+            self._video_win.setWindowIcon(self.windowIcon())
+        self._video_win.show_for(sid, m.name, path)
+        if self.engine.state(sid) is None:
+            self.toggle_play_pause()
 
     def _release_ptt(self) -> bool:
         """Let go of the PTT key we hold. False if Windows refused the key-up (an
@@ -3953,7 +4234,7 @@ class MainWindow(QMainWindow):
         f.extend(self.voice.fit_steps())
         f.extend(self.triggers.fit_steps())
         # height: the status line, then the whole mixer strip
-        f.add(10, "h", r.hide(self.status))
+        f.add(10, "h", self.status.set_room)
         f.add(30, "h", r.hide(*self._deck_titles))
         f.add(40, "h", r.hide(self.mixer))
         f.add(50, "h", r.hide(self.cat_bar))   # the overlay's category key still works
