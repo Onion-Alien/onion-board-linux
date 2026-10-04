@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import (QEvent, QMimeData, QObject, QPoint, QPointF, QRectF, QSize, Qt,
-                            QVariantAnimation, Signal)
+                            QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QDrag, QFont, QFontMetrics, QLinearGradient, QPainter,
                            QPainterPath, QPen)
 from PySide6.QtWidgets import (QAbstractButton, QGridLayout, QLabel, QScrollArea, QSlider,
@@ -138,6 +138,68 @@ class SeekSlider(QSlider):
         super().mousePressEvent(e)
 
 
+class LoadingBar(QWidget):
+    """An indeterminate progress bar: an accent pill gliding back and forth along a
+    rounded groove. Theme colours are read on every paint, and the timer only runs
+    while it's started and on screen."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(6)
+        self._t0 = time.monotonic()
+        self._on = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000 // 30)
+        self._timer.timeout.connect(self.update)
+
+    def start(self):
+        self._on = True
+        self._t0 = time.monotonic()
+        if self.isVisible():
+            self._timer.start()
+
+    def stop(self):
+        self._on = False
+        self._timer.stop()
+
+    def running(self) -> bool:
+        return self._on
+
+    def ticking(self) -> bool:
+        return self._timer.isActive()
+
+    def showEvent(self, ev):
+        if self._on:
+            self._timer.start()
+        super().showEvent(ev)
+
+    def hideEvent(self, ev):
+        self._timer.stop()
+        super().hideEvent(ev)
+
+    def sizeHint(self) -> QSize:
+        return QSize(240, 6)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        rad = r.height() / 2
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.T.get("groove", "#343849")))
+        p.drawRoundedRect(r, rad, rad)
+        # the pill eases from one end to the other and back, stretching mid-glide
+        k = 0.5 - 0.5 * math.cos((time.monotonic() - self._t0) * math.pi / 0.9)
+        w = r.width() * (0.28 + 0.14 * math.sin(k * math.pi))
+        x = r.left() + (r.width() - w) * k
+        g = QLinearGradient(x, 0, x + w, 0)
+        g.setColorAt(0, QColor(theme.T.get("accent", "#7c5cff")))
+        g.setColorAt(1, QColor(theme.T.get("accent2", theme.T.get("accent_hi", "#8d71ff"))))
+        p.setBrush(g)
+        p.drawRoundedRect(QRectF(x, r.top(), w, r.height()), rad, rad)
+        p.end()
+
+
 def fmt_time(s: float) -> str:
     s = max(0, int(s))
     return f"{s // 60}:{s % 60:02d}"
@@ -226,9 +288,10 @@ class Pad(QAbstractButton):
     """One sound's button, painted by hand. It's a QAbstractButton so screen readers
     see a button with the sound's name, and it works from the keyboard: Tab / arrows
     to move, Enter or Space to play, Ctrl+Space to pick, the Menu key for its menu."""
-    activated = Signal(str)     # play it (a double-click, Enter / Space, a screen reader's press)
+    activated = Signal(str)     # play it (a double-click, Enter, a screen reader's press)
     chosen = Signal(str)        # a single click: select it (transport bar) without playing
     pick = Signal(str, bool)    # Ctrl+click / Ctrl+Space (False) or Shift+click (True)
+    space = Signal(str)         # Space: pause / resume it if it's playing, else play it
     menu = Signal(str, QPoint)
     step = Signal(object, int, int)   # arrow key: this pad, columns, rows to move focus
     single_click = False        # Settings: a click plays it (activated) instead of selecting
@@ -316,6 +379,9 @@ class Pad(QAbstractButton):
                   Qt.Key_Down: (0, 1)}
         if k == Qt.Key_Space and mods & Qt.ControlModifier:
             self.pick.emit(self.meta.id, False)
+        elif k == Qt.Key_Space and not mods:
+            if not e.isAutoRepeat():
+                self.space.emit(self.meta.id)
         elif k in (Qt.Key_Return, Qt.Key_Enter):
             self.activated.emit(self.meta.id)
         elif k == Qt.Key_Menu or (k == Qt.Key_F10 and mods & Qt.ShiftModifier):
@@ -323,7 +389,7 @@ class Pad(QAbstractButton):
         elif k in arrows and not mods & (Qt.ControlModifier | Qt.AltModifier):
             self.step.emit(self, *arrows[k])
         else:
-            super().keyPressEvent(e)   # Space plays (QAbstractButton's click)
+            super().keyPressEvent(e)
 
     def _fit_name(self, room: QRectF) -> tuple[QFont, Qt.AlignmentFlag, str]:
         """The name's font, flags and text so it fits the pad: wrapped over two lines,
@@ -797,8 +863,10 @@ class PadGrid(QWidget):
             if p.property("filtered"):
                 p.hide()
                 continue
-            p.show()
+            # into the grid first: a new pad has no parent yet, and showing it then
+            # flashed it up on the desktop as a little window of its own
             self.grid.addWidget(p, i // cols, i % cols)
+            p.show()
             i += 1
 
     def resizeEvent(self, e):

@@ -7,9 +7,10 @@ import threading
 from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QPainter, QPainterPath,
                            QPixmap)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
+                               QGridLayout,
                                QHBoxLayout, QLabel, QLayout, QListWidget, QListWidgetItem,
-                               QPushButton, QScrollArea, QSlider, QTabWidget,
+                               QPushButton, QRadioButton, QScrollArea, QSlider, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from shiboken6 import isValid as qt_valid
@@ -454,6 +455,26 @@ class SettingsDialog(QDialog):
     def _appearance(self):
         w, v = self._page()
         self.theme_cards = []
+        # first, above the themes (it sat under every theme card, out of sight)
+        card, cv = self._card("Live tabs",
+                              "A tab whose feature is on right now (a sound playing, the "
+                              "voice changer, the radio…) is marked, so nothing is left on "
+                              "without you noticing.")
+        row = QVBoxLayout()   # one under the other: side by side made the page too wide
+        green = QRadioButton("Tint the tab green")
+        green.setToolTip("A soft green background and a green icon, easy to spot from "
+                         "across the room")
+        dot = QRadioButton("A small green dot on its icon")
+        dot.setToolTip("Quieter: only a dot on the tab's icon")
+        modes = QButtonGroup(card)
+        for b in (green, dot):
+            modes.addButton(b)
+            row.addWidget(b)
+        (green if self.mw.cfg.live_tab_green else dot).setChecked(True)
+        green.toggled.connect(self.mw.set_live_tab_tint)
+        self.live_green, self.live_dot = green, dot
+        cv.addLayout(row)
+        v.addWidget(card)
         hints = {"Classic": "Changes the whole app instantly.",
                  "Meme": "For when you want your soundboard to be a bit."}
         for group, names in theme.GROUPS:
@@ -467,16 +488,6 @@ class SettingsDialog(QDialog):
                 self.theme_cards.append(c)
             cv.addWidget(ThemeGrid(cards))
             v.addWidget(card)
-        card, cv = self._card("Live tabs",
-                              "A tab whose feature is on right now (a sound playing, the "
-                              "voice changer, the radio…) gets a small green dot on its icon.")
-        tint = QCheckBox("Also tint live tabs green")
-        tint.setToolTip("Gives live tabs a soft green background and a green icon, "
-                        "easier to spot from across the room")
-        tint.setChecked(self.mw.cfg.live_tab_tint)
-        tint.toggled.connect(self.mw.set_live_tab_tint)
-        cv.addWidget(tint)
-        v.addWidget(card)
         v.addStretch(1)
         return w
 
@@ -616,7 +627,8 @@ class SettingsDialog(QDialog):
         card, cv = self._card("Where and how it looks",
                               "Or just drag it: grab any empty part of the overlay (its title, "
                               "its edges) and drop it anywhere, on any monitor. It opens there "
-                              "from then on. Show the preview to place it now.")
+                              "from then on. Show preview only shows how it looks: open the "
+                              "overlay with its hotkey to try it or move it.")
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.addWidget(QLabel("Monitor"), 0, 0)
@@ -638,7 +650,8 @@ class SettingsDialog(QDialog):
         self.destroyed.connect(lambda *_: self._ov_forget())
         self.finished.connect(lambda *_: self._ov_forget())
         prev = QPushButton("Show preview")
-        prev.setToolTip("Shows the overlay for a few seconds — drag it while it's up")
+        prev.setToolTip("Shows the overlay for a few seconds, to see how it looks; any "
+                        "click or key closes it")
         prev.clicked.connect(lambda: self.mw.overlay.preview(6))
         row = QHBoxLayout()
         row.addStretch(1)
@@ -1140,9 +1153,17 @@ class SettingsDialog(QDialog):
         auto = QCheckBox("Start when I sign in")
         hidden = QCheckBox("Start in the tray")
         auto.setChecked(autostart.is_enabled())
-        hidden.setChecked(mw.cfg.autostart_hidden)
-        hidden.setEnabled(auto.isChecked())
         hidden.setContentsMargins(22, 0, 0, 0)
+
+        def sync_hidden():
+            """Ticked only when it would do something: with sign-in start off it read
+            as on by default. The saved choice is kept for when that's turned on."""
+            on = auto.isChecked()
+            hidden.blockSignals(True)
+            hidden.setChecked(on and mw.cfg.autostart_hidden)
+            hidden.blockSignals(False)
+            hidden.setEnabled(on)
+        sync_hidden()
 
         def set_auto(on: bool):
             if not mw.set_autostart(on):
@@ -1151,7 +1172,7 @@ class SettingsDialog(QDialog):
                 auto.blockSignals(False)
                 busy.toast(self, "Couldn't change Windows startup — see the log in "
                            r"%APPDATA%\OnionBoard.", "warn")
-            hidden.setEnabled(auto.isChecked())
+            sync_hidden()
         auto.toggled.connect(set_auto)
         hidden.toggled.connect(mw.set_autostart_hidden)
         if not autostart.available():
@@ -1882,10 +1903,12 @@ class SettingsDialog(QDialog):
         self.upd_label = QLabel()
         self.upd_label.setObjectName("hint")
         self.upd_label.setWordWrap(True)
-        row.addWidget(self.upd_label, 1)
+        # the button first, its result beside it: on the right with nothing yet to
+        # say, it sat on a line of its own far from everything else
         self.upd_btn = QPushButton("Check now")
         self.upd_btn.clicked.connect(self._updates_check)
         row.addWidget(self.upd_btn)
+        row.addWidget(self.upd_label, 1)
         cv.addLayout(row)
         self.mw.update_done.connect(self._updates_done)
         self._net_sync()   # off in Settings > Privacy: greyed, with the reason

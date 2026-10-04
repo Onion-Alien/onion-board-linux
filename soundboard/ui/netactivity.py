@@ -21,7 +21,7 @@ from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFontDatabase
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
                                QDialog, QHBoxLayout, QHeaderView, QLabel,
                                QPlainTextEdit, QPushButton,
-                               QRadioButton, QStackedWidget, QTableWidget,
+                               QRadioButton, QSizePolicy, QStackedWidget, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from soundboard import netlog, theme
@@ -134,6 +134,28 @@ def _table(headers: list[str], stretch: int) -> QTableWidget:
     return t
 
 
+class _Stack(QStackedWidget):
+    """Only as tall as the page on show: a plain QStackedWidget sizes to its tallest
+    page, which left the Simple table with the Detailed info box's height of blank
+    space under it."""
+
+    def __init__(self):
+        super().__init__()
+        self.currentChanged.connect(lambda _i: self.updateGeometry())
+
+    def sizeHint(self):
+        w = self.currentWidget()
+        if w is None:
+            return super().sizeHint()
+        return w.sizeHint().expandedTo(w.minimumSize()).boundedTo(w.maximumSize())
+
+    def minimumSizeHint(self):
+        w = self.currentWidget()
+        if w is None:
+            return super().minimumSizeHint()
+        return w.minimumSizeHint().expandedTo(w.minimumSize()).boundedTo(w.maximumSize())
+
+
 class NetActivity(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -194,7 +216,10 @@ class NetActivity(QWidget):
         dv.setContentsMargins(0, 0, 0, 0)
         dv.addWidget(self.conns)
         dv.addWidget(self.info)
-        self.stack = QStackedWidget()
+        self.stack = _Stack()
+        # no taller than the page on show: a tall Settings window gave the stack its
+        # spare height, a blank band between the table and the buttons under it
+        self.stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.stack.addWidget(self.servers)
         self.stack.addWidget(detail)
         v.addWidget(self.stack)
@@ -260,10 +285,12 @@ class NetActivity(QWidget):
         self.clear.setEnabled(bool(self._entries))
         self.totals.setEnabled(bool(self._entries))
         has_file = netlog.kept_file() is not None
-        self.open_log.setEnabled(has_file)
+        # without a saved file it shows this run's list in a window instead (nothing
+        # written): a greyed-out Open log beside a full list looked broken
+        self.open_log.setEnabled(has_file or bool(self._entries))
         tip = (f"Open {netlog.FILE_NAME}, the saved history (one connection per line)"
-               if has_file else "Nothing is saved: tick Keep a history between starts "
-               "(below) to keep a log on this PC")
+               if has_file else "Show this run's list as text. Nothing is saved: tick "
+               "Keep a history between starts (below) to keep a log on this PC")
         if self.open_log.toolTip() != tip:
             self.open_log.setToolTip(tip)
         if self.simple.isChecked():
@@ -344,6 +371,10 @@ class NetActivity(QWidget):
     def _open_log(self):
         path = netlog.kept_file()
         if path is None:
+            if self._entries:
+                dlg = LogDialog(netlog.as_text(list(reversed(self._entries))), self)
+                dlg.setAttribute(Qt.WA_DeleteOnClose)
+                dlg.show()
             return
         # Notepad: a .jsonl file usually has nothing set to open it
         if sys.platform == "win32":
@@ -365,6 +396,28 @@ class _Num(QTableWidgetItem):
 
     def __lt__(self, other):
         return (self.data(Qt.UserRole) or 0) < (other.data(Qt.UserRole) or 0)
+
+
+class LogDialog(QDialog):
+    """This run's network activity as text, for Open log when no history is kept:
+    shown, never written to a file."""
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Network activity log (this run, not saved)")
+        self.resize(820, 520)
+        v = QVBoxLayout(self)
+        self.text = QPlainTextEdit(text)
+        self.text.setReadOnly(True)
+        self.text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.text.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        v.addWidget(self.text)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        v.addLayout(row)
 
 
 class TotalsDialog(QDialog):
