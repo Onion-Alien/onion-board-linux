@@ -25,20 +25,28 @@ from soundboard.singleinstance import claim_single_instance, listen_for_second_l
 log = logging.getLogger(__name__)
 
 
+SWITCH_S = 0.0002   # the GIL's switch interval while the app runs (tune_runtime_for_audio)
+
+
 def tune_runtime_for_audio():
     """Two cheap knobs that keep the audio callbacks from waiting on the UI thread.
 
     The interpreter lets a thread hold the GIL for 5 ms before forcing a switch; a
-    WASAPI callback at low latency has about 10 ms to produce its block, so a 5 ms
-    wait is half its budget. 1 ms leaves the UI slightly less efficient and the
-    audio thread almost never waiting.
+    WASAPI callback at low latency has about 10 ms to produce its block. And it
+    doesn't wait once: numpy lets go of the GIL in every operation on more than 500
+    values (a stereo block is 960), and each time another thread busy in Python (the
+    window painting, a station list being read, Onion Watch) takes it, the callback
+    waits a whole interval to get it back. At 1 ms the cable's callback took 15 ms
+    instead of 0.5 whenever anything else ran Python: a stutter in what others
+    hear. At 0.2 ms it takes ~1 ms, and the busy thread loses nothing it would
+    otherwise keep (test_engine: test_callback_keeps_pace_beside_busy_python).
 
     The garbage collector's gen-0 threshold is 700 allocations; numpy blocks in
     the callbacks are Python objects, so every few blocks a collection ran *on the
     audio thread*. Raising the threshold makes collections rarer (and they still
     run mostly on the UI thread, where a pause costs nothing).
     """
-    sys.setswitchinterval(0.001)
+    sys.setswitchinterval(SWITCH_S)
     gc.set_threshold(50_000, 20, 20)
 
 
@@ -295,6 +303,7 @@ def main():
         QTimer.singleShot(900, lambda: w.toast(reset_note, "warn" if "Couldn't" in reset_note
                                                else "ok"))
     QTimer.singleShot(30_000, lambda: start_ytdlp_check(w.cfg))
+    QTimer.singleShot(500, w.import_queued)   # the installer's "from Soundpad" box
     QTimer.singleShot(600, w.after_update)   # "Updated to …" after an update restarted it
     # new versions (updates.py): unless unticked, at most once a day, also for an app
     # left running for days

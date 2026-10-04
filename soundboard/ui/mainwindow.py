@@ -29,7 +29,7 @@ from soundboard import theme, winkeys, ytdl
 from soundboard.engine import SR, Engine
 from soundboard.engine import is_virtual as is_virtual_cable
 from soundboard import (appaudio, autostart, backup, destination, library, midi, remote,
-                        soundfx, thumbs, trash, updates, videos, voicesdk)
+                        otherboards, soundfx, thumbs, trash, updates, videos, voicesdk)
 from soundboard import net, netlog, quality, shellicon, tor, watchaddon
 from soundboard.replay import InstantReplay
 from soundboard.library import (AUDIO_EXTS, PAD_COLORS, RESOURCE_DIR, Config, SoundMeta,
@@ -59,8 +59,8 @@ from soundboard.ui.triggershost import BoardHost
 from soundboard.ui.triggerstab import TriggersTab
 from soundboard.ui.radiopanel import RadioOff, RadioTab
 from soundboard.ui.voicepanel import VoicePanel
-from soundboard.ui.widgets import (Meter, Pad, PadGrid, SeekSlider, expand_dropped, fmt_pos,
-                                   pad_height, spectrum, SLIM_PAD_H)
+from soundboard.ui.widgets import (Meter, Pad, PadGrid, SeekSlider, SteadyTabs, expand_dropped,
+                                   fmt_pos, pad_height, spectrum, SLIM_PAD_H)
 from soundboard.wheelguard import no_wheel
 from soundboard.winkeys import Hotkeys
 from soundboard import errors
@@ -86,6 +86,7 @@ TABS = (("Sounds", "Your sound buttons: click one to play it"),
 
 
 UNDO_S = 10          # how long "Removed … · Undo" stays up
+CHIPS_ROW_H = 30      # the now-playing row: a chip's 24 px ■ button, its margins and border
 TICK_MS = 33         # the UI timer while the window is on screen (meters, visualisers)
 TICK_BG_MS = 100     # ...while it's on screen but another program is in front (a game)
 TICK_IDLE_MS = 250   # ...and while it's in the tray or minimised (push-to-talk, watchdog)
@@ -204,6 +205,9 @@ class MainWindow(QMainWindow):
         self._imported_ok = 0
         self._exporting = False
         self._import_errors: list[str] = []
+        # sound id -> the hotkey it had in another soundboard (Import from Soundpad),
+        # given to it once it's in if nothing here has that key
+        self._import_keys: dict[str, str] = {}
         self._rec_playing = False
         self.current: str | None = None   # sound shown in the transport bar
         self._link_meta: SoundMeta | None = None   # the link bar's Play once
@@ -383,6 +387,7 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tabs.setIconSize(QSize(18, 18))
         self.tabs.tabBar().setUsesScrollButtons(False)   # small windows drop the tab text
+        SteadyTabs(self.tabs)   # a change inside a page doesn't repaint the whole board
         rv.addWidget(self.tabs, 1)
         self.sounds_page = self._build_sounds_page()
         self.tabs.addTab(self.sounds_page, "")
@@ -657,6 +662,9 @@ class MainWindow(QMainWindow):
         mm = QMenu(more)
         icons.set_icon(mm.addAction("Import a backup or sound pack…", self.import_dialog),
                        "folder")
+        om = mm.addMenu("Import from another soundboard")
+        for src in otherboards.sources():
+            om.addAction(f"{src.name}…", lambda src=src: self.import_other(src))
         mm.addSeparator()
         mm.addAction("Export everything (sounds + settings)…", self.export_board)
         self._act_export_cat = mm.addAction("Export this category…", self.export_category)
@@ -798,7 +806,10 @@ class MainWindow(QMainWindow):
         self.np_name = QLabel("Pick a sound")
         self.np_name.setToolTip("Select a sound pad to use these playback controls.")
         self.np_name.setTextFormat(Qt.PlainText)   # sound names are user / web text
-        self.np_name.setFixedWidth(190)
+        # fixed in both directions (the row's height, set by its buttons): a label that
+        # can grow makes Qt lay out the whole page again on every new text, and the
+        # name changes with every pad press (every pad on the board was repainted)
+        self.np_name.setFixedSize(190, 34)
         self.np_name.setStyleSheet("font-weight:600;")
         self.seek = SeekSlider(Qt.Horizontal)
         self.seek.setRange(0, 1000)
@@ -904,6 +915,13 @@ class MainWindow(QMainWindow):
                     self._chips[sid] = chip
             if queue or len(ids) >= 2:
                 self._chips_hl.addStretch(1)
+            # a steady height: the chips are rebuilt with every overlapping sound, and
+            # a row that shrank and grew back each time resized and repainted the
+            # whole board under it. It only ever grows (a bigger font).
+            self.playing_row.ensurePolished()
+            self.playing_row.setFixedHeight(max(
+                CHIPS_ROW_H, self.playing_row.minimumHeight(),
+                self._chips_hl.sizeHint().height()))
             self.playing_row.setVisible(len(ids) >= 2 or bool(queue))
         for sid, chip in self._chips.items():
             sel = "true" if sid == self.current else "false"
@@ -1086,9 +1104,9 @@ class MainWindow(QMainWindow):
         lcol.addStretch(1)
 
         # ---- test
-        testcard, tv = card("TEST IT", "Talk while a sound plays. Records what Discord / the "
-                                       "game actually receives, plays it back, and tells you "
-                                       "if your voice + sounds are in it.", roomy=True)
+        testcard, tv = card("TEST IT", "Talk while a sound plays. Records what Discord, the "
+                                       "game or OBS actually receives, plays it back, and "
+                                       "tells you if your voice + sounds are in it.", roomy=True)
         self.btn_rec = QPushButton("Record 6s → play back")
         self.btn_rec.setObjectName("primary")
         icons.set_icon(self.btn_rec, "record", "on_accent")
@@ -1514,9 +1532,12 @@ class MainWindow(QMainWindow):
                 out = f"Sending  <b style='color:{bad}'>✗ can't open {html.escape(dev)}</b>"
             else:
                 out = f"Sending  <b style='color:{bad}'>✗ no device picked</b>"
-            step = (f"<b style='color:{theme.status('warn')}'>Almost:</b> under "
-                    "<b>Devices</b>, set “Send to” to the device that should get your "
-                    "sounds (and check it's plugged in).")
+            almost = f"<b style='color:{theme.status('warn')}'>Almost:</b> under <b>Devices</b>, "
+            step = almost + (
+                "set “Send to” to another device than your headphones, or set <b>Send to "
+                "others through</b> to <b>Nowhere</b>." if self.cfg.main_device and dev is None
+                else "set “Send to” to the device that should get your sounds (and check "
+                "it's plugged in).")
         elif route == "device":   # another virtual cable: its other end is the mic
             state = "ok"
             out = (f"<b style='color:{ok}'>{vm}</b> — your new mic "
@@ -2828,8 +2849,15 @@ class MainWindow(QMainWindow):
         if files:
             self.import_files(files)
 
-    def import_files(self, files):
+    def import_files(self, files, extras: dict[str, otherboards.Entry] | None = None):
+        """Add sound files (and zips / backups). `extras`: file -> its name, hotkey and
+        categories from another soundboard; those already here are skipped quietly."""
         files = [f for f in files if f]
+        extras = extras or {}
+        for f in list(files):
+            if (src := otherboards.for_file(f)) is not None:
+                files.remove(f)   # another soundboard's saved board dropped on the window
+                self.import_other(src, f)
         zips = {}   # a plain zip of sound files: unpacked, then imported like the rest
         # a backup / sound pack (a .zip, or a folder with its JSON) is unpacked instead
         for f in [f for f in files if self._is_package(f)]:
@@ -2872,8 +2900,16 @@ class MainWindow(QMainWindow):
                 try:
                     fp = fingerprint(f)
                     if fp and fp in known:
+                        if f in extras:
+                            self.bridge.imported.emit(None, None, "")   # already moved over
+                            continue
                         raise RuntimeError(f"already in your library as “{known[fp]}”")
                     meta, data = import_file(f, PAD_COLORS[(start + i) % len(PAD_COLORS)])
+                    if (x := extras.get(f)) is not None:
+                        meta.name = x.name or meta.name
+                        meta.tags = clean_tags(x.tags)
+                        if x.hotkey:
+                            self._import_keys[meta.id] = x.hotkey
                     meta.image = thumbs.extract_art(f, meta.id)   # cover art / first frame
                     videos.link_import(meta.id, f)   # the player can show a video file
                     if fp:
@@ -2894,6 +2930,12 @@ class MainWindow(QMainWindow):
         self._pending_imports -= 1
         if meta is not None:
             self._tag_new(meta)
+            for t in meta.tags:
+                if t not in self.cfg.categories:
+                    self.cfg.categories.append(t)
+            key = self._import_keys.pop(meta.id, "")
+            if key and not self._hotkey_taken(key):
+                meta.hotkey = key
             self.cfg.sounds.append(meta)
             self._index()
             self.audio[meta.id] = data
@@ -2904,6 +2946,8 @@ class MainWindow(QMainWindow):
             self._pending_imports = 0
             self._save_now()
             self._rebuild_pads()
+            self._fill_categories()   # categories and hotkeys from an Import from Soundpad
+            self.register_hotkeys()
             n, self._imported_ok = self._imported_ok, 0
             busy.set_busy(self.btn_add, False)
             if n:
@@ -3456,6 +3500,82 @@ class MainWindow(QMainWindow):
             "Zip file (*.zip)")
         if files:
             self.import_files(files)   # a plain zip of sounds is imported too
+
+    def import_queued(self):
+        """The installer's "Bring my sounds over from …" boxes, ticked: they left a
+        note for this start. The tick was their yes, so nothing is asked again."""
+        note = library.APP_DIR / otherboards.QUEUED_NAME
+        if not note.is_file():
+            return
+        try:
+            keys = note.read_text(encoding="utf-8", errors="replace").split()
+        except OSError:
+            keys = []
+        note.unlink(missing_ok=True)
+        for key in dict.fromkeys(keys):
+            if (src := otherboards.by_key(key)) is not None:
+                self.import_other(src, ask=False)
+
+    def import_other(self, src: otherboards.Source, path: str = "", ask: bool = True):
+        """Bring another soundboard's board over: its sound files (copied, it keeps its
+        own), names, categories and the hotkeys nothing here uses yet. `ask`: False
+        when they already said yes (the installer's box): no questions or pop-ups."""
+        title = f"Import from {src.name}"
+        if not path:
+            try:
+                path = str(src.find() or "")
+            except OSError:
+                path = ""
+        if not path and not ask:
+            return   # its board went away since the install
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, f"{title}: pick a saved board", str(Path.home()),
+                f"{src.name} board ({' '.join('*' + x for x in src.suffixes)})")
+            if not path:
+                return
+        try:
+            entries = src.read(Path(path))
+        except (OSError, ValueError) as e:
+            if not ask:
+                log.warning("can't read %s's board: %s", src.name, e)
+                self.toast(f"Couldn't bring your {src.name} sounds over: {errors.plain(e)}",
+                           "warn")
+            else:
+                errors.warn(self, f"Couldn't read the {src.name} board", e)
+            return
+        ok, bad = otherboards.importable(entries)
+        if not ok:
+            msg = (f"No sounds to bring over: the sound files {src.name} points at have "
+                   "been moved or deleted." if entries else
+                   f"There are no sounds on your {src.name} board.")
+            if ask:
+                QMessageBox.information(self, title, msg)
+            else:
+                self.toast(msg, "warn")
+            return
+        if ask:
+            keys = sum(1 for e in ok if e.hotkey)
+            cats = {t for e in ok for t in e.tags}
+            lines = [f"Found <b>{len(ok)}</b> sound{'s' if len(ok) != 1 else ''} "
+                     f"in {src.name}"]
+            extra = [f"{len(cats)} categor{'ies' if len(cats) != 1 else 'y'}" if cats else "",
+                     f"{keys} hotkey{'s' if keys != 1 else ''}" if keys else ""]
+            if any(extra):
+                lines[0] += " with " + " and ".join(x for x in extra if x)
+            lines[0] += "."
+            lines.append(f"They're copied into Onion Board; {src.name} keeps its own. Ones "
+                         "already here are skipped, and a hotkey something here already "
+                         "uses is left off.")
+            if bad:
+                lines.append(f"{len(bad)} more can't be brought over (the file was moved "
+                             "or deleted, or isn't a sound): "
+                             + html.escape(", ".join(e.name for e in bad[:5]))
+                             + ("…" if len(bad) > 5 else ""))
+            if QMessageBox.question(self, title, "<br><br>".join(lines),
+                                    QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
+        self.import_files([e.path for e in ok], {e.path: e for e in ok})
 
     def import_package(self, path: str):
         """Add the sounds from a backup / sound pack (ones already here are skipped).

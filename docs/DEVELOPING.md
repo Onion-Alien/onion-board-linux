@@ -25,7 +25,7 @@ module's `install.bat` or `pip install -r requirements.txt`).
 
 ## 2. Change the code
 
-- Layout: README → *Code layout*. Rules: [CONTRIBUTING.md](../CONTRIBUTING.md).
+- Layout: [CODE.md](CODE.md) → *Code layout*. Rules: [CONTRIBUTING.md](../CONTRIBUTING.md).
 - Real-time audio callbacks never block and never take the engine lock.
 - Anything user-visible goes in `CHANGELOG.md` under *Unreleased*.
 - The Triggers tab is the [Onion Watch](https://github.com/Onion-Alien/onion-watch)
@@ -72,7 +72,9 @@ They're safe to run while someone is using the PC.
 
 To iterate faster, run just the file you touched, e.g.
 `.venv\Scripts\python -m pytest -q tests\test_engine.py`, and the full suite
-before committing. You don't need to rebuild to see a change: `scripts\run.bat` runs
+before committing. The full suite runs on 4 workers (pytest-xdist, about a minute);
+one or two files run in a single process. `-n 2` caps the workers (say, while a
+game is running) and `-n 0` turns them off. You don't need to rebuild to see a change: `scripts\run.bat` runs
 from source.
 
 ### What voice chat does to the sounds (the bench)
