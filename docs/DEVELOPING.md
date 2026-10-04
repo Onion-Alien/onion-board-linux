@@ -229,3 +229,9 @@ Get-Process OnionBoard -ErrorAction SilentlyContinue      # is it running?
    someone who's already updating to go and download the file.
    Never commit build output. Run `python scripts/check_sensitive.py --history`
    once more before pushing the release.
+4. Linux: publishing the release starts `.github/workflows/linux.yml`, which builds
+   `OnionBoard-x86_64.AppImage` from the release's tag and attaches it (about 15
+   minutes; keep that name: the Linux self-update and the download links look for
+   it). Until it's there, Linux copies only say what's new. The download line can
+   name it too:
+   `🐧 Linux: [OnionBoard-x86_64.AppImage](https://github.com/Onion-Alien/onion-board/releases/download/vX.Y.Z/OnionBoard-x86_64.AppImage)`.
