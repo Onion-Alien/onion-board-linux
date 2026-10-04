@@ -78,7 +78,18 @@ def _set_label(btn, text: str, serial: int):
         try:
             if btn.property(_SERIAL) != serial or not btn.isVisible():
                 return
-            if btn.width() < btn.sizeHint().width():
+            need = btn.sizeHint().width()
+            parent = btn.parentWidget()
+            pinned = btn.minimumWidth()
+            if btn.width() < need and pinned < need:
+                # _keep_width pinned the old label's width, and a set minimum overrides
+                # the hint the layout would grow it to: ask for the new label's room
+                btn.setMinimumWidth(need)
+                if parent is not None and parent.layout() is not None:
+                    parent.layout().activate()
+            inside = parent is None or btn.geometry().right() <= parent.rect().right()
+            if btn.width() < need or not inside:
+                btn.setMinimumWidth(pinned)
                 short = text[:1] if text[:1] in "✓✗" else _idle_text(btn)
                 btn.setText(short)
                 if not short.strip() and btn.property("icon_before") is not None:
