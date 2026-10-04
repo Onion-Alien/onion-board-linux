@@ -139,7 +139,11 @@ thread raising ValueError on Linux when its socket was closed under it. Another
 upstream test fix to send back: `test_bunnywidget.py`'s frames added the real time
 each paint took to the pretend 35 ms, so on a slower machine (CI, once) the hammer
 act ended in the 50 ms between one blow's sawdust fading and the next blow; it now
-steps exactly 35 ms a frame.
+steps exactly 35 ms a frame. A third, from 1.6.8: `test_audit_net.py`'s
+`test_a_cut_update_download_says_why_in_plain_words` switched the connection 0.3 s
+after a timer started before the download, so on a slow runner (this repo's Windows
+CI, once) the switch came first, the download went direct and couldn't look up the
+proxy's own `slow.test`; the timer now starts once the download is open.
 
 ## Checking on a real Linux desktop
 
