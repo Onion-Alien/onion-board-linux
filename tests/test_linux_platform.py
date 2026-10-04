@@ -164,6 +164,31 @@ def test_selftest_fails_on_the_systems_portaudio(tmp_path, monkeypatch):
     assert linux.selftest_problems() == []
 
 
+# ------------------------------------------------------------------ proxy variables
+def test_ffmpeg_gets_the_relay_in_both_spellings_and_no_no_proxy(monkeypatch):
+    """Linux's environment is case-sensitive: the relay goes in both spellings, and
+    neither no_proxy may be left (upstream 1.6.8 took no_proxy out so a radio
+    station redirecting to 127.0.0.1 can't step around the relay; a NO_PROXY the
+    port set did just that)."""
+    from soundboard import net
+    keys = list(net.ENV_KEYS) + [k.upper() for k in net.ENV_KEYS]
+    for k in keys:   # monkeypatch puts every one back afterwards
+        monkeypatch.setenv(k, "")
+    monkeypatch.setenv("HTTP_PROXY", "http://users-own:1")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,users-own.example")
+    monkeypatch.setenv("no_proxy", "localhost")
+    monkeypatch.setattr(net, "_env_saved", None)
+    net._set_env()
+    url = net.relay_url("radio")
+    for k in ("http_proxy", "https_proxy", "all_proxy"):
+        assert os.environ[k] == os.environ[k.upper()] == url
+    assert "no_proxy" not in os.environ and "NO_PROXY" not in os.environ
+    own = net.own_env()   # the update installer still gets the user's own
+    assert own.get("HTTP_PROXY") == "http://users-own:1"
+    assert own.get("NO_PROXY") == "localhost,127.0.0.1,users-own.example"
+    assert "127.0.0.1" in net.child_env("addons")["no_proxy"]   # children: this PC direct
+
+
 # ------------------------------------------------------------------ Tor
 def test_torrc_bridges_use_linux_paths():
     from soundboard import tor
