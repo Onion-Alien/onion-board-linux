@@ -24,11 +24,20 @@ def xserver():
             break
     proc = subprocess.Popen(["Xvfb", f":{n}", "-nolisten", "tcp", "-screen", "0", "640x480x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.monotonic() + 10
-    while not os.path.exists(f"/tmp/.X11-unix/X{n}") and time.monotonic() < deadline:
-        time.sleep(0.05)
     old = os.environ.get("DISPLAY")
     os.environ["DISPLAY"] = f":{n}"
+    # the socket appears before Xvfb answers (it's still loading its keymap on a slow
+    # CI runner): wait until a connection really opens
+    from soundboard.linux import x11
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if os.path.exists(f"/tmp/.X11-unix/X{n}"):
+            try:
+                x11.Display().close()
+                break
+            except OSError:
+                pass
+        time.sleep(0.1)
     from soundboard.linux import keys
     keys.close_shared()
     made = []
