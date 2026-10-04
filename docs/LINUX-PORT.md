@@ -109,6 +109,11 @@ proxy's pipe thread raising ValueError on Linux when its socket was closed under
 
 ## Checking on a real Linux desktop
 
+`docs/LINUX-VM-TEST.md` is a ready prompt for Claude Code on a Windows PC: WSL 2 with
+the AppImage, the cable on PulseAudio and PipeWire, the window, and a localhost
+"call" (the Linux app's cable → Opus → the Windows desktop, pads pressed from Windows
+through the Remote API), then a Fedora KDE VM for Wayland hotkeys and Discord.
+
 `python scripts/linux_audio_check.py` makes the cable, plays a quiet beep through the
 real engine into "Onion Board Cable Input" and checks it comes out of "Onion Board
 Cable Output" (what Discord hears). Nothing goes to the speakers. `--remove` takes a
