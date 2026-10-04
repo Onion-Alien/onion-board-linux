@@ -58,6 +58,10 @@ FAKE = textwrap.dedent(r'''
 
 @pytest.fixture
 def pactl(tmp_path, monkeypatch):
+    from platform_hooks import REAL
+    from soundboard.linux import vcable
+    monkeypatch.setattr(vcable, "_pactl", REAL["pactl"])   # conftest's guard stubs it
+
     def make(server="PulseAudio (on PipeWire 1.0.5)"):
         state = tmp_path / "state.json"
         state.write_text(json.dumps({"server": server, "sinks": ["speakers"],
@@ -75,7 +79,9 @@ def pactl(tmp_path, monkeypatch):
 
 
 def test_no_sound_server(monkeypatch, tmp_path):
+    from platform_hooks import REAL
     from soundboard.linux import vcable
+    monkeypatch.setattr(vcable, "_pactl", REAL["pactl"])
     monkeypatch.setenv("PATH", str(tmp_path))   # no pactl at all
     assert vcable.server() == "" and not vcable.exists() and not vcable.create()
 

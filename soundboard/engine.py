@@ -1515,3 +1515,7 @@ class Engine:
             self.ring_mon.write(self._rs_mon(x))
         if self.obs_voice and self.obs_stream is not None:
             self.ring_obs.write(self._rs_obs(x))
+
+
+if __import__("sys").platform != "win32":   # Linux: the sound server's devices by name
+    from soundboard.linux.engine import *  # noqa: E402,F403

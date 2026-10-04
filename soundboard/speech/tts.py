@@ -310,3 +310,7 @@ class Speaker:
                 dur = len(mono) / sr
                 self._busy_until = time.monotonic() + dur
                 self._cancel.wait(dur + 0.08)
+
+
+if os.name != "nt":   # Linux: eSpeak NG's voices
+    from soundboard.linux.tts import *  # noqa: E402,F403

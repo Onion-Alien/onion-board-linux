@@ -1,0 +1,229 @@
+"""Audio devices on Linux: every PipeWire / PulseAudio device by its own name.
+
+PortAudio (as the sounddevice wheel loads it) only lists ALSA's "pulse",
+"pipewire" and "default" on a desktop, not the devices behind them, while the
+engine opens up to four streams on devices the user picked. So:
+
+  the lists     come from the sound server (`pactl list sinks / sources`): each
+                device's description ("Headphones", "Onion Board Cable Input"),
+                rate and channels, under a stand-in index from FIRST_INDEX up
+  a stream      on a stand-in index is PortAudio's "pulse" device, with PULSE_SINK
+                (PULSE_SOURCE for a mic) naming the device just while it opens:
+                the pulse ALSA plugin reads it then, so each stream goes to its own
+                device, one process, no extra libraries. Works on PulseAudio and on
+                PipeWire (pipewire-pulse).
+
+`sd` (a SoundDevice) stands in for the sounddevice module in engine.py and
+mainwindow.py (their Linux hooks put it there): it takes the stand-in indices;
+real PortAudio indices pass through untouched. engine.py's hook also takes the
+device-list functions from here.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
+
+FIRST_INDEX = 100_000      # stand-in indices: far above any real PortAudio index
+TIMEOUT_S = 5.0
+PCM = "pulse"              # PortAudio's ALSA device that goes through the sound server
+
+
+@dataclass
+class Device:
+    index: int
+    kind: str              # "output" | "input"
+    pulse: str             # the sound server's name for it (alsa_output.pci-…)
+    name: str              # what the lists show (its description)
+    rate: int
+    channels: int
+
+
+_lock = threading.Lock()          # one stream opens at a time: the env var is global
+_devices: list[Device] | None = None
+_defaults: dict[str, str] = {}
+
+
+def _pactl(*args: str) -> str:
+    exe = shutil.which("pactl")
+    if exe is None:
+        return ""
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"   # parsed: English whatever the desktop's language
+    try:
+        p = subprocess.run([exe, *args], capture_output=True, text=True, timeout=TIMEOUT_S,
+                           env=env, errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("pactl %s failed: %s", " ".join(args), e)
+        return ""
+    return p.stdout if p.returncode == 0 else ""
+
+
+_SPEC = re.compile(r"(\d+)ch (\d+)Hz")
+
+
+def parse_list(text: str) -> list[dict]:
+    """`pactl list sinks|sources` (LC_ALL=C) -> [{name, description, rate, channels,
+    monitor_of}]."""
+    out: list[dict] = []
+    cur: dict | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if raw.startswith(("Sink #", "Source #")):
+            cur = {"name": "", "description": "", "rate": 48000, "channels": 2,
+                   "monitor_of": ""}
+            out.append(cur)
+        elif cur is None:
+            continue
+        elif line.startswith("Name:"):
+            cur["name"] = line[5:].strip()
+        elif line.startswith("Description:"):
+            cur["description"] = line[12:].strip()
+        elif line.startswith("Sample Specification:"):
+            m = _SPEC.search(line)
+            if m:
+                cur["channels"], cur["rate"] = int(m[1]), int(m[2])
+        elif line.startswith("Monitor of Sink:"):
+            v = line[16:].strip()
+            cur["monitor_of"] = "" if v in ("n/a", "") else v
+    return [d for d in out if d["name"]]
+
+
+def refresh() -> list[Device]:
+    """Read the sound server's devices again."""
+    global _devices
+    found: list[Device] = []
+    seen: dict[str, int] = {}
+    for kind, what in (("output", "sinks"), ("input", "sources")):
+        for d in parse_list(_pactl("list", what)):
+            if kind == "input" and (d["monitor_of"] or d["name"].endswith(".monitor")):
+                continue   # "Monitor of …": what an output plays, not a mic
+            label = d["description"] or d["name"]
+            key = f"{kind}:{label}"
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > 1:
+                label = f"{label} ({seen[key]})"
+            found.append(Device(FIRST_INDEX + len(found), kind, d["name"], label,
+                                d["rate"], d["channels"]))
+    info = _pactl("info")
+    for kind, field in (("output", "Default Sink:"), ("input", "Default Source:")):
+        m = re.search(rf"^{field}\s*(.+)$", info, re.M)
+        _defaults[kind] = m.group(1).strip() if m else ""
+    with _lock:
+        _devices = found
+    return found
+
+
+def devices() -> list[Device]:
+    if _devices is None:
+        refresh()
+    return list(_devices or [])
+
+
+def by_index(index) -> Device | None:
+    if not isinstance(index, int) or index < FIRST_INDEX:
+        return None
+    for d in devices():
+        if d.index == index:
+            return d
+    return None
+
+
+# ------------------------------------------------------------------ engine's API
+def list_devices(kind: str) -> list[dict]:
+    """The sound server's devices of kind 'input' or 'output' as [{index, name}]."""
+    return [{"index": d.index, "name": d.name} for d in devices() if d.kind == kind]
+
+
+def default_device_name(kind: str) -> str | None:
+    devs = devices()
+    want = _defaults.get(kind, "")
+    for d in devs:
+        if d.kind == kind and d.pulse == want:
+            return d.name
+    return None
+
+
+def list_name(index: int) -> str:
+    d = by_index(index)
+    if d is not None:
+        return d.name
+    import sounddevice
+    return sounddevice.query_devices(index)["name"]
+
+
+# ------------------------------------------------------------------ sounddevice
+def _pcm_index() -> int:
+    import sounddevice
+    for i, d in enumerate(sounddevice.query_devices()):
+        if d["name"] == PCM:
+            return i
+    raise RuntimeError("PortAudio has no 'pulse' device: is PipeWire (pipewire-pulse) "
+                       "or PulseAudio running, with its ALSA plugin installed?")
+
+
+def _info(d: Device) -> dict:
+    return {"name": d.name, "index": d.index, "hostapi": -1,
+            "max_input_channels": d.channels if d.kind == "input" else 0,
+            "max_output_channels": d.channels if d.kind == "output" else 0,
+            "default_samplerate": float(d.rate),
+            "default_low_output_latency": 0.01, "default_low_input_latency": 0.01,
+            "default_high_output_latency": 0.1, "default_high_input_latency": 0.1}
+
+
+def _open(kind: str, cls, kwargs: dict):
+    dev = by_index(kwargs.get("device"))
+    if dev is None:
+        return cls(**kwargs)
+    var = "PULSE_SINK" if kind == "output" else "PULSE_SOURCE"
+    # the volume mixer's name for the stream's app (else "ALSA plug-in [python3]"):
+    # the plugin sets its own, which only the OVERRIDE variant of PULSE_PROP beats
+    props = "application.name='Onion Board' application.icon_name=onionboard"
+    with _lock:
+        old = {k: os.environ.get(k) for k in (var, "PULSE_PROP_OVERRIDE")}
+        os.environ[var] = dev.pulse
+        os.environ["PULSE_PROP_OVERRIDE"] = props
+        try:
+            return cls(**{**kwargs, "device": _pcm_index()})
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
+class SoundDevice:
+    """Stands in for the sounddevice module where the app opens streams (engine.sd,
+    mainwindow.sd): the stand-in indices go through the sound server, everything else
+    straight to sounddevice, looked up at each call (so a test's stub stream class is
+    still the one used)."""
+
+    def __getattr__(self, name):
+        import sounddevice
+        return getattr(sounddevice, name)
+
+    def query_devices(self, device=None, kind=None):
+        import sounddevice
+        d = by_index(device)
+        if d is not None:
+            return _info(d)
+        return sounddevice.query_devices(device, kind) if kind else \
+            sounddevice.query_devices(device)
+
+    def OutputStream(self, **kwargs):  # noqa: N802 - sounddevice's name
+        import sounddevice
+        return _open("output", sounddevice.OutputStream, kwargs)
+
+    def InputStream(self, **kwargs):  # noqa: N802
+        import sounddevice
+        return _open("input", sounddevice.InputStream, kwargs)
+
+
+sd = SoundDevice()

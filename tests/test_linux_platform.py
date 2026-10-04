@@ -60,9 +60,12 @@ def test_device_list_and_busy(tmp_path, qapp):
     b.close(h)
 
 
-def test_midiin_uses_the_alsa_backend(qapp):
+def test_midiin_uses_the_alsa_backend(qapp, monkeypatch):
+    from platform_hooks import REAL
     from soundboard import midi
     from soundboard.linux.midi import AlsaRawMidi
+    assert isinstance(REAL["midi_backend"](), AlsaRawMidi)
+    monkeypatch.setattr(midi, "_linux_backend", REAL["midi_backend"])
     assert isinstance(midi.MidiIn().backend, AlsaRawMidi)
 
 
@@ -175,3 +178,58 @@ def test_recycle_moves_to_the_freedesktop_trash(tmp_path, monkeypatch):
     assert [p.name for p in trashed] == ["boom.wav"]
     assert (tmp_path / "data" / "Trash" / "info" / "boom.wav.trashinfo").is_file()
     assert not library.recycle(tmp_path / "gone.wav")
+
+
+# ------------------------------------------------------------------ speech
+ESPEAK_VOICES = """Pty Language Age/Gender VoiceName File Other Languages
+ 5  af              --/M      Afrikaans          gmw/af
+ 5  cmn             --/M      Chinese_(Mandarin,_latin_as_English) sit/cmn  (zh-cmn 5)(zh 5)
+ 5  de              --/M      German             gmw/de
+ 2  en-029          --/M      English_(Caribbean) gmw/en-029           (en 10)
+ 2  en-gb           --/M      English_(Great_Britain) gmw/en               (en 2)
+ 2  en-us           --/M      English_(America)  gmw/en-US            (en 3)
+ 5  nl              --/M      Dutch              gmw/nl
+"""
+
+
+@pytest.fixture
+def real_warm_up(monkeypatch):
+    from platform_hooks import REAL
+    from soundboard.linux import tts as ltts
+    monkeypatch.setattr(ltts.EspeakTTS, "warm_up", REAL["tts_warm_up"])
+
+
+def test_espeak_voice_list(monkeypatch, real_warm_up):
+    from soundboard.linux import tts as ltts
+    monkeypatch.setenv("LANG", "nl_NL.UTF-8")
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_MESSAGES", raising=False)
+    monkeypatch.setattr(ltts, "_exe", lambda: "/usr/bin/espeak-ng")
+    monkeypatch.setattr(ltts.subprocess, "run", lambda *a, **k: type(
+        "P", (), {"returncode": 0, "stdout": ESPEAK_VOICES, "stderr": ""})())
+    t = ltts.EspeakTTS()
+    v = t.warm_up()
+    # the desktop's language first, then US / British English; no Afrikaans
+    assert v[:3] == ["eSpeak Dutch", "eSpeak English (America)", "eSpeak English (Great Britain)"]
+    assert "eSpeak Afrikaans" not in v
+    assert t.voice_langs["eSpeak English (America)"] == "en-US"
+    assert t.voice_for("zh") == "eSpeak Chinese (Mandarin, latin as English)"
+    assert t.voice_for("de") == "eSpeak German" and t.voice_for("ja") == ""
+
+
+def test_no_espeak_is_a_readable_error(monkeypatch, real_warm_up):
+    from soundboard.linux import tts as ltts
+    monkeypatch.setattr(ltts, "_exe", lambda: None)
+    t = ltts.EspeakTTS()
+    assert t.warm_up() == [] and "espeak-ng" in t.error
+    with pytest.raises(RuntimeError, match="espeak-ng"):
+        t.synth("hello")
+
+
+@pytest.mark.skipif(not __import__("shutil").which("espeak-ng"), reason="needs espeak-ng")
+def test_espeak_speaks():
+    from soundboard.speech import tts
+    t = tts.SapiTTS()
+    t._load()   # conftest stubs warm_up outside test_speech.py
+    mono, sr = t.synth("--help me", t.voice_for("en"))   # text is never an option
+    assert sr > 8000 and len(mono) > sr // 4 and abs(mono).max() > 0.05
