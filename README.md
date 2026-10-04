@@ -126,6 +126,8 @@ The same switch is in **⚙ Settings → Audio → Your mic** and in the setup g
 - **Friends can't hear anything:** check Discord or the game uses
   **`CABLE Output`** as its mic, and that Onion Board's *"Your mic in Discord /
   games"* pill is green.
+- **Using Voicemeeter, a mixer or OBS instead of the cable?** Setup → Devices →
+  *Send to others through* → **Another device**, then pick it under *Send to*.
 - **They hear sounds but not you:** tick **send** next to *My mic*.
 - **Check it yourself:** the *Setup* tab's **Record 6s → play back** records
   exactly what others get and tells you whether your voice and sounds are in it.
@@ -182,6 +184,12 @@ too (say No if another program, like Voicemeeter, uses it).
   pad. Pads with effects show **FX**; *Reset* goes back to the original. The
   original file is never changed.
 - **Your mic on or off:** send your voice with the sounds, or sounds only.
+- **No virtual cable? Send it anywhere** (Setup → Devices → *Send to others
+  through*): the virtual cable (the default), **another device** (Voicemeeter, a
+  mixer, a capture card, any output OBS captures as an *Audio Output Capture*) or
+  **nowhere** (only you hear your sounds, and the stream output if you set one).
+  With another device the app never puts the cable back, never asks you to
+  install it, and shows green once it's sending.
 - **Stream output for OBS** (Settings → Audio → *Stream output*): what others hear,
   without the voice chat shaping, on a device of its own (a second virtual cable such
   as VB-Cable A+B, or any output you don't listen on). In OBS add it as an *Audio
@@ -321,6 +329,10 @@ The virtual cable is a free audio driver that works like a pipe: Onion Board pla
 into one end, and Discord or the game uses the other end as a microphone. You hear
 the sounds in your own headphones separately.
 
+Not using the cable? Setup → Devices → **Send to others through** → *Another
+device* sends the same mix into whatever you pick instead (Voicemeeter, a mixer,
+OBS), or *Nowhere* keeps it to your headphones and the stream output.
+
 ### Use it responsibly
 
 Onion Board comes with no sounds of its own. What you add, and where it came from, is
@@ -449,6 +461,7 @@ the launcher the shortcuts and PyInstaller use. The app is the `soundboard` pack
 | `soundboard/watchaddon.py` | the Onion Watch add-on: its latest GitHub release, downloading and checking it, installing it, and whether a newer one is out (`ONIONBOARD_ONION_WATCH_ZIP` uses a local zip instead) |
 | `soundboard/ytdl.py` | yt-dlp for the link bar and web search: searches YouTube / SoundCloud, downloads one video's audio, and updates yt-dlp on request or opt-in (SHA-256-checked PyPI wheels in `%APPDATA%`, loaded ahead of the bundled copy by an import hook) |
 | `soundboard/thumbs.py` | pad pictures: a link's video thumbnail, a file's cover art / first frame (ffmpeg), or a picture you pick or drop on a pad, scaled into `%APPDATA%\OnionBoard\thumbs` |
+| `soundboard/videos.py` | which pads came from a video (an imported video file, or a link added with *Also save the video*), in `videos.json` beside the config; `ui/videowindow.py` is the player's **Video** window, muted and kept in step with the pad's sound |
 | `soundboard/savedvoices.py` | the voice changer's saved voices and their bin, in `%APPDATA%\OnionBoard\voices.json` (not the config, so older versions can't drop them) |
 | `soundboard/trash.py` | Recently deleted: removed sounds (files and pad) and forgotten programs, kept 30 days in `%APPDATA%\OnionBoard\deleted` so they can be brought back |
 | `soundboard/reset.py` | Settings → General → Reset: puts the parts picked (settings, hotkeys, sounds, the bin, programs, devices) back to the start at the next launch, after saving a restore point in `%APPDATA%\OnionBoard\restore-points` that undoes it |
@@ -559,6 +572,8 @@ the newest backup is used, so the pad list is never silently reset.
   slider on top.
 - Radio recordings are spooled to a 16-bit WAV as they happen instead of growing in
   RAM, and the resampled copies kept for non-48 kHz devices are capped at 512 MB (LRU).
+  A press never waits for a copy: until it's made (on a thread) the sound is read
+  from the 48 kHz original at the device's rate, like the live speed does.
 - **The send stage** (`soundboard/sendfx.py`) is the last thing before the cable.
   Everything Discord and games send is one channel, so the sounds are downmixed
   here first, per band: a band that is mostly out of phase between left and right

@@ -64,7 +64,8 @@ HOTKEY_GROUPS = [
          "Turns instant replay on: the last 30 seconds of everything your PC plays (a "
          "friend in Discord, the game, a video; not Onion Board's own sounds) are kept "
          "in memory, and this key adds them to your Sounds as a pad. Nothing is saved "
-         "until you press it. Clear the key to switch it off."),
+         "until you press it. Clear the key to switch it off. Only keep clips of people "
+         "who are fine with it: in some places, recording a call needs everyone's OK."),
     ]),
     ("Overlay", [
         ("overlay_hotkey", "__overlay__", "Open the in-game overlay",
@@ -72,6 +73,37 @@ HOTKEY_GROUPS = [
     ]),
 ]
 HOTKEY_ACTIONS = [a for _, group in HOTKEY_GROUPS for a in group]
+
+# Settings > About. The note is the author's own words, kept casual on purpose.
+NOTE = ("Hey, thanks for actually using this. Onion Board started because every soundboard "
+        "I tried was either ugly, full of ads, or quietly phoning home, so I made my own "
+        "and it kind of snowballed from there. It's just me building it, a lot of late "
+        "nights and a lot of testing, so if something's broken, ugly or confusing, tell "
+        "me. Honestly. I'd way rather hear \"this part is cooked\" than have you quietly "
+        "uninstall it.\n\nIt's free and it's staying free. Have fun with it, don't be a "
+        "menace with it, and go make your friends jump in voice chat.\n\n— OnionAlien")
+# Plain words, not a contract: the LICENSE file is the real terms.
+DISCLAIMER = (
+    "Onion Board is provided as is, with no warranty: use it at your own risk (the "
+    "LICENSE file has the full terms). In plain words:"
+    "<ul style='margin-left:-24px'>"
+    "<li><b>Your sounds are on you.</b> It comes with none of its own. Only download, "
+    "play or stream things you have the right to use, and follow the rules of the sites "
+    "you get them from.</li>"
+    "<li><b>Recording people.</b> Instant replay and radio clips record what your PC "
+    "plays. Some places need everyone's OK to record a call, so ask first.</li>"
+    "<li><b>Voices.</b> Don't use the voice changer or text-to-speech to pretend to be "
+    "a real person, to scam or to harass anyone.</li>"
+    "<li><b>Games and servers.</b> Some servers and games don't allow soundboards or "
+    "voice changers. Onion Board never changes a game's files or reads its memory, but whether a "
+    "server is OK with it is their call, and your account.</li>"
+    "<li><b>Your ears.</b> Keep an eye on the volume, yours and your friends'.</li>"
+    "<li><b>Names.</b> Discord, YouTube, VB-Audio and every other product named here "
+    "belong to their owners. Onion Board isn't affiliated with or endorsed by any of "
+    "them.</li>"
+    "<li><b>Other people's code.</b> Parts of Onion Board (Qt, yt-dlp and more) "
+    "come under their own licenses; THIRD-PARTY-NOTICES.txt next to the app lists "
+    "them.</li></ul>")
 
 
 def pretty_key(combo: str) -> str:
@@ -313,7 +345,8 @@ class SettingsDialog(QDialog):
                  ("overlay", "Overlay", "gamepad", self._overlay),
                  ("updates", "Updates", "reload", self._updates),
                  ("help", "Add-ons && help", "plus", self._help),
-                 ("remote", "Remote", "cable", self._remote))
+                 ("remote", "Remote", "cable", self._remote),
+                 ("about", "About", "star", self._about))
         self.categories = QListWidget()
         self.categories.setObjectName("settingscategories")
         self.categories.setAccessibleName("Settings categories")
@@ -434,6 +467,16 @@ class SettingsDialog(QDialog):
                 self.theme_cards.append(c)
             cv.addWidget(ThemeGrid(cards))
             v.addWidget(card)
+        card, cv = self._card("Live tabs",
+                              "A tab whose feature is on right now (a sound playing, the "
+                              "voice changer, the radio…) gets a small green dot on its icon.")
+        tint = QCheckBox("Also tint live tabs green")
+        tint.setToolTip("Gives live tabs a soft green background and a green icon, "
+                        "easier to spot from across the room")
+        tint.setChecked(self.mw.cfg.live_tab_tint)
+        tint.toggled.connect(self.mw.set_live_tab_tint)
+        cv.addWidget(tint)
+        v.addWidget(card)
         v.addStretch(1)
         return w
 
@@ -739,9 +782,10 @@ class SettingsDialog(QDialog):
         cb = QComboBox()
         no_wheel(cb)
         cb.addItem("Off", None)
+        main = mw._main_name()   # what others hear (None: sending nowhere frees it)
         for d in eng.list_devices("output"):
-            if (d["name"] not in (c.main_device, c.mon_device)   # those already have a job
-                    and not eng.same_cable(d["name"], c.main_device)):
+            if (d["name"] not in (main, c.mon_device)   # those already have a job
+                    and not eng.same_cable(d["name"], main)):
                 cb.addItem(d["name"], d["name"])
         i = cb.findData(c.obs_device) if c.obs_device else 0
         cb.setCurrentIndex(max(i, 0))
@@ -805,8 +849,10 @@ class SettingsDialog(QDialog):
         people find them where they look first. Picking goes through the window."""
         mw = self.mw
         card, cv = self._card("Devices",
-                              "Your mic (input) and where you listen (output). Plugged "
-                              "something in? Press Re-scan.")
+                              "Your mic (input), where you listen (output) and where what "
+                              "others hear goes: the virtual cable, or another device "
+                              "(Voicemeeter, OBS, a mixer). Plugged something in? Press "
+                              "Re-scan.")
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
@@ -814,14 +860,18 @@ class SettingsDialog(QDialog):
         for r, (text, src, attr) in enumerate((
                 ("Input — my mic", mw.cb_mic, "mic_device"),
                 ("Output — my headphones", mw.cb_mon, "mon_device"),
-                ("Send into (the cable)", mw.cb_main, "main_device"))):
+                ("Send to others through", mw.cb_route, "route"),
+                (mw.main_label(), mw.cb_main, "main_device"))):
             cb = QComboBox()
             cb.setMinimumWidth(120)
             no_wheel(cb)
             cb.activated.connect(lambda i, src=src, attr=attr: self._pick_device(src, attr, i))
-            grid.addWidget(QLabel(text), r, 0)
+            label = QLabel(text)
+            grid.addWidget(label, r, 0)
             grid.addWidget(cb, r, 1)
             self.dev_combos.append((cb, src))
+            if src is mw.cb_main:
+                self.dev_main = (label, cb)   # relabelled / hidden with the route
         grid.setColumnStretch(1, 1)
         cv.addLayout(grid)
         ref = QPushButton("Re-scan devices")
@@ -837,10 +887,16 @@ class SettingsDialog(QDialog):
             for i in range(src.count()):
                 cb.addItem(src.itemText(i), src.itemData(i))
             cb.setCurrentIndex(src.currentIndex())
+        label, cb = self.dev_main
+        label.setText(self.mw.main_label())
+        for w in (label, cb):
+            w.setVisible(self.mw.cfg.route != "off")
 
     def _pick_device(self, src, attr, i):
         src.setCurrentIndex(i)
         self.mw.on_device(src, attr)
+        if attr == "route":   # it may have picked the cable, and shows or hides its row
+            self._sync_devices()
 
     def _general(self):
         w, v = self._page()
@@ -907,6 +963,84 @@ class SettingsDialog(QDialog):
         v.addWidget(self._remote_easy_card())
         v.addStretch(1)
         return w
+
+    # ------------------------------------------------------------------ about
+    def _about(self):
+        w, v = self._page()
+        v.addWidget(self._about_card())
+        v.addWidget(self._contact_card())
+        v.addWidget(self._note_card())
+        v.addWidget(self._disclaimer_card())
+        v.addStretch(1)
+        return w
+
+    def _link_button(self, text: str, url: str, icon: str = "") -> QPushButton:
+        btn = QPushButton(text)
+        if icon:
+            icons.set_icon(btn, icon)
+        btn.clicked.connect(lambda: busy.open_url(
+            url, btn, opened="✓ Opened in your browser",
+            failed="Couldn't open your browser. The page is"))
+        return btn
+
+    def _about_card(self):
+        """The version (as the title bar shows it), and where the app and its licences
+        live."""
+        from soundboard.ui.mainwindow import version_text
+        from soundboard.updates import REPO
+        card, cv = self._card("Onion Board")
+        ver = self.about_version = QLabel(f"Version {version_text()}")
+        ver.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        cv.addWidget(ver)
+        hint = QLabel("Free, with no ads, no account and no tracking. Made by OnionAlien. "
+                      "MIT license with the Commons Clause: use it for anything, share it "
+                      "for free, never sell it.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        cv.addWidget(hint)
+        row = _button_row()
+        row.addWidget(self._link_button("Website", "https://onion-alien.github.io/onion-board/",
+                                        "browser"))
+        row.addWidget(self._link_button("Source code", f"https://github.com/{REPO}"))
+        row.addWidget(self._link_button("Licenses", f"https://github.com/{REPO}#license"))
+        cv.addLayout(row)
+        return card
+
+    def _contact_card(self):
+        """Ways to reach the author. All of them only open a page in the browser:
+        nothing is sent from the app (feedback.py)."""
+        from soundboard import __version__, feedback
+        from soundboard.updates import REPO
+        card, cv = self._card("Get in touch",
+                              "Ideas, bugs, or just want to say hi? The feedback form needs "
+                              "no account. Found a security problem? Report it privately "
+                              "on GitHub, not in a public issue.")
+        row = _button_row()
+        send = self._link_button("Send feedback", feedback.feedback_url(__version__), "speech")
+        send.setObjectName("primary")
+        row.addWidget(send)
+        row.addWidget(self._link_button("Report a problem", feedback.problem_url(__version__)))
+        row.addWidget(self._link_button(
+            "Report a security issue", f"https://github.com/{REPO}/security/advisories/new",
+            "shield"))
+        cv.addLayout(row)
+        return card
+
+    def _note_card(self):
+        card, cv = self._card("A note from me")
+        note = QLabel(NOTE)
+        note.setWordWrap(True)
+        cv.addWidget(note)
+        return card
+
+    def _disclaimer_card(self):
+        card, cv = self._card("The boring bit")
+        text = QLabel(DISCLAIMER)
+        text.setObjectName("hint")
+        text.setWordWrap(True)
+        text.setTextFormat(Qt.RichText)
+        cv.addWidget(text)
+        return card
 
     # ------------------------------------------------------------------ add-ons
     def _addons_card(self):
