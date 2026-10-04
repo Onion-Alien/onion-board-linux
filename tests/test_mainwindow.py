@@ -380,6 +380,7 @@ def test_radio_and_apps_light_their_tabs_while_they_send_sound(window):
 
 
 def test_mute_switch_silences_what_others_hear(window):
+    window.cfg.main_device = "CABLE Input"   # sending somewhere, on a PC without devices too
     e = window.engine
     assert window.btn_air.isChecked() and e.sending
     window.btn_air.click()
