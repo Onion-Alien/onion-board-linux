@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 FIRST_INDEX = 100_000      # stand-in indices: far above any real PortAudio index
 TIMEOUT_S = 5.0
 PCM = "pulse"              # PortAudio's ALSA device that goes through the sound server
+NULL_SINK_LATENCY = 0.1    # the least buffering a PulseAudio null sink plays steadily at
 
 
 @dataclass
@@ -49,6 +50,7 @@ class Device:
     name: str              # what the lists show (its description)
     rate: int
     channels: int
+    null_sink: bool = False   # PulseAudio's module-null-sink (the cable, there)
 
 
 _lock = threading.Lock()          # one stream opens at a time: the env var is global
@@ -76,19 +78,21 @@ _SPEC = re.compile(r"(\d+)ch (\d+)Hz")
 
 def parse_list(text: str) -> list[dict]:
     """`pactl list sinks|sources` (LC_ALL=C) -> [{name, description, rate, channels,
-    monitor_of}]."""
+    monitor_of, driver}]."""
     out: list[dict] = []
     cur: dict | None = None
     for raw in text.splitlines():
         line = raw.strip()
         if raw.startswith(("Sink #", "Source #")):
             cur = {"name": "", "description": "", "rate": 48000, "channels": 2,
-                   "monitor_of": ""}
+                   "monitor_of": "", "driver": ""}
             out.append(cur)
         elif cur is None:
             continue
         elif line.startswith("Name:"):
             cur["name"] = line[5:].strip()
+        elif line.startswith("Driver:"):
+            cur["driver"] = line[7:].strip()
         elif line.startswith("Description:"):
             cur["description"] = line[12:].strip()
         elif line.startswith("Sample Specification:"):
@@ -116,7 +120,8 @@ def refresh() -> list[Device]:
             if seen[key] > 1:
                 label = f"{label} ({seen[key]})"
             found.append(Device(FIRST_INDEX + len(found), kind, d["name"], label,
-                                d["rate"], d["channels"]))
+                                d["rate"], d["channels"],
+                                null_sink=d["driver"] == "module-null-sink.c"))
     info = _pactl("info")
     for kind, field in (("output", "Default Sink:"), ("input", "Default Source:")):
         m = re.search(rf"^{field}\s*(.+)$", info, re.M)
@@ -205,6 +210,15 @@ def _open(kind: str, cls, kwargs: dict):
     now = present()
     if now is not None and dev.pulse not in now:
         raise RuntimeError(f"device not found: {dev.name}")
+    # PulseAudio's null sink (the cable there) stops asking for sound for about 2 s
+    # after every underrun (and when a stream starts: linux/engine.py's START_S), and
+    # at "low" buffering a busy moment underruns it every few seconds: a cable that
+    # carries sound in 2 s bursts. "high" (Safer, 0.1 s) keeps it flowing. Sound
+    # cards and PipeWire's sinks don't do this and keep the user's choice.
+    lat = kwargs.get("latency")
+    if dev.null_sink and (lat in (None, "low") or (isinstance(lat, (int, float))
+                                                    and lat < NULL_SINK_LATENCY)):
+        kwargs = {**kwargs, "latency": "high"}
     var = "PULSE_SINK" if kind == "output" else "PULSE_SOURCE"
     # the volume mixer's name for the stream's app (else "ALSA plug-in [python3]"):
     # the plugin sets its own, which only the OVERRIDE variant of PULSE_PROP beats

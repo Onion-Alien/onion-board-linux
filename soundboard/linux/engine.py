@@ -49,14 +49,35 @@ def _device(name: str, kind: str) -> audio.Device | None:
     return next((d for d in audio.devices() if d.name == name and d.kind == kind), None)
 
 
+# PulseAudio gives a new stream on a null sink (the virtual cable is one) a few
+# callbacks, then none for 1.6-2 s before it runs (PulseAudio 17, WSLg's and a
+# plain one alike; PipeWire and sound cards start at once). The watchdog's STALL_S
+# (1.5 s) took that for a dead stream and reopened it, which started the wait over:
+# the cable never carried a sound. A stream gets this long from its opening first.
+START_S = 3.0
+_SETTERS = (("main", "set_main_device"), ("mon", "set_mon_device"),
+            ("mic", "set_mic_device"), ("obs", "set_obs_device"))
+
+
 def patch_engine(cls):
     """check_streams (the watchdog, about once a second on the UI thread) also closes a
     stream whose device has gone from the sound server, saying so as Windows does
     ("device not found"); the watchdog's retry reopens it there once it's back. The
-    sound server is asked on a thread, at most every GONE_POLL_S."""
+    sound server is asked on a thread, at most every GONE_POLL_S. And a stream opened
+    less than START_S ago isn't stalled yet."""
     orig = cls.check_streams
 
+    for key, setter in _SETTERS:
+        def opened(self, *a, _set=getattr(cls, setter), _key=key, **k):
+            self.__dict__.setdefault("_opened_at", {})[_key] = time.monotonic()
+            return _set(self, *a, **k)
+        setattr(cls, setter, opened)
+
     def check_streams(self):
+        now = time.monotonic()
+        for key, at in self.__dict__.get("_opened_at", {}).items():
+            if now - at < START_S:   # starting: the callbacks' own times can only be newer
+                self._last_cb[key] = max(self._last_cb[key], now)
         touched = orig(self)
         st = self.__dict__.setdefault("_gone_poll", {"next": 0.0, "busy": False,
                                                      "present": None, "at": 0.0})
