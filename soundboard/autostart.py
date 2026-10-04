@@ -98,3 +98,7 @@ def refresh(hidden: bool):
     cur = current()
     if cur is not None and cur != command(hidden):
         set_enabled(True, hidden)
+
+
+if sys.platform != "win32":   # Linux: an XDG autostart entry
+    from soundboard.linux.autostart import *  # noqa: E402,F403

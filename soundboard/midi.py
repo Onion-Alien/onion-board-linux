@@ -24,6 +24,8 @@ import threading
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from soundboard.linux import WIN, winfunctype
+
 log = logging.getLogger(__name__)
 
 PREFIX = "midi:"
@@ -94,7 +96,7 @@ MIM_OPEN, MIM_CLOSE, MIM_DATA = 0x3C1, 0x3C2, 0x3C3
 CALLBACK_FUNCTION = 0x30000
 MMSYSERR_ALLOCATED = 4
 
-_Proc = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.UINT, ctypes.c_size_t, ctypes.c_size_t,
+_Proc = winfunctype(None, wt.HANDLE, wt.UINT, ctypes.c_size_t, ctypes.c_size_t,
                            ctypes.c_size_t)
 
 
@@ -181,7 +183,7 @@ class MidiIn(QObject):
 
     def __init__(self, backend=None):
         super().__init__()
-        self.backend = backend or WinMM()
+        self.backend = backend or (WinMM() if WIN else _linux_backend())
         self.backend.on_message = self._on_message
         self.backend.on_closed = self._on_closed
         self.busy: list[str] = []
@@ -334,3 +336,8 @@ class MidiIn(QObject):
         with self._lock:
             if key in self._names:
                 self._dead.add(key)   # unplugged: sync() reopens it when it's back
+
+
+def _linux_backend():
+    from soundboard.linux.midi import AlsaRawMidi
+    return AlsaRawMidi()

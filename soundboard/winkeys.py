@@ -18,11 +18,12 @@ import threading
 from PySide6.QtCore import QObject, Signal
 
 from soundboard import midi
+from soundboard.linux import WIN, win_dll
 
 log = logging.getLogger(__name__)
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32 = win_dll("user32", use_last_error=True)
+kernel32 = win_dll("kernel32", use_last_error=True)
 
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 WM_HOTKEY, WM_APP, WM_TIMER = 0x0312, 0x8000, 0x0113
@@ -396,3 +397,12 @@ def raise_topmost(hwnd: int):
     topmost can otherwise end up above it)."""
     user32.SetWindowPos(wt.HWND(hwnd), HWND_TOPMOST, 0, 0, 0, 0,
                         SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+
+
+
+def event_vk(e) -> int:
+    """The virtual-key code of a Qt key event (Windows: Qt reports it as is)."""
+    return e.nativeVirtualKey()
+
+if not WIN:   # Linux: X11 / portal hotkeys, XTest key presses, overlay helpers
+    from soundboard.linux.keys import *  # noqa: E402,F403

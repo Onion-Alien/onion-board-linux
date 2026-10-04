@@ -159,7 +159,7 @@ class HotkeyDialog(QDialog):
         self._midi.capture(False)
 
     def keyPressEvent(self, e):
-        vk = e.nativeVirtualKey()
+        vk = winkeys.event_vk(e)
         if vk == 0x1B:            # Esc
             self.reject()
             return

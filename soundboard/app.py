@@ -14,6 +14,8 @@ import sys
 # on a machine whose GPU driver or remote-desktop session can't do it.)
 os.environ.setdefault("QT_WIDGETS_RHI", "1")
 
+import soundboard.linux  # noqa: E402,F401 - Linux: APPDATA = the XDG data folder, first
+
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from soundboard import __version__, applog  # noqa: E402
