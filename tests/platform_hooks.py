@@ -22,6 +22,8 @@ if sys.platform != "win32":
     REAL["start_install"] = _updates.start_install   # conftest's guard replaces it
 
 WINDOWS_ONLY = {
+    "tests/test_settings.py::test_onion_watch_can_be_removed_from_settings":
+        "the Onion Watch card: no Triggers tab on Linux yet (tests/test_linux_ui.py)",
     "tests/test_appaudio.py::test_guid_bytes_keep_zero_bytes":
         "Windows COM GUID layout (appaudio is replaced on Linux)",
     "tests/test_appaudio.py::test_struct_sizes_match_the_windows_layouts":

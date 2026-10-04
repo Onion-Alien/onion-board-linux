@@ -149,7 +149,8 @@ def _hide_option(box):
 
 def patch_settings(cls):
     """Privacy & security: no "Virtual cable download" switch, the app makes its own
-    cable and downloads nothing for it."""
+    cable and downloads nothing for it. Add-ons & help: no Onion Watch card (there's
+    no Triggers tab on Linux)."""
     orig_switches = cls._switches_card
 
     def _switches_card(self):
@@ -159,3 +160,11 @@ def patch_settings(cls):
         return card
 
     cls._switches_card = _switches_card
+    orig_addons = cls._addons_card
+
+    def _addons_card(self):   # Onion Watch: the Triggers tab's, hidden (patch_main_window)
+        card = orig_addons(self)
+        card.hide()
+        return card
+
+    cls._addons_card = _addons_card
