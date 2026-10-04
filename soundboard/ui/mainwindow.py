@@ -4124,3 +4124,9 @@ class MainWindow(QMainWindow):
                  e.ring_rmon.prefill * 1000 // max(e.rates.get("mon", SR), 1),
                  e.ring_main.underruns, e.ring_main.overflows,
                  ", drift tracked" if e.ring_main.track_drift else "")
+
+
+if __import__("sys").platform != "win32":   # Linux: the sound server's devices, the cable
+    from soundboard.linux.audio import sd  # noqa: E402,F811
+    from soundboard.linux import ui as _linux_ui
+    _linux_ui.patch_main_window(MainWindow)

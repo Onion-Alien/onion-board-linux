@@ -1,16 +1,30 @@
-"""Tests that check Windows itself (its memory layouts, drive-letter paths, its
-case-insensitive environment), skipped off Windows. Each has its reason; what
-these modules do on Linux is tested in tests/test_linux_*.py. Hooked in from the
-end of conftest.py."""
+"""Platform hooks, star-imported at the end of conftest.py:
+
+- tests that check Windows itself (its memory layouts, drive-letter paths, its
+  case-insensitive environment) are skipped off Windows, each with its reason; what
+  those modules do on Linux is tested in tests/test_linux_*.py
+- the Linux versions of conftest's "never touch the real thing" guards: real MIDI
+  devices, the real autostart folder, the real sound server (cable, device list)"""
 import sys
 
 import pytest
+
+__all__ = ["pytest_collection_modifyitems", "_linux_never_touches_the_real_desktop", "REAL"]
+
+REAL: dict = {}   # what the guards replace, for the tests of those very functions
+if sys.platform != "win32":
+    from soundboard.linux.tts import EspeakTTS
+    REAL["tts_warm_up"] = EspeakTTS.warm_up   # conftest stubs it outside test_speech.py
 
 WINDOWS_ONLY = {
     "tests/test_appaudio.py::test_guid_bytes_keep_zero_bytes":
         "Windows COM GUID layout (appaudio is replaced on Linux)",
     "tests/test_appaudio.py::test_struct_sizes_match_the_windows_layouts":
         "Windows struct sizes (a C long is 8 bytes on Linux)",
+    "tests/test_appaudio.py::test_supported_reports_windows_and_build":
+        "Windows' build number (Linux: tests/test_linux_appaudio.py)",
+    "tests/test_appaudio.py::test_root_pid_walks_up_same_exe_only":
+        "the Windows process snapshot (Linux walks /proc: tests/test_linux_appaudio.py)",
     "tests/test_chatguide.py::test_with_rate_rewrites_rate_and_byte_rate":
         "WAVEFORMATEX in VB-Cable's registry format (no VB-Cable on Linux)",
     "tests/test_library.py::test_config_round_trip":
@@ -43,6 +57,10 @@ WINDOWS_ONLY = {
         "the Windows bundle's lyrebird.exe",
     "tests/test_torget.py::test_an_update_replaces_an_older_copy":
         "the Windows bundle's tor.exe",
+    "tests/test_speech.py::test_windows_speech_that_stops_answering_is_restarted":
+        "the PowerShell speech process (Linux: eSpeak, tests/test_linux_platform.py)",
+    "tests/test_speech.py::test_windows_speech_output_that_isnt_utf8_cant_kill_the_reader":
+        "the PowerShell speech process's output pipe",
     # the VB-Cable installer; Linux makes its own virtual cable (soundboard/linux/vcable.py)
     "tests/test_setupwizard.py::test_restart_marker_counts_only_until_the_pc_restarts":
         "VB-Cable's restart marker",
@@ -54,6 +72,12 @@ WINDOWS_ONLY = {
         "the VB-Cable installer",
     "tests/test_setupwizard.py::test_installer_that_cant_start_says_what_to_do":
         "the VB-Cable installer",
+    "tests/test_setupwizard.py::test_installer_needing_a_restart_offers_restart_not_reinstall":
+        "the VB-Cable installer's restart (Linux: tests/test_linux_ui.py)",
+    "tests/test_setupwizard.py::test_resume_after_restart_writes_and_removes_the_runonce_entry":
+        "the RunOnce registry entry",
+    "tests/test_setupwizard.py::test_resumed_guide_with_the_cable_still_missing_offers_to_install_again":
+        "reopening after VB-Cable's restart",
 }
 
 
@@ -71,6 +95,45 @@ def _alive(pid: int) -> bool:
             return f.read().rsplit(")", 1)[1].split()[0] != "Z"
     except OSError:
         return False
+
+
+@pytest.fixture(autouse=True)
+def _linux_never_touches_the_real_desktop(monkeypatch, tmp_path):
+    if sys.platform == "win32":
+        yield
+        return
+    # XDG autostart, the PipeWire / PulseAudio drop-ins and the Trash live under these
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "guard" / "xdg-config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "guard" / "xdg-data"))
+    from soundboard import midi
+    from soundboard.linux import vcable
+
+    class NoMidi:
+        slow = False
+
+        def __init__(self):
+            self.on_message = lambda key, msg: None
+            self.on_closed = lambda key: None
+
+        def devices(self):
+            return []
+
+        def open(self, index, key):
+            raise OSError("no MIDI in tests")
+
+        def close(self, handle):
+            pass
+    REAL.setdefault("midi_backend", midi._linux_backend)
+    REAL.setdefault("pactl", vcable._pactl)
+    monkeypatch.setattr(midi, "_linux_backend", NoMidi)
+    # the real sound server (its cable, its device list): tests that want one use a
+    # stand-in pactl, so results don't depend on the machine's devices
+    from soundboard.linux import audio
+    REAL.setdefault("audio_pactl", audio._pactl)
+    monkeypatch.setattr(vcable, "_pactl", lambda *a: None)
+    monkeypatch.setattr(audio, "_pactl", lambda *a: "")
+    monkeypatch.setattr(audio, "_devices", None)
+    yield
 
 
 def pytest_collection_modifyitems(config, items):

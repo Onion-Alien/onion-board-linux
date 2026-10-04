@@ -483,6 +483,7 @@ the launcher the shortcuts and PyInstaller use. The app is the `soundboard` pack
 | `soundboard/testcheck.py` | analysis for the Record-6s test (finds your voice in the output by cross-correlation) |
 | `soundboard/destination.py` | destination modes (Setup tab / Settings → *Who's listening*), one per voice chat engine: shapes the sounds bus for the listener's voice codec — sub-bass harmonics, a low cut with each sound's level given back, codec ceiling, gentle compressor (custom modes), mono |
 | `soundboard/voicesdk.py` | which voice chat engine the game in front uses, from the voice libraries in its install folder (the exe path is read with the least access Windows has; nothing touches the game): a suggestion by *Who's listening*, never a switch |
+| `soundboard/linux/` | the Linux port: each module replaces the Windows-only parts of the module of the same name (hotkeys over X11, the sound server's devices, the app's own virtual cable, PipeWire per-program capture, eSpeak voices, Trash, XDG autostart…), hooked in at that module's end; see `docs/LINUX-PORT.md` |
 | `soundboard/ui/deleted.py` | the Recently deleted window (Bring back / Delete for good) |
 | `soundboard/ui/resetguide.py` | the Reset guide (pick → check → reset and restart) and the Restore points window |
 | `soundboard/ui/destpanel.py` | the mode picker and the custom-modes editor |

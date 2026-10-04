@@ -793,3 +793,8 @@ class SteamGuide(QDialog):
         busy.open_url("steam://settings/voice", btn, self, opened="✓ Opened Steam",
                       failed="Couldn't open Steam — is it installed? Follow the steps "
                              "above instead. The link was")
+
+
+if __import__("sys").platform != "win32":   # Linux: the app makes the cable itself
+    from soundboard.linux import ui as _linux_ui
+    _linux_ui.patch_setup_wizard(SetupWizard)

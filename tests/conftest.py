@@ -318,4 +318,4 @@ def _no_result_stats_lookups(monkeypatch):
     monkeypatch.setattr(ytdl, "stats", offline)
 
 
-from windows_only import pytest_collection_modifyitems  # noqa: E402,F401 - skipped off Windows
+from platform_hooks import *  # noqa: E402,F401,F403 - Windows-only tests, Linux guards

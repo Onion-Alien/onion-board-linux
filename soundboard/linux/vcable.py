@@ -83,8 +83,10 @@ def exists() -> bool:
 
 
 def _props(desc: str) -> str:
-    # pactl takes a proplist; the description needs its spaces quoted
-    return f'device.description="{desc}"'
+    """A module argument's proplist value. The server splits module arguments at
+    spaces unless the whole value is quoted: unquoted, "Onion Board Cable Input"
+    would be called just "Onion"."""
+    return f"'device.description=\"{desc}\"'"
 
 
 def create() -> bool:
@@ -166,11 +168,10 @@ context.modules = [
 def pulse_lines() -> list[str]:
     return [
         PA_MARK,
-        f"load-module module-null-sink sink_name={SINK} "
-        f"sink_properties=device.description=\"{SINK_DESC.replace(' ', '\\ ')}\" "
+        f"load-module module-null-sink sink_name={SINK} sink_properties={_props(SINK_DESC)} "
         f"rate={RATE} channels=2",
         f"load-module module-remap-source master={SINK}.monitor source_name={SOURCE} "
-        f"source_properties=device.description=\"{SOURCE_DESC.replace(' ', '\\ ')}\"",
+        f"source_properties={_props(SOURCE_DESC)}",
     ]
 
 
@@ -235,3 +236,10 @@ def remove() -> bool:
     # the PipeWire loopback (made at login from the drop-in) isn't a pactl module: it
     # goes when PipeWire next starts; until then it does no harm
     return not _our_modules()
+
+
+def make_default_mic() -> bool:
+    """Make the cable's mic end the system's default microphone (for a game with no
+    mic setting of its own)."""
+    p = _pactl("set-default-source", SOURCE)
+    return p is not None and p.returncode == 0

@@ -917,3 +917,7 @@ def _explain(e: ComError) -> str:
     if not ok:
         return why
     return f"Windows couldn't start the capture ({errors.plain(e)}). Switch Send on to try again."
+
+
+if not _win:   # Linux: PipeWire's stream nodes, recorded with pw-record
+    from soundboard.linux.appaudio import *  # noqa: E402,F403
