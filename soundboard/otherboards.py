@@ -84,3 +84,7 @@ def vk_hotkey(vk: int, ctrl=False, alt=False, shift=False, win=False) -> str:
     flags = ((winkeys.MOD_CONTROL if ctrl else 0) | (winkeys.MOD_ALT if alt else 0)
              | (winkeys.MOD_SHIFT if shift else 0) | (winkeys.MOD_WIN if win else 0))
     return winkeys.combo_name(flags, vk)
+
+
+if __import__("sys").platform != "win32":   # Linux: Wine prefixes, Windows paths, Soundux
+    from soundboard.linux.otherboards import *  # noqa: E402,F403
