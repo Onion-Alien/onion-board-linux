@@ -150,8 +150,12 @@ class ChatCheck(QObject):
             return
         self.running = True
         e.main_tap = []
-        sig = chatcheck.test_signal()
-        e.play(CHECK_SID, sig, 1.0, mode="restart", src_rate=chatcheck.SR, only="main")
+        try:
+            sig = chatcheck.test_signal()
+            e.play(CHECK_SID, sig, 1.0, mode="restart", src_rate=chatcheck.SR, only="main")
+        except Exception:
+            self._stop()   # no capture or tap left running (the caller says it failed)
+            raise
         self._t0 = time.monotonic()
         self.progress.emit("Listening to Discord…")
         self._timer.start(int((chatcheck.LENGTH_S + TAIL_S) * 1000))
@@ -261,7 +265,9 @@ class DiscordGuide(QDialog):
         self._check.progress.connect(self._progress)
 
     def check(self):
-        self.btn_check.setEnabled(False)
+        if busy.is_busy(self.btn_check):
+            return
+        busy.set_busy(self.btn_check, True)   # not setEnabled: that moves the focus away
         self.btn_check.setText("Checking…")
         self.result.setText("Starting…")
         self.result.show()
@@ -279,7 +285,7 @@ class DiscordGuide(QDialog):
                             "stay quiet for a moment)")
 
     def _checked(self, res: dict):
-        self.btn_check.setEnabled(True)
+        busy.set_busy(self.btn_check, False)
         self.btn_check.setText("Check again")
         self.result.setText(result_html(res, self.vm))
         self.result.show()

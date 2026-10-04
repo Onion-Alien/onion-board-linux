@@ -5,8 +5,9 @@ message, while the other features keep working. Offline mode: nothing at all.
 Python-side traffic is caught by fakeproxy.no_leaks (any connection or lookup off
 this PC fails the test), the fake SOCKS proxy's log and the test site's hit log.
 FFmpeg (radio) and Qt (the station directory, thumbnails) connect from C++, so in
-Direct mode their proof is a test site on 127.0.0.2: not in no_proxy, so they can only
-reach it through the relay, whose log (net.relay_seen) says what it let through."""
+Direct mode their proof is a test site on 127.0.0.2: FFmpeg has no no_proxy and Qt is
+given the relay, so they can only reach it through the relay, whose log
+(net.relay_seen) says what it let through."""
 import http.server
 import json
 import socketserver
@@ -201,8 +202,8 @@ class _NoNameServer(http.server.ThreadingHTTPServer):
 
 
 class Local2:
-    """A test site on 127.0.0.2: FFmpeg's no_proxy doesn't cover it, and Qt always
-    goes through the relay, so they can only reach it through the relay."""
+    """A test site on 127.0.0.2: FFmpeg has no no_proxy, and Qt always goes through
+    the relay, so they can only reach it through the relay."""
 
     def __init__(self):
         self.hits = []
@@ -220,6 +221,11 @@ class Local2:
                 body, kind = srv.routes.get(self.path.split("?")[0], (b"", ""))
                 if not kind:
                     self.send_error(404)
+                    return
+                if kind == "redirect":   # body: where to
+                    self.send_response(302)
+                    self.send_header("Location", body.decode())
+                    self.end_headers()
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", kind)
@@ -314,6 +320,38 @@ def test_ffmpeg_in_direct_mode_only_reaches_a_station_through_the_relay(qapp, lo
         assert "Radio was switched off" in errors[0] and p.station is None
         process_events(qapp, lambda: False, timeout=1.5)
         assert len(local2.hits) == hits                    # nothing reopened it
+    finally:
+        p.stop()
+
+
+@pytest.mark.real_this_pc
+@pytest.mark.parametrize("mode", MODES)
+def test_a_station_redirecting_to_this_pc_is_refused(mode, qapp, sites, socks, local2,
+                                                     monkeypatch):
+    """FFmpeg has no no_proxy list: a redirect to 127.0.0.1 is the relay's to judge too,
+    and it refuses it in every mode (nothing the radio plays lives on this PC). In
+    Direct mode the station on 127.0.0.2 stands in for one on the internet."""
+    net.configure(mode, socks.url())
+    sites.routes["/s.wav"] = (wav_bytes(30.0), "audio/wav")
+    to_pc = f"http://127.0.0.1:{sites.port}/s.wav".encode()
+    if mode == net.PROXY:
+        sites.routes["/go"] = (to_pc, "redirect")
+        start_url = sites.url("station", "/go")
+    else:
+        local_target = net._local_target
+        monkeypatch.setattr(net, "_local_target",
+                            lambda host: host != "127.0.0.2" and local_target(host))
+        local2.routes["/go"] = (to_pc, "redirect")
+        start_url = local2.url("/go")
+    start = len(net.relay_seen())
+    p, chunks, errors = play(qapp, start_url)
+    try:
+        seen = net.relay_seen()[start:]
+        assert not chunks and errors
+        assert ("radio", "127.0.0.1", "local") in seen
+        assert "/s.wav" not in sites.paths()            # never reached directly
+        if mode == net.DIRECT:
+            assert ("radio", "127.0.0.2", "ok") in seen and local2.hits == ["/go"]
     finally:
         p.stop()
 

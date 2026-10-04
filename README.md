@@ -10,8 +10,8 @@ Or send it to your stream, or keep it to your own headphones.
 (64-bit PC, any distribution from Ubuntu 22.04 on; see [On Linux](#on-linux))
 
 <!-- release -->
-Version **1.6.7** · Windows 10 / 11 · free, no account, no ads, no tracking ·
-[VirusTotal: 68 of 68 clean](https://www.virustotal.com/gui/file/87d4d187e6d1e2bdc5c426fd58cda616039e05f66803a2179cd444c321884341) ·
+Version **1.6.8** · Windows 10 / 11 · free, no account, no ads, no tracking ·
+[VirusTotal: 68 of 68 clean](https://www.virustotal.com/gui/file/9fcf40e6311aa5bf0cd69ddbc6c29b52b78ce49ce0fef711fe47e8bd74275971) ·
 [what's new](CHANGELOG.md)
 <!-- /release -->
 
@@ -30,7 +30,8 @@ Version **1.6.7** · Windows 10 / 11 · free, no account, no ads, no tracking ·
   installer offers to set up. Or send them to any other output you pick (Voicemeeter,
   a mixer, a capture card, OBS), or nowhere, so only you hear them. Your mic goes
   along, or tick it off and send only sounds.
-- **Hotkeys that work in-game**, MIDI pads, an in-game overlay, Stream Deck support.
+- **Hotkeys that work in-game**, MIDI pads, an in-game overlay, Stream Deck support,
+  and your pads on your phone with the optional Onion Pocket add-on.
 - **Add sounds from anywhere**: drag in files, or search YouTube and SoundCloud
   inside the app.
 - **Effects on any sound**: trim, speed, pitch, bass boost, reverse. One-click

@@ -48,6 +48,11 @@ WINDOWS_ONLY = {
         "expects HTTP_PROXY and http_proxy to be one variable (Windows' environment)",
     "tests/test_shellicon.py::test_is_ours_matches_only_this_copy":
         "Windows paths compare without case (shell icons are Windows-only)",
+    "tests/test_audit_audio.py::test_co_init_owns_s_false_but_not_changed_mode":
+        "Windows COM initialisation (appaudio is replaced on Linux)",
+    "tests/test_audit_main.py::test_refresh_keeps_task_managers_off":
+        "the registry Run key and Task Manager's startup switch (Linux: "
+        "tests/test_linux_platform.py)",
     "tests/test_trim_updates_autostart.py::test_autostart_adds_updates_and_removes_the_run_value":
         "the registry Run key (Linux: tests/test_linux_platform.py)",
     "tests/test_trim_updates_autostart.py::test_autostart_follows_task_managers_switch":
