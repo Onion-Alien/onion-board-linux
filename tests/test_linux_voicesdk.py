@@ -93,8 +93,8 @@ class _X:
         self.x.XChangeProperty(self.dpy, win, self.x.XInternAtom(self.dpy, prop, 0), kind, 32,
                                0, ctypes.cast(data, c_void_p), 1)
 
-    def activate(self, pid: int | None):
-        win = self.x.XCreateSimpleWindow(self.dpy, self.root, 0, 0, 10, 10, 0, 0, 0)
+    def activate(self, pid: int | None, at=(0, 0, 10, 10)):
+        win = self.x.XCreateSimpleWindow(self.dpy, self.root, *at, 0, 0, 0)
         if pid is not None:
             self._set(win, b"_NET_WM_PID", 6, pid)          # XA_CARDINAL
         self._set(self.root, b"_NET_ACTIVE_WINDOW", 33, win)   # XA_WINDOW
@@ -148,3 +148,55 @@ def test_the_watcher_suggests_the_game_in_fronts_voice_engine(xwm, child):
     assert w.suggestion == "game"
     xwm.activate(child("/usr/bin/plasmashell"))         # the desktop: still the game
     assert w.poll() == "game"
+
+
+def test_the_window_in_fronts_place_on_the_screen(xwm):
+    """Where the game is: what the overlay's "the one the game is on" goes by."""
+    from soundboard.linux import voicesdk
+    assert voicesdk.active_window_rect() is None
+    xwm.activate(None, at=(300, 200, 640, 360))
+    assert voicesdk.active_window_rect() == (300, 200, 640, 360)
+
+
+class _Screen:
+    def __init__(self, x, y, w, h, k=1.0):
+        from PySide6.QtCore import QRect
+        self._g, self._k = QRect(x, y, w, h), k
+
+    def geometry(self):
+        return self._g
+
+    def devicePixelRatio(self):
+        return self._k
+
+
+def test_the_games_monitor_is_the_one_its_middle_is_on(monkeypatch):
+    from PySide6.QtGui import QGuiApplication
+    from soundboard.linux import keys, voicesdk
+    left, right = _Screen(0, 0, 1920, 1080), _Screen(1920, 0, 1280, 720, k=2.0)  # 2560x1440
+    monkeypatch.setattr(QGuiApplication, "screens", staticmethod(lambda: [left, right]))
+    monkeypatch.setattr(voicesdk, "active_window_rect", lambda: (2000, 100, 2400, 1300))
+    assert keys.foreground_monitor_info() == ("", (1920, 0, 2560, 1440))
+    monkeypatch.setattr(voicesdk, "active_window_rect", lambda: (100, 100, 800, 600))
+    assert keys.foreground_monitor_info() == ("", (0, 0, 1920, 1080))
+    monkeypatch.setattr(voicesdk, "active_window_rect", lambda: None)   # Wayland, no X
+    assert keys.foreground_monitor_info() == ("", None)
+
+
+def test_the_overlay_asks_where_the_game_is_on_x11(qapp, monkeypatch):
+    import soundboard.ui.mainwindow  # noqa: F401 - applies the Linux patches
+    from PySide6.QtGui import QGuiApplication
+    from soundboard import winkeys
+    from soundboard.ui import overlay
+    sc = QGuiApplication.primaryScreen()
+    g, k = sc.geometry(), sc.devicePixelRatio()
+    asked = []
+
+    def where():
+        asked.append(1)
+        return "", (g.left(), g.top(), round(g.width() * k), round(g.height() * k))
+    monkeypatch.setattr(winkeys, "foreground_monitor_info", where)
+    monkeypatch.setattr(QGuiApplication, "platformName", staticmethod(lambda: "xcb"))
+    win = overlay.OverlayWindow.__new__(overlay.OverlayWindow)   # only _screen is used
+    win.ov = type("Ov", (), {"s": type("S", (), {"monitor": overlay.MONITOR_GAME})()})()
+    assert overlay.OverlayWindow._screen(win, True) is sc and asked

@@ -8,7 +8,7 @@ mic directly instead of walking the user through a control panel. The Voice tab
 never offers Windows' voice installs. The game watcher behind Who's listening's
 suggestion runs on X11 too (linux/voicesdk.py). Settings has no switch for the
 cable's download (there is none). The Triggers tab is hidden: Onion Watch has no Linux
-version yet.
+version yet. The overlay's "the one the game is on" follows the game on X11.
 
 patch_main_window / patch_setup_wizard are called at the end of their modules,
 before any window exists, so the buttons connect to these versions.
@@ -73,6 +73,28 @@ def patch_main_window(cls):
     cls.open_windows_mic = open_windows_mic
     from soundboard.ui.voicepanel import SpeechPanel
     patch_speech_panel(SpeechPanel)
+    from soundboard.ui.overlay import OverlayWindow
+    patch_overlay(OverlayWindow)
+
+
+def patch_overlay(cls):
+    """"The one the game is on" follows the game on X11 too: upstream asks only on
+    Windows; linux/keys.py's foreground_monitor_info finds the window in front."""
+    orig_screen = cls._screen
+
+    def _screen(self, follow_game: bool):
+        from PySide6.QtGui import QGuiApplication
+        from soundboard import winkeys
+        from soundboard.ui import overlay
+        if follow_game and self.ov.s.monitor == overlay.MONITOR_GAME \
+                and QGuiApplication.platformName() == "xcb":
+            name, rect = winkeys.foreground_monitor_info()
+            sc = overlay.pick_screen(QGuiApplication.screens(), name, rect)
+            if sc is not None:
+                return sc
+        return orig_screen(self, follow_game)
+
+    cls._screen = _screen
 
 
 

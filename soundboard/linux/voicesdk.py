@@ -44,16 +44,29 @@ def _display() -> x11.Display | None:
     return _dpy
 
 
-def active_pid() -> int:
-    """The process of the window in front (X11), or 0."""
+def active_window() -> int:
+    """The window in front (X11: the window manager's _NET_ACTIVE_WINDOW), or 0."""
     d = _display()
     if d is None:
         return 0
     win = d.cardinals(d.root, "_NET_ACTIVE_WINDOW")
-    if not win or not win[0]:
+    return win[0] if win else 0
+
+
+def active_pid() -> int:
+    """The process of the window in front (X11), or 0."""
+    win = active_window()
+    if not win:
         return 0
-    pid = d.cardinals(win[0], "_NET_WM_PID")
+    pid = _display().cardinals(win, "_NET_WM_PID")
     return pid[0] if pid else 0
+
+
+def active_window_rect() -> tuple[int, int, int, int] | None:
+    """Where the window in front is, in native pixels (also the overlay's "the one the
+    game is on": linux/keys.py), or None."""
+    win = active_window()
+    return _display().window_rect(win) if win else None
 
 
 def _environ(pid: int, name: str) -> str:
