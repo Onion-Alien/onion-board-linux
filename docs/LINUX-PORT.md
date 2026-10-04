@@ -126,7 +126,11 @@ emitted on the freed widget during a later test. The test now waits for its
 `web-search` thread (a test bug only: the app's panel lives as long as its window).
 It's in upstream's test, so it's worth sending upstream too. Five full runs since:
 clean. The same loops found a real flake earlier, also fixed: the test proxy's pipe
-thread raising ValueError on Linux when its socket was closed under it.
+thread raising ValueError on Linux when its socket was closed under it. Another
+upstream test fix to send back: `test_bunnywidget.py`'s frames added the real time
+each paint took to the pretend 35 ms, so on a slower machine (CI, once) the hammer
+act ended in the 50 ms between one blow's sawdust fading and the next blow; it now
+steps exactly 35 ms a frame.
 
 ## Checking on a real Linux desktop
 
