@@ -87,3 +87,7 @@ def listen_for_second_launch(app, get_window) -> QLocalServer:
     if not server.listen(INSTANCE_NAME):
         log.warning("single-instance server couldn't listen: %s", server.errorString())
     return server
+
+
+if os.name != "nt":   # Linux: an flock()ed lock file instead of the named mutex
+    from soundboard.linux.singleinstance import *  # noqa: E402,F403
