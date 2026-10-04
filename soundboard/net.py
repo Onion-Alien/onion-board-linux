@@ -1149,3 +1149,7 @@ def child_env(feature: str, env: dict[str, str] | None = None) -> dict[str, str]
     if not allowed(feature):
         out["HF_HUB_OFFLINE"] = "1"
     return out
+
+
+if os.name != "nt":   # Linux: proxy variables in both spellings
+    from soundboard.linux.net import *  # noqa: E402,F403

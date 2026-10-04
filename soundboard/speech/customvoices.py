@@ -204,7 +204,7 @@ def load(d: Path | None = None) -> tuple[list[CustomVoice], list[str]]:
     problems: list[str] = []
     if not d.is_dir():
         return voices, problems
-    for f in sorted(d.glob("*.json")):
+    for f in sorted(d.glob("*.json"), key=lambda p: p.name.lower()):   # as Windows sorts
         if f.name.endswith(".onnx.json"):
             continue        # a Piper voice's own settings
         try:
@@ -227,7 +227,7 @@ def load(d: Path | None = None) -> tuple[list[CustomVoice], list[str]]:
                 cwd=d))
         except (OSError, ValueError) as e:
             problems.append(f"{f.name}: {errors.plain(e)}")
-    onnx = sorted(d.glob("*.onnx"))
+    onnx = sorted(d.glob("*.onnx"), key=lambda p: p.name.lower())
     if onnx:
         exe = _piper_exe(d)
         if not exe:

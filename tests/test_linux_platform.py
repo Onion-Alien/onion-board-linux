@@ -118,3 +118,46 @@ def test_appdata_is_the_xdg_data_folder():
     assert os.environ["APPDATA"]
     from soundboard.linux import data_home
     assert os.environ.get("APPDATA") == data_home() or "APPDATA" in os.environ
+
+
+# ------------------------------------------------------------------ Tor
+def test_torrc_bridges_use_linux_paths():
+    from soundboard import tor
+    pt = {"pluggableTransports": {"lyrebird": "ClientTransportPlugin obfs4 exec "
+                                              "${pt_path}lyrebird"},
+          "bridges": {"obfs4": ["obfs4 1.2.3.4:443 X"]}}
+    lines = tor.bridge_config("obfs4", pt)
+    assert lines == ["UseBridges 1",
+                     "ClientTransportPlugin obfs4 exec pluggable_transports/lyrebird",
+                     "Bridge obfs4 1.2.3.4:443 X"]
+
+
+def test_tor_is_found_as_tor_and_runs_with_its_libraries(tmp_path, monkeypatch):
+    from soundboard import tor, torget
+    monkeypatch.setattr(tor, "bundle_dirs", lambda: [tmp_path])
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert tor.tor_exe() is None and not tor.available()
+    (tmp_path / "tor").write_text("")
+    assert tor.tor_exe() == tmp_path / "tor"
+    cmd = tor.Tor._command(None, tmp_path / "tor")
+    assert cmd[0] == "env" and cmd[1].startswith(f"LD_LIBRARY_PATH={tmp_path}")
+    assert cmd[-1] == str(tmp_path / "tor")
+    assert torget.TARBALL.startswith("tor-expert-bundle-linux-x86_64-")
+    assert "tor/tor" in torget.KEEP and not any(k.endswith(".exe") for k in torget.KEEP)
+
+
+def test_torget_unpack_keeps_the_execute_bit(tmp_path, monkeypatch):
+    import io
+    import tarfile
+    from soundboard import torget
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name in torget.KEEP:
+            data = b"#!/bin/sh\n" if not name.endswith((".json", ".txt")) else b"{}"
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    dest = torget.unpack(buf.getvalue(), tmp_path / "bin")
+    assert os.access(dest / "tor", os.X_OK)
+    assert os.access(dest / "pluggable_transports" / "lyrebird", os.X_OK)
+    assert torget.installed(dest)

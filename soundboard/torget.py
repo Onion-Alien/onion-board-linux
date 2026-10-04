@@ -174,3 +174,7 @@ def get(progress: Callable[[int, int], None] | None = None,
     dest = unpack(data)
     log.info("Tor %s unpacked into the tor\\bin folder", VERSION)
     return dest
+
+
+if __import__("sys").platform != "win32":   # Linux: the Linux Expert Bundle
+    from soundboard.linux.torget import *  # noqa: E402,F403
