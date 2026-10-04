@@ -316,3 +316,6 @@ def _no_result_stats_lookups(monkeypatch):
     def offline(r):
         raise ytdl.FetchError("offline in tests")
     monkeypatch.setattr(ytdl, "stats", offline)
+
+
+from windows_only import pytest_collection_modifyitems  # noqa: E402,F401 - skipped off Windows

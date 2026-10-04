@@ -773,3 +773,7 @@ def qt_status():
         _status = TorStatus()
         manager().on_change(_status.changed.emit)   # queued over from the worker thread
     return _status
+
+
+if os.name != "nt":   # Linux: `tor` and its libraries, "/" in transport paths
+    from soundboard.linux.tor import *  # noqa: E402,F403
