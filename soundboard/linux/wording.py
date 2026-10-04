@@ -66,12 +66,8 @@ PHRASES: list[tuple[str, str]] = [
     ("but no piper.exe (put it in a 'piper' folder there)",
      "but no piper program (put the “piper” folder from Piper's Linux download there)"),
     ("tor.exe", "tor"),
-    # Settings → Privacy: the cable is made by the app, nothing downloaded
-    ("The setup guide's Install button downloads VB-Cable from vb-audio.com. Off: install "
-     "it yourself from there.",
-     "Nothing on Linux: Onion Board makes its virtual cable itself, with no download."),
     # self-update: the AppImage replaces itself (linux/updates.py)
-    ("Update now downloads it in the background (about 140 MB)",
+    ("Update now downloads it in the background (about 180 MB)",
      "Update now downloads it in the background (about 210 MB)"),
     ("The installer couldn't be started", "The update couldn't be put in place"),
     # add-ons (linux/modules.py): the distribution's python3, the install.sh fallback

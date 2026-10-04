@@ -29,7 +29,10 @@ DISABLED`: nothing of the port goes public before launch), then
 way (21 commits, 35 files) went in with no conflicts; 1.6.5 (21 commits, with
 importing from other soundboards) had three small ones: the README's code layout
 moved to `docs/CODE.md` (the `soundboard/linux/` row went with it) and two test
-fixes upstream made the same way. After a merge, grep the new
+fixes upstream made the same way. 1.6.6 (a texts audit) only clashed in the README's
+first lines, but reworded two texts the wording table matched: since then
+`tests/test_linux_wording.py` also fails when a table entry no longer matches any
+upstream text. After a merge, grep the new
 upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`,
 `.exe`, `CREATE_NO_WINDOW`) and give anything new a Linux hook. New "Windows" text
 fails `tests/test_linux_wording.py`, which lists each string: reword it in
@@ -61,6 +64,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Settings | no "Virtual cable download" switch (nothing is downloaded for the cable); a built copy that can't update itself (a folder build, an AppImage in a folder the user can't write to) says why instead of "runs from source: git pull" | `linux/ui.py`, `linux/wording.py` |
 | Self-update | the release's `OnionBoard-x86_64.AppImage` (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
 | Import from other soundboards | Soundux for Linux's own config (`~/.config/Soundux`, or its Flatpak's), its hotkeys X key codes turned into Windows ones; EXP Soundboard's last board from Java's preferences file; Soundpad and Resanance (and Soundux for Windows) in Wine / Proton prefixes (`$WINEPREFIX`, `~/.wine`, Steam's `compatdata`). A board's Windows paths are found here: `\` turned into `/`, `Z:` is `/`, another drive is that drive in the board's own prefix (else `$WINEPREFIX` / `~/.wine`); a file's name comes out right even when it's missing | `linux/otherboards.py`, `linux/soundux.py`, `linux/expboard.py`, `linux/wine.py` |
+| Triggers tab | hidden (not removed: everything that looks it up still finds it), and it never nudges. Onion Watch (its own repo) captures the screen with DXGI / GDI; 0.6.5's module zip does install and load here without errors, but only says it works on Windows. Porting it (X11 capture: XShm, XComposite for one window; a portal on Wayland) is its own project, in that repo; then this tab comes back | `linux/ui.py` |
 | Voice engine suggestion | *Who's listening* suggests the game in front's voice engine: the X11 active window (`_NET_ACTIVE_WINDOW`, so games under XWayland too) → `_NET_WM_PID` → a Proton / Wine game's .exe from its command line (`Z:\` is `/`, another drive in its `WINEPREFIX`), a native program's `/proc/<pid>/exe`; the scan is upstream's. Desktop and Wine programs (`/usr`, `C:\windows`) don't count. A native libvivoxsdk.so isn't looked for; Wayland windows give nothing | `linux/voicesdk.py`, `linux/x11.py`, `linux/ui.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server. Upstream's suite runs on 4 workers (pytest-xdist); each test's Xvfb picks a free display itself (`-displayfd`) and each dbus-daemon has its own address, so workers never share one | |
@@ -100,15 +104,19 @@ are kept out on purpose, and `build-linux.sh` fails if one gets back in:
   with only the ALSA backend the app uses, and `scripts/swap_portaudio.py` puts it in
   and removes what only the old copy needed.
 
-## Known test-suite issue
+## The test-suite segfault (found, fixed)
 
-An intermittent segfault was seen once in a full run near
-`tests/test_net_leaks.py::test_radio_directory_through_the_proxy`. Not reproduced
-since: 5 full runs and 8 runs of `test_mainwindow` … `test_net_switches`, all with
-`python -X faulthandler`. If it shows again, keep the faulthandler dump: the
-"Current thread" stack says which thread crashed (a Qt object freed off the UI
-thread is the usual suspect). The same loops found a real flake, fixed: the test
-proxy's pipe thread raising ValueError on Linux when its socket was closed under it.
+An intermittent segfault in full runs (first seen near `test_net_leaks.py`, later
+under `test_ytdl.py::test_searching_shows_a_centred_mascot_then_the_results`, about
+one run in four once the suite ran on 4 workers) was caught with `python -X
+faulthandler`: the crashing thread was `ytsearch.SearchResults._work` emitting its
+result. `test_ytdl.py::test_results_spin_while_searching_and_offer_every_site`
+started a second search, closed the panel and returned; the search thread then
+emitted on the freed widget during a later test. The test now waits for its
+`web-search` thread (a test bug only: the app's panel lives as long as its window).
+It's in upstream's test, so it's worth sending upstream too. Five full runs since:
+clean. The same loops found a real flake earlier, also fixed: the test proxy's pipe
+thread raising ValueError on Linux when its socket was closed under it.
 
 ## Checking on a real Linux desktop
 

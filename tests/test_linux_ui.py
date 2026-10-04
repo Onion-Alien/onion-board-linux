@@ -112,7 +112,7 @@ def test_settings_has_no_cable_download_switch(window):
         assert d.net_boxes["setup_downloads"].isHidden()
         assert not d.net_boxes["tor_download"].isHidden()
         [hint] = [lb for lb in d.findChildren(QLabel)
-                  if "makes its virtual cable itself" in lb.text()]
+                  if lb.text() == d.NET_HINTS["setup_downloads"]]   # its VB-Cable text
         assert hint.isHidden()
     finally:
         d.close()
@@ -126,3 +126,15 @@ def test_a_built_copy_that_cant_update_says_why_not_git_pull():
     assert "git pull" in old and "git pull" not in new and "(/opt/apps)" in new
     assert "<code>git pull</code>" in old_html and "release page" in new_html
     assert "isn't the AppImage" in update_phrases(True, "")[0][1]
+
+
+def test_no_triggers_tab_until_onion_watch_runs_on_linux(window, qapp):
+    """Hidden, not removed (the window still finds it), and it never asks for
+    attention, even with triggers brought over from Windows."""
+    w, _ = window
+    i = w.tabs.indexOf(w.triggers)
+    assert i >= 0 and not w.tabs.isTabVisible(i) and w.tabs.currentIndex() != i
+    w._nudge_triggers(i)
+    for _ in range(5):
+        qapp.processEvents()
+    assert "Onion Watch" not in w.status.text()

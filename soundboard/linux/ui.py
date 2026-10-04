@@ -7,7 +7,8 @@ prompt, no restart. "Game has no microphone setting?" sets the cable as the defa
 mic directly instead of walking the user through a control panel. The Voice tab
 never offers Windows' voice installs. The game watcher behind Who's listening's
 suggestion runs on X11 too (linux/voicesdk.py). Settings has no switch for the
-cable's download (there is none).
+cable's download (there is none). The Triggers tab is hidden: Onion Watch has no Linux
+version yet.
 
 patch_main_window / patch_setup_wizard are called at the end of their modules,
 before any window exists, so the buttons connect to these versions.
@@ -33,6 +34,13 @@ def patch_main_window(cls):
         orig_init(self, *a, **k)
         if getattr(self, "btn_install", None) is not None:
             self.btn_install.setText("Make the virtual cable")
+        # no Triggers tab until Onion Watch, the add-on it holds, runs on Linux (it
+        # captures the screen with Windows' own APIs); hidden, not removed, so
+        # everything that looks the tab up still finds it
+        ti = self.tabs.indexOf(self.triggers)
+        self.tabs.setTabVisible(ti, False)
+        if self.tabs.currentIndex() == ti:   # the last tab used, on Windows
+            self.tabs.setCurrentIndex(0)
         # the game in front's voice engine (linux/voicesdk.py): needs X11 / XWayland
         if getattr(self, "voice_watch", 0) is None and x11.available():
             from soundboard import voicesdk
@@ -59,10 +67,14 @@ def patch_main_window(cls):
                        "settings.", "warn")
 
     cls.__init__ = __init__
+    # ...and it never asks for attention (triggers brought over from Windows)
+    cls._nudge_triggers = lambda self, index: None
     cls.install_cable = install_cable
     cls.open_windows_mic = open_windows_mic
     from soundboard.ui.voicepanel import SpeechPanel
     patch_speech_panel(SpeechPanel)
+
+
 
 
 def patch_speech_panel(cls):

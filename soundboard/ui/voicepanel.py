@@ -228,8 +228,9 @@ class VoiceFxPanel(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(12)
         v.addWidget(section_label("VOICE CHANGER"))
-        v.addWidget(hint_label("Change your mic live in Discord and games. Pick a voice "
-                               "to turn it on, then use Hear my voice to try it."))
+        v.addWidget(hint_label("Change your mic live for whoever you send sounds to (Discord, a "
+                               "game, OBS). Pick a voice to turn it on, then use Hear my "
+                               "voice to try it."))
 
         # ---- the switch
         self.btn_power = QPushButton()
@@ -1606,7 +1607,8 @@ class ModulesList(QWidget):
             if m.error:
                 state = f"⚠ {m.error}"
             elif m.kind == "service" and not m.installed:
-                state = "not set up: run its install.bat"
+                state = ("not set up yet: press Install speech recognition above"
+                         if m.id == LIVE_MODULE else "not set up yet")
             elif m.kind == "effects":
                 state = "on" if m.loaded else "not loaded"
             else:
