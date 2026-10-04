@@ -66,6 +66,8 @@ Ground rules:
    d. The unit tests here too (a third machine):
       .venv/bin/pip install -r requirements-dev.txt pytest-timeout
       QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --timeout 300
+      WSLg's /tmp/.X11-unix is read-only, so the X11 tests need a tmpfs there:
+      wrap the command as LINUX-PORT.md's "Running the tests here" shows.
 
 4. The window (ask me first: it opens a window on my desktop)
    - Start it: ~/ob/OnionBoard-x86_64.AppImage --appimage-extract-and-run
