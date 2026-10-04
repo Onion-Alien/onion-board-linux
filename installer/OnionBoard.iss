@@ -19,10 +19,19 @@
 ;       * Tor, unticked: the installer doesn't carry it. A ticked box runs
 ;         OnionBoard.exe --get-tor, which downloads the Tor Project's Expert Bundle
 ;         (soundboard/torget.py: SHA-256 pinned, the saved proxy used) into
-;         %APPDATA%\OnionBoard\tor\bin (Settings > Privacy's "Get Tor" button does
+;         %APPDATA%\OnionBoard\tor\bin (Settings > Connection's "Get Tor" button does
 ;         the same). A failed download says so and leaves the app working without it
 ;       * Keep a history of network activity, unticked: runs OnionBoard.exe
 ;         --keep-netlog (config netlog_keep; soundboard/netlog.py keep())
+;       * Bring my sounds over from Soundpad / Resanance / Soundux / EXP Soundboard: each
+;         only there when that app's board is on this PC (Soundpad's
+;         %APPDATA%\Leppsoft\soundlist.spl, Soundux's %APPDATA%\Soundux\config.json,
+;         Resanance's
+;         %APPDATA%\Resanance\data\Resanance.db, EXP Soundboard's last board in the
+;         registry; soundboard/otherboards.py). Ticked, it leaves a note
+;         (%APPDATA%\OnionBoard\import-from) and the app's first start copies the
+;         sounds in. Silent installs only do it when /TASKS
+;         or /MERGETASKS names it: nobody saw the box
 ;       * a Desktop shortcut
 ;   - then opens Onion Board, whose Quick setup asks which mic they use and walks
 ;     them through Discord
@@ -84,19 +93,23 @@ CloseApplications=yes
 
 [Messages]
 WelcomeLabel1=Let's set up Onion Board
-WelcomeLabel2=This puts Onion Board on your PC and adds the free "virtual cable" it needs, so Discord and your games can hear your sounds.%n%nNext you'll see what it connects to online, then you can tick any extras you want. When Windows asks for permission, click Yes.%n%nDid Windows or your browser warn you before this opened ("Windows protected your PC", "not commonly downloaded")? That's normal for a free app that isn't code-signed, and you got past it fine. Next time: More info, then Run anyway.
+WelcomeLabel2=This puts Onion Board on your PC and can add the free "virtual cable", the pipe that lets Discord and your games hear your sounds (you can skip it if you'd rather send your sounds through Voicemeeter, a mixer or OBS).%n%nNext you'll see what it connects to online, then you can tick any extras you want. When Windows asks for permission, click Yes.%n%nDid Windows or your browser warn you before this opened ("Windows protected your PC", "not commonly downloaded")? That's normal for a free app that isn't code-signed, and you got past it fine. Next time: More info, then Run anyway.
 WizardSelectTasks=Pick what you want
 SelectTasksDesc=Tick what you'd like. If you're not sure, leave the boxes as they are.
 FinishedHeadingLabel=All done!
-FinishedLabel=Onion Board is installed. It will open now and ask you a few easy questions (which mic you use, where you listen).%n%nYou can find it later on your Desktop or in the Start menu.%n%nPrivacy: no account, ads or tracking. Settings > Privacy & security shows everything the app does online, lets you switch those things off, and can send all of it through a proxy or Tor.
+FinishedLabel=Onion Board is installed. It will open now and ask you a few easy questions (which mic you use, where you listen, how your sounds reach Discord or your game).%n%nYou can find it later on your Desktop or in the Start menu.%n%nPrivacy: no account, ads or tracking. Settings > Privacy & security shows everything the app does online, lets you switch those things off, and can send all of it through a proxy or Tor.
 FinishedRestartLabel=Onion Board is installed. To finish setting up the virtual cable, Windows needs to restart your PC.%n%nAfter the restart, open Onion Board from the Start menu and it will pick up where it left off.
 
 [Tasks]
-Name: "vbcable"; Description: "The free virtual cable (VB-Cable), so Discord and games hear your sounds"; GroupDescription: "Needed for Discord and games"
+Name: "vbcable"; Description: "The free virtual cable (VB-Cable), so Discord and games hear your sounds"; GroupDescription: "Needed for Discord and games (untick it if you'll send sounds through Voicemeeter, a mixer or OBS)"
 Name: "ffmpeg"; Description: "Play M4A, AAC and video files (the free FFmpeg, about 100 MB)"; GroupDescription: "Extra features (optional)"; Check: CanOfferFfmpeg
 Name: "livevoice"; Description: "Set up live voice-to-speech now (needs Python, about 300 MB)"; GroupDescription: "Extra features (optional)"; Flags: unchecked
 Name: "tor"; Description: "Private connection (Tor): hides your internet address (about 22 MB)"; GroupDescription: "Privacy (optional)"; Flags: unchecked
 Name: "keepnetlog"; Description: "Keep a history of what Onion Board connects to (on this PC only)"; GroupDescription: "Privacy (optional)"; Flags: unchecked
+Name: "soundpad"; Description: "Bring my sounds over from Soundpad (copies them with their names, categories and hotkeys; Soundpad keeps its own)"; GroupDescription: "Found another soundboard on this PC"; Check: HasSoundpad
+Name: "resanance"; Description: "Bring my sounds over from Resanance (copies them with their names, tabs and hotkeys; Resanance keeps its own)"; GroupDescription: "Found another soundboard on this PC"; Check: HasResanance
+Name: "soundux"; Description: "Bring my sounds over from Soundux (copies them with their names, tabs and hotkeys; Soundux keeps its own)"; GroupDescription: "Found another soundboard on this PC"; Check: HasSoundux
+Name: "expboard"; Description: "Bring my sounds over from EXP Soundboard (copies them with their hotkeys; EXP Soundboard keeps its own)"; GroupDescription: "Found another soundboard on this PC"; Check: HasExpBoard
 Name: "desktopicon"; Description: "Put an Onion Board shortcut on my Desktop"; GroupDescription: "Shortcuts"
 
 [InstallDelete]
@@ -347,8 +360,9 @@ begin
     LayoutHeader;
   if (CurPageID <> wpSelectTasks) or WizardSilent then
     exit;
-  // The cable is what makes the app work: ticked on the first visit even if the last
-  // install unticked it (Inno remembers boxes). Installing skips a cable that works.
+  // The cable is how Discord and games hear the sounds by default: ticked on the first
+  // visit even if the last install unticked it (Inno remembers boxes). Installing skips
+  // a cable that works. Someone sending through another device unticks it.
   if not CableTicked and not OfflineChosen then
     WizardSelectTasks('vbcable');
   CableTicked := True;
@@ -394,6 +408,56 @@ begin
   else
     WizardForm.TasksList.Top := Lbl.Top;
   WizardForm.TasksList.Height := Bottom - WizardForm.TasksList.Top;
+end;
+
+function HasSoundpad: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{userappdata}\Leppsoft\soundlist.spl'));
+end;
+
+function HasResanance: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{userappdata}\Resanance\data\Resanance.db'));
+end;
+
+function HasSoundux: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{userappdata}\Soundux\config.json'));
+end;
+
+// EXP Soundboard remembers its last board in Java's Preferences (soundboard/expboard.py)
+function HasExpBoard: Boolean;
+begin
+  Result := RegValueExists(HKCU, 'Software\JavaSoft\Prefs\/Expenosa''s /Soundboard',
+    'last/Soundboard/Used');
+end;
+
+// The "Bring my sounds over from …" boxes: one line per ticked one in a note for the
+// app's first start, which does the copying (soundboard/otherboards.py). Silent
+// installs only when /TASKS or /MERGETASKS names the box: nobody saw it.
+function ImportTicked(Task: String): Boolean;
+begin
+  Result := WizardIsTaskSelected(Task) and
+    (not WizardSilent or ListedIn('TASKS', Task) or ListedIn('MERGETASKS', Task));
+end;
+
+procedure QueueImports;
+var
+  Keys: String;
+begin
+  Keys := '';
+  if ImportTicked('soundpad') then
+    Keys := Keys + 'soundpad' + #13#10;
+  if ImportTicked('resanance') then
+    Keys := Keys + 'resanance' + #13#10;
+  if ImportTicked('soundux') then
+    Keys := Keys + 'soundux' + #13#10;
+  if ImportTicked('expboard') then
+    Keys := Keys + 'expboard' + #13#10;
+  if Keys = '' then
+    exit;
+  ForceDirectories(ExpandConstant('{userappdata}\OnionBoard'));
+  SaveStringToFile(ExpandConstant('{userappdata}\OnionBoard\import-from'), Keys, False);
 end;
 
 function WingetPath(Param: String): String;
@@ -538,12 +602,14 @@ begin
     SuppressibleMsgBox('Tor couldn''t be downloaded, so the private connection isn''t ' +
       'ready yet. Onion Board works fine without it.' + #13#10#13#10 +
       'Where Tor is blocked, downloading it often is too. You can try again any time: ' +
-      'Settings > Privacy & security > Connection > Get Tor.',
+      'Settings > Connection > Get Tor.',
       mbInformation, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssPostInstall then
+    QueueImports;
   if (CurStep = ssPostInstall) and MayDownload('vbcable') then
     InstallCable;
   if (CurStep = ssPostInstall) and MayDownload('tor') then
