@@ -25,6 +25,7 @@ done
 
 # the same as build.ps1, with ":" between source and destination; no VB-Cable
 # installer (the app makes its own cable on Linux)
+mkdir -p build
 "$py" -m PyInstaller --noconfirm "${clean[@]}" --windowed \
     --name OnionBoard \
     --add-data "assets/onionboard.ico:." \
@@ -37,7 +38,17 @@ done
     --exclude-module scipy.interpolate --exclude-module scipy.integrate \
     --exclude-module scipy.sparse --exclude-module scipy.spatial \
     --paths . \
-    main.py
+    main.py 2>&1 | tee build/pyinstaller.log
+
+# a library PyInstaller couldn't find isn't in the build: the app would start only
+# where the user happens to have it (the X11 plugin's libxcb-*, libpulse…)
+if grep "Library not found" build/pyinstaller.log; then
+  echo "Install the libraries above on this machine so they're bundled, then build again." >&2
+  exit 1
+fi
+
+# PySide6 brings all of Qt: cut what the app never loads (QML, Quick 3D, translations…)
+"$py" scripts/prune_build_linux.py dist/OnionBoard
 
 QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX="${QTWEBENGINE_DISABLE_SANDBOX:-0}" \
     dist/OnionBoard/OnionBoard --selftest
