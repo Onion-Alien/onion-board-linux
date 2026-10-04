@@ -121,6 +121,37 @@ def test_a_stream_opens_on_pulse_aimed_at_its_device(server, monkeypatch):
     assert "PULSE_SINK" not in os.environ and "PULSE_PROP_OVERRIDE" not in os.environ
 
 
+def test_pulseaudios_null_sink_gets_the_safer_buffer(server, monkeypatch):
+    """On PulseAudio the cable is a null sink, which stops asking for sound for about
+    2 s after an underrun: at "low" it carried sound in bursts. It opens at "high";
+    a sound card, and PipeWire's cable, keep what the user picked."""
+    import sounddevice
+    from soundboard import engine
+    pulse_sinks = (SINKS.replace("\tName: alsa_output", "\tDriver: module-alsa-card.c\n"
+                                 "\tName: alsa_output")
+                   .replace("\tName: onionboard_cable", "\tDriver: module-null-sink.c\n"
+                            "\tName: onionboard_cable"))
+    monkeypatch.setattr(server, "_pactl", lambda *a: {
+        ("list", "sinks"): pulse_sinks, ("list", "sources"): SOURCES}.get(a, ""))
+    server.refresh()
+    monkeypatch.setattr(sounddevice, "OutputStream", Recorded)
+    monkeypatch.setattr(server, "_pcm_index", lambda: 7)
+    lat = []
+    monkeypatch.setattr(Recorded, "__init__", lambda self, **k: lat.append(k.get("latency")))
+    cable = engine.find_device("output", "Onion Board Cable Input")
+    speakers = engine.find_device("output", "Built-in Audio Analog Stereo")
+    for latency in ("low", 0.01, "high", 0.2):
+        engine.sd.OutputStream(device=cable, samplerate=48000, channels=2, latency=latency)
+    engine.sd.OutputStream(device=speakers, samplerate=48000, channels=2, latency="low")
+    assert lat == ["high", "high", "high", 0.2, "low"]
+    monkeypatch.setattr(server, "_pactl", lambda *a: {     # PipeWire: "Driver: PipeWire"
+        ("list", "sinks"): SINKS.replace("\tName:", "\tDriver: PipeWire\n\tName:"),
+        ("list", "sources"): SOURCES}.get(a, ""))
+    server.refresh()
+    engine.sd.OutputStream(device=cable, samplerate=48000, channels=2, latency="low")
+    assert lat[-1] == "low"
+
+
 def test_no_sound_server_means_no_devices(monkeypatch):
     from soundboard import engine
     from soundboard.linux import audio
@@ -146,6 +177,42 @@ def test_a_device_thats_gone_is_never_opened(server, monkeypatch):
     cable = engine.find_device("output", "Onion Board Cable Input")   # still listed
     with pytest.raises(RuntimeError, match="device not found: Onion Board Cable Input"):
         engine.sd.OutputStream(device=cable, samplerate=48000, channels=2)
+
+
+def test_a_new_stream_gets_time_to_start(server, monkeypatch):
+    """PulseAudio gives a new stream on a null sink (the cable) a few callbacks and
+    then none for up to 2 s: the watchdog reopened it at 1.5 s, which started the
+    wait over, so the cable never carried a sound. A stream still silent after its
+    start-up time is reopened as before."""
+    import time
+    from soundboard import engine
+    from soundboard.linux import engine as linux_engine
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(linux_engine, "GONE_POLL_S", 1e9)
+    e = engine.Engine()
+    try:
+        e.set_main_device("Onion Board Cable Input")
+        first = e.main_stream
+        assert first is not None and not e.errors
+        e._last_cb["main"] = clock[0]          # its first few callbacks, then quiet
+        for _ in range(int(linux_engine.START_S / 0.5) - 1):
+            clock[0] += 0.5
+            e.check_streams()
+        assert e.main_stream is first and e.stalls == 0
+        e._last_cb["main"] = clock[0]          # it got going
+        clock[0] += 1.0
+        e.check_streams()
+        assert e.main_stream is first and e.stalls == 0
+        clock[0] += engine.STALL_S + 0.5       # then really stopped: reopened
+        e.check_streams()
+        assert e.stalls == 1 and e.main_stream is not first
+        again = e.main_stream                  # and the reopened one gets its time too
+        clock[0] += linux_engine.START_S - 0.5
+        e.check_streams()
+        assert e.stalls == 1 and e.main_stream is again
+    finally:
+        e.shutdown()
 
 
 def test_an_unplugged_device_is_let_go_and_taken_back_when_it_returns(server, monkeypatch):
