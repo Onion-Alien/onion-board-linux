@@ -41,7 +41,8 @@ Ground rules:
        pipewire pipewire-pulse wireplumber ffmpeg espeak-ng dbus imagemagick \
        libportaudio2 libsndfile1 libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
        libfontconfig1 libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 \
-       libxkbfile1 libxcb-cursor0 xvfb xkb-data x11-xkb-utils
+       libxkbfile1 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 xvfb xkb-data \
+       x11-xkb-utils
    gh auth login            # the account that can see the private repo
    gh repo clone Onion-Alien/onion-board-linux ~/obl && cd ~/obl
    python3 -m venv .venv && .venv/bin/pip install -r requirements-linux.txt
@@ -74,6 +75,12 @@ Ground rules:
      `import -window root shot.png` from imagemagick in WSL).
    - Add a short sound (any WAV/MP3), play it with its pad, hear it on the PC's
      speakers (WSLg sends WSL's sound to Windows).
+   - Voice tab (1.6.7's voice changer), with a mic in WSLg: pick Female voice,
+     turn on Hear my voice, talk. Expect your changed voice alone in the
+     headphones (no sounds under it), and the delay label giving a number for
+     "your sound devices" (Linux's PortAudio reports it) next to the voice's own.
+   - Settings -> Overlay -> Show preview: while it's up, a click on it should go
+     through to the window under it, and any click or key in the app closes it.
    - Settings -> Remote: turn it on. If Onion Board for Windows also runs here,
      give the Linux one port 7475 (mirrored networking shares ports) and note the
      key it shows.
