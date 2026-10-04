@@ -161,3 +161,17 @@ def test_torget_unpack_keeps_the_execute_bit(tmp_path, monkeypatch):
     assert os.access(dest / "tor", os.X_OK)
     assert os.access(dest / "pluggable_transports" / "lyrebird", os.X_OK)
     assert torget.installed(dest)
+
+
+# ------------------------------------------------------------------ Trash
+def test_recycle_moves_to_the_freedesktop_trash(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from soundboard import library
+    f = tmp_path / "boom.wav"
+    f.write_bytes(b"RIFF")
+    assert library.recycle(f) and not f.exists()
+    trashed = list((tmp_path / "data" / "Trash" / "files").iterdir())
+    assert [p.name for p in trashed] == ["boom.wav"]
+    assert (tmp_path / "data" / "Trash" / "info" / "boom.wav.trashinfo").is_file()
+    assert not library.recycle(tmp_path / "gone.wav")

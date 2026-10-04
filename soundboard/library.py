@@ -1073,3 +1073,7 @@ def delete_file(meta: SoundMeta):
                 c.unlink(missing_ok=True)
     except OSError:
         log.warning("couldn't delete %s", p, exc_info=True)
+
+
+if sys.platform != "win32":   # Linux: the desktop's Trash
+    from soundboard.linux.library import *  # noqa: E402,F403
