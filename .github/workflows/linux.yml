@@ -30,3 +30,37 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           # Ubuntu 24.04's AppArmor stops Chromium's sandbox in CI; the tests' pages are local
           QTWEBENGINE_DISABLE_SANDBOX: "1"
+
+  appimage:
+    # built on the oldest Ubuntu we support: the AppImage needs its glibc or newer
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: System libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libportaudio2 libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 \
+            libglib2.0-0 libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 \
+            libxtst6 libxkbfile1 libasound2 libxcb-cursor0 file
+      - run: python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+      - name: appimagetool
+        run: |
+          curl -sSfL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+      - name: Build (PyInstaller, self-test, AppImage)
+        env:
+          APPIMAGETOOL: ./appimagetool
+          APPIMAGE_EXTRACT_AND_RUN: "1"   # no FUSE on the runner
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+        run: ./build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OnionBoard-x86_64.AppImage
+          path: dist/OnionBoard-x86_64.AppImage
+          retention-days: 14
