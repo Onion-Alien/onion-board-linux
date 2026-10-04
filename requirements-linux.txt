@@ -1,0 +1,6 @@
+# The Linux build's extra packages, on top of requirements.txt (kept apart so upstream
+# merges never touch that file).
+-r requirements.txt
+# D-Bus: Wayland hotkeys through the desktop's GlobalShortcuts portal
+# (soundboard/linux/portal.py). Pure Python, MIT.
+jeepney==0.9.0

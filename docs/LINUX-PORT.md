@@ -36,7 +36,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 
 | Area | Linux | Files |
 |---|---|---|
-| Global hotkeys | X11 key grabs (also games under XWayland), real key-up for hold-to-play, the keyboard grab dropped at once so the game keeps its keys; survives the X server going away | `linux/keys.py`, `linux/x11.py` |
+| Global hotkeys | X11 key grabs (also games under XWayland), real key-up for hold-to-play, the keyboard grab dropped at once so the game keeps its keys; survives the X server going away. Wayland with no X display: the desktop's GlobalShortcuts portal (KDE Plasma, GNOME 48+) over D-Bus (jeepney): the desktop asks the user once, binds what it allows (the rest show as failed), Activated / Deactivated give press and release. Tested against a stand-in portal on a private dbus-daemon, not yet on a real desktop | `linux/keys.py`, `linux/x11.py`, `linux/portal.py` |
 | Key presses (auto push-to-talk) | XTest | `linux/keys.py` |
 | Hotkey capture dialog | `winkeys.event_vk()` turns Qt's X keysym into the Windows key code configs store | `winkeys.py`, `settings.py` (one line) |
 | MIDI pads | ALSA raw MIDI, busy = EBUSY, unplug detected | `linux/midi.py` |
@@ -50,14 +50,15 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Audio devices | the sound server's devices by name (`pactl`); each stream opens on PortAudio's `pulse` device aimed with `PULSE_SINK` / `PULSE_SOURCE`; shows as "Onion Board" in volume mixers. Verified end to end on PipeWire. See `docs/LINUX-AUDIO-SPIKE.md` | `linux/audio.py`, `linux/engine.py` |
 | Apps tab and instant replay | PipeWire: each program's stream nodes (`pw-dump`) recorded with `pw-record --target`, several mixed; "everything but Onion Board" for replay. Verified on PipeWire. No per-program level meters on Linux (rows show playing / quiet) | `linux/appaudio.py` |
 | Virtual cable | made by the app: "Onion Board Cable Input" → "Onion Board Cable Output" (VB-Cable's naming, so the cable detection already works); pactl now, PipeWire drop-in / default.pa for every login. The setup guide's and main window's cable buttons make it (no download, permission or restart) | `linux/vcable.py`, `linux/ui.py` |
-| Packaging | `build-linux.sh`: PyInstaller → fails if a library couldn't be bundled → `scripts/prune_build_linux.py` → `--selftest` → AppImage (`scripts/make_appdir.py`: AppRun, .desktop, icon painted by the app). The prune follows `prune_build.py`'s rules with ELF `DT_NEEDED` instead of pefile: unused Qt modules and libraries, QML, spare platform plugins (keeps xcb, wayland, offscreen), the touch keyboard, dev tools, translations; 695 → 521 MB unpacked (Chromium's library alone is 195 MB). Checked here: self-test, and the pruned app running on Xvfb (X11); CI builds it on Ubuntu 22.04 and uploads it as an artifact | `build-linux.sh`, `scripts/prune_build_linux.py`, `scripts/make_appdir.py` |
+| Packaging | `build-linux.sh`: our own PortAudio (ALSA only, see Licences below) → PyInstaller (no `readline` / `dbm`) → fails if a library couldn't be bundled → PortAudio swapped in, JACK / Berkeley DB out → fails if a GPL / Berkeley DB / JACK library is in → `scripts/prune_build_linux.py` → `--selftest` → AppImage (`scripts/make_appdir.py`: AppRun, .desktop, icon painted by the app). The prune follows `prune_build.py`'s rules with ELF `DT_NEEDED` instead of pefile: unused Qt modules and libraries, QML, spare platform plugins (keeps xcb, wayland, offscreen), the touch keyboard, dev tools, translations; 695 → 518 MB unpacked, AppImage 207 MB (Chromium's library alone is 195 MB). Checked here: self-test, and the pruned app running on Xvfb (X11); CI builds it on Ubuntu 22.04 and uploads it as an artifact | `build-linux.sh`, `scripts/prune_build_linux.py`, `scripts/make_appdir.py` |
 | Wording | the app's "Windows" text, reworded as it reaches the screen: Qt's text calls (labels, buttons, tooltips, message boxes, combo items, tabs, tray, clipboard) go through one table. `tests/test_linux_wording.py` fails on any new "Windows" string upstream that's neither reworded nor listed as never shown on Linux. Upstream's own tests see upstream's text (`tests/platform_hooks.py` switches the table off for them) | `linux/wording.py` |
 | Voice tab | no Windows voice installs: a language eSpeak has no voice for says to install the distribution's espeak-ng package (or a Piper voice) and keeps Reload voices | `linux/ui.py` |
 | Custom voices | Piper's Linux download (`piper/piper` in the voices folder, exec bit given back if lost) or `piper` on PATH; the folder's README in Linux terms | `linux/customvoices.py` |
-| Add-ons (live voice) | the add-on's environment is `.venv/bin/python`; inside the AppImage (read-only, a new mount each run) it lives in `~/.local/share/OnionBoard/envs/<add-on>`, so its code comes from the running version and its packages survive updates. Made from the newest `python3` ≥ 3.11 on PATH. `modules/live-voice/install.sh` is the fallback. The build ships the add-ons and the licence files | `linux/modules.py`, `build-linux.sh` |
+| Add-ons (live voice) | the add-on's environment is `.venv/bin/python`; inside the AppImage (read-only, a new mount each run) it lives in `~/.local/share/OnionBoard/envs/<add-on>`, so its code comes from the running version and its packages survive updates. Made from the newest `python3` ≥ 3.11 on PATH. `modules/live-voice/install.sh` is the fallback. The build ships the add-ons and the licence files: `scripts/linux_notices.py` adds jeepney and, via dpkg, each bundled system library's package and copyright file | `linux/modules.py`, `build-linux.sh`, `scripts/linux_notices.py` |
 | Self-update | the release's `OnionBoard-x86_64.AppImage` (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server | |
+| Dependencies | `requirements-linux.txt` = `requirements.txt` + jeepney (kept apart so upstream merges never touch `requirements.txt`) | |
 | CI | `.github/workflows/linux.yml`: tests on Ubuntu 24.04 (Xvfb with keymap), the AppImage on 22.04. `checks.yml` runs the Windows tests | |
 
 ## Next, in order
@@ -69,8 +70,9 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 2. **Setup guide on a real desktop.** The cable buttons make the cable and the
    wording table covers the text; try the whole guide once (`python -m soundboard`,
    after asking: it opens windows), including the Discord page and the Steam help.
-3. **Wayland without XWayland**: the GlobalShortcuts portal for hotkeys (QtDBus is
-   kept in the build for it); the overlay is X11 / XWayland only.
+3. **Wayland without XWayland, on a real desktop**: try the portal hotkeys on KDE
+   Plasma and GNOME 48+ (first bind shows the desktop's dialog; check hold-to-play
+   and a changed set of hotkeys). The overlay is X11 / XWayland only.
 4. **Release**: a release needs `OnionBoard-x86_64.AppImage` attached next to
    `OnionBoardSetup.exe` (the self-update looks for that name), and the README /
    website download button.
@@ -80,6 +82,30 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    does nothing on Linux (its text says so); it could be hidden. A frozen copy that
    can't update itself (a folder build, an AppImage in a read-only folder) says it
    "runs from source".
+
+## Licences in the Linux build
+
+The AppImage carries system libraries from the build machine; THIRD-PARTY-NOTICES.txt
+has each one's package and copyright file (`scripts/linux_notices.py`). Two kinds
+are kept out on purpose, and `build-linux.sh` fails if one gets back in:
+
+- GPL libraries: Python's `readline` and `dbm` modules (libreadline, libgdbm) are
+  excluded; a GUI app uses neither.
+- Berkeley DB (`libdb`) and JACK: the distribution's PortAudio links JACK, which
+  links Berkeley DB, whose licence the app can't take on. `scripts/build_portaudio.sh`
+  builds PortAudio 19.7.0 from its official source (MIT, pinned tag and commit)
+  with only the ALSA backend the app uses, and `scripts/swap_portaudio.py` puts it in
+  and removes what only the old copy needed.
+
+## Known test-suite issue
+
+An intermittent segfault was seen once in a full run near
+`tests/test_net_leaks.py::test_radio_directory_through_the_proxy`. Not reproduced
+since: 5 full runs and 8 runs of `test_mainwindow` … `test_net_switches`, all with
+`python -X faulthandler`. If it shows again, keep the faulthandler dump: the
+"Current thread" stack says which thread crashed (a Qt object freed off the UI
+thread is the usual suspect). The same loops found a real flake, fixed: the test
+proxy's pipe thread raising ValueError on Linux when its socket was closed under it.
 
 ## Checking on a real Linux desktop
 

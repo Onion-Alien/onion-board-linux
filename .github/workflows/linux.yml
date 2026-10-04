@@ -22,8 +22,8 @@ jobs:
             libportaudio2 libsndfile1 libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
             libfontconfig1 libglib2.0-0t64 libdbus-1-3 libnss3 libxcomposite1 libxdamage1 \
             libxrandr2 libxtst6 libxkbfile1 libasound2t64 libxcb-cursor0 ffmpeg \
-            xvfb xkb-data x11-xkb-utils   # Xvfb needs its keymap for the hotkey tests
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+            xvfb xkb-data x11-xkb-utils dbus  # Xvfb's keymap: hotkey tests; dbus: portal tests
+      - run: pip install -r requirements-linux.txt -r requirements-dev.txt
       - run: ruff check .
       - run: python -m pytest
         env:
@@ -48,8 +48,9 @@ jobs:
             libglib2.0-0 libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 \
             libxtst6 libxkbfile1 libasound2 libxcb-cursor0 file \
             libpulse0 libsndfile1 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-image0 \
-            libxcb-randr0 libxcb-render-util0 libxcb-xkb1   # bundled into the AppImage
-      - run: python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+            libxcb-randr0 libxcb-render-util0 libxcb-xkb1 \
+            build-essential libasound2-dev   # PortAudio, built without JACK
+      - run: python -m venv .venv && .venv/bin/pip install -r requirements-linux.txt -r requirements-dev.txt
       - name: appimagetool
         run: |
           curl -sSfL -o appimagetool \

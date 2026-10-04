@@ -3,7 +3,9 @@
 #   dist/OnionBoard/OnionBoard           (one folder)
 #   dist/OnionBoard-x86_64.AppImage      (the one file to give people)
 #
-# Needs: a Python 3.12+ venv with requirements-dev.txt (.venv), and for the AppImage
+# Needs: a Python 3.12+ venv with requirements-dev.txt and requirements-linux.txt
+# (.venv), git + a C compiler + the ALSA headers (PortAudio: build-essential
+# libasound2-dev), dpkg (the notices for the system libraries), and for the AppImage
 # appimagetool on PATH (or APPIMAGETOOL=/path/to/it). Build on the oldest distro you
 # want to support (CI uses Ubuntu 22.04): the result needs that glibc or newer.
 #
@@ -13,7 +15,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 py="${PYTHON:-.venv/bin/python}"
-[ -x "$py" ] || { echo "No .venv: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt" >&2; exit 1; }
+[ -x "$py" ] || { echo "No .venv: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt -r requirements-linux.txt" >&2; exit 1; }
 clean=(); appimage=1
 for a in "$@"; do
   case "$a" in
@@ -22,6 +24,9 @@ for a in "$@"; do
     *) echo "unknown option $a" >&2; exit 2 ;;
   esac
 done
+
+# our own PortAudio (ALSA only): the distribution's brings JACK and Berkeley DB along
+scripts/build_portaudio.sh
 
 # the same as build.ps1, with ":" between source and destination; no VB-Cable
 # installer (the app makes its own cable on Linux)
@@ -37,6 +42,8 @@ mkdir -p build
     --exclude-module scipy.stats --exclude-module scipy.optimize \
     --exclude-module scipy.interpolate --exclude-module scipy.integrate \
     --exclude-module scipy.sparse --exclude-module scipy.spatial \
+    --exclude-module readline --exclude-module dbm --exclude-module _dbm \
+    --exclude-module _gdbm \
     --paths . \
     main.py 2>&1 | tee build/pyinstaller.log
 
@@ -44,6 +51,15 @@ mkdir -p build
 # where the user happens to have it (the X11 plugin's libxcb-*, libpulse…)
 if grep "Library not found" build/pyinstaller.log; then
   echo "Install the libraries above on this machine so they're bundled, then build again." >&2
+  exit 1
+fi
+
+"$py" scripts/swap_portaudio.py dist/OnionBoard build/portaudio/libportaudio.so.2
+
+# libraries whose licences the app can't take on must not ship: GPL (readline, gdbm)
+# and Berkeley DB (came with JACK)
+if ls dist/OnionBoard/_internal | grep -E '^lib(readline|gdbm|db-|jack)'; then
+  echo "A library above mustn't ship: exclude what pulls it in." >&2
   exit 1
 fi
 
@@ -63,9 +79,11 @@ for m in modules/*/; do
      -exec cp --parents {} "../../dist/OnionBoard/modules/$name/" \;)
 done
 
-# licences travel with the binaries (Qt is LGPL; see scripts/make_notices.py)
+# licences travel with the binaries (Qt is LGPL; see scripts/make_notices.py), and the
+# system libraries copied from this machine (scripts/linux_notices.py, needs dpkg).
+# readline (GPL) and dbm (Berkeley DB) are left out above: a GUI app needs neither
 cp LICENSE dist/OnionBoard/LICENSE.txt
-"$py" scripts/make_notices.py dist/OnionBoard/THIRD-PARTY-NOTICES.txt
+"$py" scripts/linux_notices.py dist/OnionBoard
 
 [ "$appimage" = 1 ] || exit 0
 tool="${APPIMAGETOOL:-$(command -v appimagetool || true)}"

@@ -5,8 +5,9 @@ replaces the Windows version of the same name; the portable parts of winkeys
 
 Hotkeys are X11 key grabs (soundboard.linux.x11), which also work in games running
 under XWayland on a Wayland desktop while the game has focus. Without an X server
-(a Wayland session with no XWayland) keyboard hotkeys report as failed; MIDI pads
-work everywhere.
+(a Wayland session with no XWayland) they go through the desktop's GlobalShortcuts
+portal (soundboard.linux.portal: KDE Plasma, GNOME 48+); with neither, keyboard
+hotkeys report as failed. MIDI pads work everywhere.
 
 Like RegisterHotKey, a grab only tells us about our own combos and never sits in
 the path of other keys. X starts a keyboard grab when a grabbed key goes down; it's
@@ -23,7 +24,7 @@ import threading
 from PySide6.QtCore import QObject, Signal
 
 from soundboard import midi
-from soundboard.linux import x11
+from soundboard.linux import portal, x11
 
 log = logging.getLogger(__name__)
 
@@ -63,23 +64,37 @@ class Hotkeys(QObject):
         self._alive = False
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
+        self._portal = None
         if x11.available():
             self._thread = threading.Thread(target=self._loop, daemon=True, name="hotkeys")
             self._thread.start()
             if not self._ready.wait(2):
                 log.error("hotkey thread didn't start; global hotkeys won't work this session")
+        elif portal.wayland():
+            # Wayland with no XWayland: the desktop's GlobalShortcuts portal
+            self._portal = portal.Shortcuts(self.fired.emit, self.released.emit,
+                                            self._portal_failed)
+            if not self._portal.wait_ready(2):
+                log.error("portal hotkey thread didn't start")
         else:
             log.warning("no X display: keyboard hotkeys are off this session (MIDI pads work)")
 
     @property
     def alive(self) -> bool:
-        return self._alive
+        return self._portal.alive if self._portal is not None else self._alive
+
+    def _portal_failed(self, combos: list):
+        self.failed = list(combos)
+        self.failed_changed.emit(list(combos))
 
     def register(self, mapping: dict[str, str]):
         """mapping: combo -> action. Replaces all current hotkeys."""
         self._midi_map = {c: a for c, a in mapping.items() if midi.is_midi(c)}
         self.midi.want({p[2] for p in map(midi.parse, self._midi_map) if p})
         keys = {c: a for c, a in mapping.items() if not midi.is_midi(c)}
+        if self._portal is not None and self._portal.alive:
+            self._portal.register(keys)
+            return
         if not self._alive:
             self.failed = [c for c in keys if c]
             self.failed_changed.emit(list(self.failed))
@@ -96,6 +111,8 @@ class Hotkeys(QObject):
         self.midi.close_all()
         self._quit = True
         self._wake()
+        if self._portal is not None:
+            self._portal.stop(wait)
         if wait and self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(wait)
 

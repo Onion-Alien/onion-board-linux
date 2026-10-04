@@ -144,3 +144,48 @@ def test_every_qt_module_the_app_imports_is_kept():
     for f in (ROOT / "soundboard").rglob("*.py"):
         used |= set(re.findall(r"PySide6\.(Qt\w+)", f.read_text(encoding="utf-8")))
     assert used - pbl.KEEP_MODULES_LINUX == set()
+
+
+# ---------------------------------------------------------------- our own PortAudio
+
+def _pa_tree(tmp_path, jack_user=False):
+    import swap_portaudio  # noqa: F401 - scripts/ is on sys.path above
+    internal = tmp_path / "OnionBoard" / "_internal"
+    (internal / "_sounddevice").mkdir(parents=True)
+    for name, body in (("libportaudio.so.2", b"old"), ("libjack.so.0", b"jack"),
+                       ("libdb-5.3.so", b"db"), ("libasound.so.2", b"asound"),
+                       ("libother.so.1", b"other")):
+        (internal / name).write_bytes(body)
+    new = tmp_path / "libportaudio.so.2"
+    new.write_bytes(b"new")
+    table = {b"old": ["libasound.so.2", "libjack.so.0", "libc.so.6"],
+             b"jack": ["libdb-5.3.so"], b"new": ["libasound.so.2", "libm.so.6"],
+             b"other": ["libjack.so.0"] if jack_user else ["libasound.so.2"]}
+
+    def needed(p):
+        return table.get(p.read_bytes(), []) if p.is_file() else []
+    return internal, new, needed
+
+
+def test_our_portaudio_replaces_the_distributions_and_jack_goes_with_it(tmp_path):
+    import swap_portaudio
+    internal, new, needed = _pa_tree(tmp_path)
+    removed = swap_portaudio.swap(internal.parent, new, needed)
+    assert sorted(removed) == ["libdb-5.3.so", "libjack.so.0"]
+    assert (internal / "libportaudio.so.2").read_bytes() == b"new"
+    assert (internal / "libasound.so.2").exists()          # the new one needs it too
+
+
+def test_a_library_something_else_still_needs_is_kept(tmp_path):
+    import swap_portaudio
+    internal, new, needed = _pa_tree(tmp_path, jack_user=True)
+    assert swap_portaudio.swap(internal.parent, new, needed) == []
+    assert (internal / "libjack.so.0").exists() and (internal / "libdb-5.3.so").exists()
+
+
+def test_a_portaudio_needing_what_isnt_bundled_stops_the_build(tmp_path):
+    import swap_portaudio
+    internal, new, needed = _pa_tree(tmp_path)
+    (internal / "libasound.so.2").unlink()
+    with pytest.raises(SystemExit, match="libasound"):
+        swap_portaudio.swap(internal.parent, new, needed)
