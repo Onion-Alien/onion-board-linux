@@ -12,6 +12,12 @@ engine opens up to four streams on devices the user picked. So:
                 the pulse ALSA plugin reads it then, so each stream goes to its own
                 device, one process, no extra libraries. Works on PulseAudio and on
                 PipeWire (pipewire-pulse).
+  unplugged     the sound server moves a stream whose device goes away onto its
+                default device and the stream plays on there: no error, no stall
+                for the engine's watchdog to see. linux/engine.py asks every few
+                seconds whether each stream's device is still there, and closes the
+                stream if not; the watchdog reopens it once the device is back (a
+                device that isn't there is never opened: present()).
 
 `sd` (a SoundDevice) stands in for the sounddevice module in engine.py and
 mainwindow.py (their Linux hooks put it there): it takes the stand-in indices;
@@ -120,6 +126,18 @@ def refresh() -> list[Device]:
     return found
 
 
+def present() -> set[str] | None:
+    """The sound server's device names now (sinks and sources); None if it can't be
+    asked. A device that's gone isn't in the lists the app read earlier: this asks."""
+    names: set[str] = set()
+    answered = False
+    for what in ("sinks", "sources"):
+        text = _pactl("list", what)
+        answered = answered or bool(text)
+        names |= {d["name"] for d in parse_list(text)}
+    return names if answered else None
+
+
 def devices() -> list[Device]:
     if _devices is None:
         refresh()
@@ -181,6 +199,12 @@ def _open(kind: str, cls, kwargs: dict):
     dev = by_index(kwargs.get("device"))
     if dev is None:
         return cls(**kwargs)
+    # a device that's gone (unplugged since the lists were read) mustn't be opened:
+    # the sound server would put the stream on its default device instead, sounds
+    # meant for the cable on the speakers
+    now = present()
+    if now is not None and dev.pulse not in now:
+        raise RuntimeError(f"device not found: {dev.name}")
     var = "PULSE_SINK" if kind == "output" else "PULSE_SOURCE"
     # the volume mixer's name for the stream's app (else "ALSA plug-in [python3]"):
     # the plugin sets its own, which only the OVERRIDE variant of PULSE_PROP beats

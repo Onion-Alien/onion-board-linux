@@ -128,3 +128,56 @@ def test_no_sound_server_means_no_devices(monkeypatch):
     monkeypatch.setattr(audio, "_devices", None)
     assert engine.list_devices("output") == [] and engine.default_device_name("input") is None
     assert engine.find_device("output", "Anything") is None
+
+
+def _without(listing: str, name: str) -> str:
+    """A `pactl list` answer with one device unplugged."""
+    blocks = listing.replace("\nSource #", "\n\0Source #").replace("\nSink #", "\n\0Sink #")
+    return "".join(b for b in blocks.split("\0") if f"Name: {name}\n" not in b)
+
+
+def test_a_device_thats_gone_is_never_opened(server, monkeypatch):
+    """The lists were read while it was there; opening it now would land the stream on
+    the server's default device (the speakers) instead."""
+    from soundboard import engine
+    monkeypatch.setattr(server, "_pactl", lambda *a: {
+        ("list", "sinks"): _without(SINKS, "onionboard_cable"),
+        ("list", "sources"): SOURCES}.get(a, ""))
+    cable = engine.find_device("output", "Onion Board Cable Input")   # still listed
+    with pytest.raises(RuntimeError, match="device not found: Onion Board Cable Input"):
+        engine.sd.OutputStream(device=cable, samplerate=48000, channels=2)
+
+
+def test_an_unplugged_device_is_let_go_and_taken_back_when_it_returns(server, monkeypatch):
+    """The sound server moves an unplugged device's stream to its default device and
+    it plays on: the watchdog closes it, says the device is gone, and reopens it on
+    that device once it's back."""
+    import time
+    from soundboard import engine
+    from soundboard.linux import engine as linux_engine
+    answers = {("list", "sinks"): SINKS, ("list", "sources"): SOURCES, ("info",): INFO}
+    monkeypatch.setattr(server, "_pactl", lambda *a: answers.get(a, ""))
+    monkeypatch.setattr(linux_engine, "GONE_POLL_S", 0)
+    e = engine.Engine()
+    try:
+        e.set_mon_device("Onion Board Cable Input")
+        e.set_main_device("Built-in Audio Analog Stereo")
+        assert e.mon_stream is not None and e.main_stream is not None and not e.errors
+
+        def watch(until):
+            deadline = time.monotonic() + 5
+            while not until() and time.monotonic() < deadline:
+                e._last_cb.update(dict.fromkeys(e._last_cb, time.monotonic()))  # not stalled
+                e.check_streams()
+                time.sleep(0.02)
+            return until()
+        assert not watch(lambda: e.mon_stream is None)            # there: left alone
+        answers[("list", "sinks")] = _without(SINKS, "onionboard_cable")
+        assert watch(lambda: e.mon_stream is None)
+        assert e.errors["mon"] == "device not found: Onion Board Cable Input"
+        assert e.main_stream is not None and "main" not in e.errors   # the others stay
+        answers[("list", "sinks")] = SINKS                        # plugged back in
+        e._last_try["mon"] = time.monotonic() - engine.RETRY_S - 1
+        assert watch(lambda: e.mon_stream is not None) and "mon" not in e.errors
+    finally:
+        e.shutdown()

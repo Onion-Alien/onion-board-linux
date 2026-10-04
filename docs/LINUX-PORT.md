@@ -53,7 +53,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Proxy / privacy relay | proxy variables set in both spellings (Linux's environment is case-sensitive) | `linux/net.py` |
 | Tor | Linux Expert Bundle (pinned SHA-256), bundled libs via `LD_LIBRARY_PATH`, exec bits, `/` in transport paths, distro `tor` as fallback; exits with the app via `__OwningControllerProcess` | `linux/tor.py`, `linux/torget.py` |
 | Text-to-speech | eSpeak NG voices (short list: translation languages, English accents, the desktop's language); Piper / voice servers unchanged | `linux/tts.py` |
-| Audio devices | the sound server's devices by name (`pactl`); each stream opens on PortAudio's `pulse` device aimed with `PULSE_SINK` / `PULSE_SOURCE`; shows as "Onion Board" in volume mixers. Verified end to end on PipeWire. See `docs/LINUX-AUDIO-SPIKE.md` | `linux/audio.py`, `linux/engine.py` |
+| Audio devices | the sound server's devices by name (`pactl`); each stream opens on PortAudio's `pulse` device aimed with `PULSE_SINK` / `PULSE_SOURCE`; shows as "Onion Board" in volume mixers. Verified end to end on PipeWire and on plain PulseAudio. A device unplugged mid-stream: the sound server quietly moves its stream to the default device (sounds meant for the cable on the speakers) and the watchdog sees no stall, so the engine asks every 2 s (on a thread) whether each stream's device is still there, closes the stream if not ("device not found", as on Windows) and the watchdog's retry reopens it once the device is back; a device that's gone is never opened. Tested by unplugging and replugging a device on a real PulseAudio. See `docs/LINUX-AUDIO-SPIKE.md` | `linux/audio.py`, `linux/engine.py` |
 | Apps tab and instant replay | PipeWire: each program's stream nodes (`pw-dump`) recorded with `pw-record --target`, several mixed; "everything but Onion Board" for replay. Verified on PipeWire. No per-program level meters on Linux (rows show playing / quiet) | `linux/appaudio.py` |
 | Virtual cable | made by the app: "Onion Board Cable Input" → "Onion Board Cable Output" (VB-Cable's naming, so the cable detection already works); pactl now, PipeWire drop-in / default.pa for every login. The setup guide's and main window's cable buttons make it (no download, permission or restart) | `linux/vcable.py`, `linux/ui.py` |
 | Packaging | `build-linux.sh`: our own PortAudio (ALSA only, see Licences below) → PyInstaller (no `readline` / `dbm`) → fails if a library couldn't be bundled → PortAudio swapped in, JACK / Berkeley DB out → fails if a GPL / Berkeley DB / JACK library is in → `scripts/prune_build_linux.py` → `--selftest` → AppImage (`scripts/make_appdir.py`: AppRun, .desktop, icon painted by the app). The prune follows `prune_build.py`'s rules with ELF `DT_NEEDED` instead of pefile: unused Qt modules and libraries, QML, spare platform plugins (keeps xcb, wayland, offscreen), the touch keyboard, dev tools, translations; 695 → 518 MB unpacked, AppImage 207 MB (Chromium's library alone is 195 MB). Checked here: self-test, and the pruned app running on Xvfb (X11); CI builds it on Ubuntu 22.04 and uploads it as an artifact | `build-linux.sh`, `scripts/prune_build_linux.py`, `scripts/make_appdir.py` |
@@ -74,10 +74,12 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 
 ## Next, in order
 
-1. **Audio devices: hot-plug and edge cases.** Lists are re-read on `engine.rescan()`;
-   check plugging a headset in and out with the app running, a device that vanishes
-   mid-stream (PipeWire may move the stream to the default device), and plain
-   PulseAudio (only PipeWire was tested).
+1. **Audio devices on real hardware.** On a real sound server here (PulseAudio 16,
+   null sinks as devices): the cable end to end, made at login from `default.pa`,
+   and a device unplugged mid-stream and plugged back (see *Audio devices* above).
+   Left for a real desktop: a real USB headset on PipeWire (WirePlumber may move a
+   stream back by itself; the watchdog copes either way), and a device never seen
+   before being plugged in (the lists are re-read on `engine.rescan()`).
 2. **Setup guide on a real desktop.** The cable buttons make the cable and the
    wording table covers the text; try the whole guide once (`python -m soundboard`,
    after asking: it opens windows), including the Discord page and the Steam help.
@@ -128,7 +130,9 @@ through the Remote API), then a Fedora KDE VM for Wayland hotkeys and Discord.
 `python scripts/linux_audio_check.py` makes the cable, plays a quiet beep through the
 real engine into "Onion Board Cable Input" and checks it comes out of "Onion Board
 Cable Output" (what Discord hears). Nothing goes to the speakers. `--remove` takes a
-cable it made away again.
+cable it made away again. It waits for the recording to flow before it plays:
+PulseAudio's null sink takes up to ~2 s to start feeding a new recording (a call in
+progress isn't affected).
 
 ## Running the tests here
 

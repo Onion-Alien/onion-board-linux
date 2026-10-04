@@ -136,5 +136,9 @@ def test_install_on_pulseaudio_keeps_the_system_setup(pactl):
     vcable.install()
     assert vcable.pulse_default_pa().read_text().count(vcable.PA_MARK) == 1   # not twice
     assert vcable.remove() and not vcable.installed()
-    left = vcable.pulse_default_pa().read_text()
-    assert ".include /etc/pulse/default.pa" in left and vcable.SINK not in left
+    assert not vcable.pulse_default_pa().exists()   # it made the file: it goes again
+    # a default.pa of the user's own keeps everything of theirs
+    own = ".include /etc/pulse/default.pa\nload-module module-echo-cancel\n"
+    vcable.pulse_default_pa().write_text(own)
+    assert vcable.install() and vcable.remove()
+    assert vcable.pulse_default_pa().read_text() == own

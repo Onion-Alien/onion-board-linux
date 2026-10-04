@@ -134,6 +134,9 @@ def pipewire_conf() -> Path:
     return Path(config_home()) / "pipewire" / "pipewire.conf.d" / CONF_NAME
 
 
+SYSTEM_INCLUDE = ".include /etc/pulse/default.pa"
+
+
 def pulse_default_pa() -> Path:
     return Path(config_home()) / "pulse" / "default.pa"
 
@@ -200,7 +203,7 @@ def install() -> bool:
             try:
                 text = p.read_text(encoding="utf-8")
             except FileNotFoundError:
-                text = ".include /etc/pulse/default.pa\n"   # keep the system's setup
+                text = SYSTEM_INCLUDE + "\n"   # keep the system's setup
             if PA_MARK not in text:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(text.rstrip("\n") + "\n\n" + "\n".join(pulse_lines()) + "\n",
@@ -226,7 +229,10 @@ def remove() -> bool:
             keep = [ln for ln in text.splitlines()
                     if ln != PA_MARK and f"sink_name={SINK}" not in ln
                     and f"source_name={SOURCE}" not in ln]
-            p.write_text("\n".join(keep).rstrip("\n") + "\n", encoding="utf-8")
+            if "\n".join(keep).strip() == SYSTEM_INCLUDE:   # only what install() began it with
+                p.unlink()
+            else:
+                p.write_text("\n".join(keep).rstrip("\n") + "\n", encoding="utf-8")
     except FileNotFoundError:
         pass
     except OSError:
