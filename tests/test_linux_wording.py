@@ -23,6 +23,8 @@ def test_phrases_are_reworded_anywhere_in_a_text_and_html_escaped():
     assert linux(r"see the log in %APPDATA%\OnionBoard.").endswith("/OnionBoard.")
     assert "%APPDATA%" not in linux(r"see the log in %APPDATA%\OnionBoard.")
     assert linux("Nothing Windows-ish here") == "Nothing Windows-ish here"
+    assert linux("In Discord, pick CABLE Output as the mic.") == \
+        "In Discord, pick Onion Board Cable Output as the mic."
     assert linux(None) is None and linux(3) == 3
 
 
@@ -73,7 +75,8 @@ def test_static_message_boxes_are_reworded():
 
 # ---------------------------------------------------------------- the source
 
-WORDS = re.compile(r"\bWindows\b|Task Manager|Recycle Bin|%APPDATA%|taskbar")
+WORDS = re.compile(r"\bWindows\b|Task Manager|Recycle Bin|%APPDATA%|taskbar|VB-Cable|vb-audio"
+                   r"|CABLE (Input|Output)")
 
 # strings that say Windows but never reach the screen on Linux: (file, start) → why
 NOT_ON_LINUX = {
@@ -85,7 +88,22 @@ NOT_ON_LINUX = {
     ("soundboard/speech/tts.py", ""): "Windows speech (Linux: eSpeak, soundboard/linux/tts.py)",
     ("soundboard/speech/winvoices.py", ""): "Windows' voice installs",
     ("soundboard/ui/voicepanel.py", ""): "Windows' voice installs (hidden: linux/ui.py)",
-    ("soundboard/ui/setupwizard.py", ""): "the VB-Cable installer (Linux makes its cable)",
+    ("soundboard/engine.py", "vb-audio"): "a device-name hint for spotting cables",
+    ("soundboard/net.py", " Install VB-Cable yourself"):
+        "the cable download's switch, hidden on Linux (linux/ui.py): nothing downloads",
+    ("soundboard/settings.py", "The setup guide's Install button downloads VB-Cable"):
+        "the cable download switch's hint, hidden on Linux (linux/ui.py)",
+    # the setup guide's VB-Cable installer: its steps and outcomes (Linux makes its
+    # cable: linux/ui.py's install_cable); the rest of the guide does show
+    ("soundboard/ui/setupwizard.py", "Click <b>Yes</b> when Windows asks"): "installer step",
+    ("soundboard/ui/setupwizard.py", "'>The cable installer is missing"): "installer outcome",
+    ("soundboard/ui/setupwizard.py", ").</span> Restart your PC and try again"):
+        "installer outcome",
+    ("soundboard/ui/setupwizard.py", "'>✓ Installed.</b> Windows needs"): "installer outcome",
+    ("soundboard/ui/setupwizard.py", "'>That didn't work.</b> If Windows asked"):
+        "installer outcome",
+    ("soundboard/ui/setupwizard.py", "'>It still isn't showing up after the restart"):
+        "installer outcome (no restart on Linux)",
     ("soundboard/ui/mainwindow.py", "A window opened that downloads VB-Cable"):
         "the VB-Cable installer (linux/ui.py)",
     ("soundboard/ui/mainwindow.py", "Some games just use Windows' main mic"):

@@ -66,6 +66,21 @@ PHRASES: list[tuple[str, str]] = [
     ("but no piper.exe (put it in a 'piper' folder there)",
      "but no piper program (put the “piper” folder from Piper's Linux download there)"),
     ("tor.exe", "tor"),
+    # the cable's ends are the app's own (linux/vcable.py), not VB-Cable's: the guides'
+    # name for the mic to pick before the cable is made, and Settings' OBS tip
+    ("CABLE Output", "Onion Board Cable Output"),
+    ("CABLE Input", "Onion Board Cable Input"),
+    ("A second virtual cable (free: VB-Cable A+B from vb-audio.com) is ideal; then use "
+     "Audio Input Capture → its Output end.",
+     "A device of its own is ideal: pactl load-module module-null-sink sink_name=obs "
+     "makes one (until you log out)."),
+    ("a free add-on that works like an invisible microphone.",
+     "an invisible microphone the app makes for you."),
+    ("install the free virtual cable.", "make the virtual cable (one click, nothing to "
+     "download)."),
+    # the tray isn't "by the clock" on every desktop
+    ("The tray icon (by the clock) opens it again", "The tray icon opens it again"),
+    ("right-click its icon by the clock → Exit", "right-click its tray icon → Exit Steam"),
     # self-update: the AppImage replaces itself (linux/updates.py)
     ("Update now downloads it in the background (about 180 MB)",
      "Update now downloads it in the background (about 210 MB)"),
@@ -106,6 +121,7 @@ PHRASES += update_phrases(bool(getattr(sys, "frozen", False)), os.environ.get("A
 
 WHOLE: dict[str, str] = {
     "Windows default": "Default voice",   # the Voice tab's voice list
+    "I've installed it — check again": "Check again",   # the Setup tab: nothing to install
     "Windows": "Super", "Left Windows": "Left Super", "Right Windows": "Right Super",
 }
 

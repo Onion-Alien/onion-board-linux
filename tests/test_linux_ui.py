@@ -114,6 +114,8 @@ def test_settings_has_no_cable_download_switch(window):
         [hint] = [lb for lb in d.findChildren(QLabel)
                   if lb.text() == d.NET_HINTS["setup_downloads"]]   # its VB-Cable text
         assert hint.isHidden()
+        assert d.addon_label.text().startswith("Onion Watch") and \
+            not d.addon_label.isVisibleTo(d)   # its card: no Triggers tab here
     finally:
         d.close()
         d.deleteLater()
