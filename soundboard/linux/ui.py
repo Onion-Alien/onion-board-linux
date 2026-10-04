@@ -6,7 +6,8 @@ vcable): no download, so the "setup downloads" switch doesn't apply, no permissi
 prompt, no restart. "Game has no microphone setting?" sets the cable as the default
 mic directly instead of walking the user through a control panel. The Voice tab
 never offers Windows' voice installs. The game watcher behind Who's listening's
-suggestion runs on X11 too (linux/voicesdk.py).
+suggestion runs on X11 too (linux/voicesdk.py). Settings has no switch for the
+cable's download (there is none).
 
 patch_main_window / patch_setup_wizard are called at the end of their modules,
 before any window exists, so the buttons connect to these versions.
@@ -112,3 +113,37 @@ def patch_setup_wizard(cls):
     # restart here, and no registry
     from soundboard.ui import setupwizard
     setupwizard.resume_after_restart = lambda on: None
+
+
+def _hide_option(box):
+    """Hide a Settings checkbox and its explanation (the next widget in its layout)."""
+    def find(layout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.widget() is box:
+                return layout, i
+            if item.layout() is not None and (hit := find(item.layout())):
+                return hit
+        return None
+    parent = box.parentWidget()
+    hit = find(parent.layout()) if parent is not None and parent.layout() else None
+    box.hide()
+    if hit:
+        layout, i = hit
+        nxt = layout.itemAt(i + 1)
+        if nxt is not None and nxt.widget() is not None:
+            nxt.widget().hide()
+
+
+def patch_settings(cls):
+    """Privacy & security: no "Virtual cable download" switch, the app makes its own
+    cable and downloads nothing for it."""
+    orig_switches = cls._switches_card
+
+    def _switches_card(self):
+        card = orig_switches(self)
+        if (box := self.net_boxes.get("setup_downloads")) is not None:
+            _hide_option(box)
+        return card
+
+    cls._switches_card = _switches_card

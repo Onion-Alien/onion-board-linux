@@ -2139,3 +2139,8 @@ class SettingsDialog(QDialog):
                 msg = f"Couldn't update: {errors.plain(e)}."
             relay.done.emit(msg)
         threading.Thread(target=run, daemon=True, name="ytdlp-settings").start()
+
+
+if __import__("sys").platform != "win32":   # Linux: no cable download switch
+    from soundboard.linux import ui as _linux_ui  # noqa: E402
+    _linux_ui.patch_settings(SettingsDialog)

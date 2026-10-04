@@ -99,3 +99,30 @@ def test_setup_guide_makes_the_cable_with_no_download_or_restart(window, server,
     finally:
         wiz.done(0)
         wiz.deleteLater()
+
+
+def test_settings_has_no_cable_download_switch(window):
+    """The cable is made, not downloaded: its switch and its explanation are hidden;
+    Tor's download switch beside it stays."""
+    from PySide6.QtWidgets import QLabel
+    from soundboard.settings import SettingsDialog
+    w, _ = window
+    d = SettingsDialog(w, "privacy")
+    try:
+        assert d.net_boxes["setup_downloads"].isHidden()
+        assert not d.net_boxes["tor_download"].isHidden()
+        [hint] = [lb for lb in d.findChildren(QLabel)
+                  if "makes its virtual cable itself" in lb.text()]
+        assert hint.isHidden()
+    finally:
+        d.close()
+        d.deleteLater()
+
+
+def test_a_built_copy_that_cant_update_says_why_not_git_pull():
+    from soundboard.linux.wording import update_phrases
+    assert update_phrases(False, "") == []   # from source: git pull is right
+    [(old, new), (old_html, new_html)] = update_phrases(True, "/opt/apps/OnionBoard.AppImage")
+    assert "git pull" in old and "git pull" not in new and "(/opt/apps)" in new
+    assert "<code>git pull</code>" in old_html and "release page" in new_html
+    assert "isn't the AppImage" in update_phrases(True, "")[0][1]

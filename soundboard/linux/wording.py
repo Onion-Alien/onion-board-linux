@@ -15,7 +15,9 @@ either reworded here or never shown on Linux (a Windows-only feature or code pat
 from __future__ import annotations
 
 import html
+import os
 import re
+import sys
 from pathlib import Path
 
 from soundboard.linux import data_home
@@ -83,6 +85,28 @@ PHRASES: list[tuple[str, str]] = [
     # hotkeys (settings.pretty_key): the Windows key is Super on Linux
     ("Windows+", "Super+"),
 ]
+
+
+
+def update_phrases(frozen: bool, appimage: str) -> list[tuple[str, str]]:
+    """A built copy that can't update itself isn't "running from source": say why.
+    linux/updates.py updates only an AppImage whose folder the user can write to."""
+    if not frozen:
+        return []   # really from source: git pull is right
+    if not appimage:
+        why = ("This copy isn't the AppImage, so it can't update itself: get the new "
+               "version from the release page")
+    else:
+        why = (f"This AppImage is in a folder you can't write to "
+               f"({os.path.dirname(appimage)}), so it can't replace itself: move it to "
+               "one you can (your home folder, say), or get the new one from the release page")
+    return [("This copy runs from source, so it only tells you: update it with git pull.",
+             f"{why}. It only tells you when one is out."),
+            ("This copy runs from source: update it with <code>git pull</code>.",
+             html.escape(why) + ".")]
+
+
+PHRASES += update_phrases(bool(getattr(sys, "frozen", False)), os.environ.get("APPIMAGE", ""))
 
 WHOLE: dict[str, str] = {
     "Windows default": "Default voice",   # the Voice tab's voice list

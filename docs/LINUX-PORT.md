@@ -58,6 +58,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Voice tab | no Windows voice installs: a language eSpeak has no voice for says to install the distribution's espeak-ng package (or a Piper voice) and keeps Reload voices | `linux/ui.py` |
 | Custom voices | Piper's Linux download (`piper/piper` in the voices folder, exec bit given back if lost) or `piper` on PATH; the folder's README in Linux terms | `linux/customvoices.py` |
 | Add-ons (live voice) | the add-on's environment is `.venv/bin/python`; inside the AppImage (read-only, a new mount each run) it lives in `~/.local/share/OnionBoard/envs/<add-on>`, so its code comes from the running version and its packages survive updates. Made from the newest `python3` ≥ 3.11 on PATH. `modules/live-voice/install.sh` is the fallback. The build ships the add-ons and the licence files: `scripts/linux_notices.py` adds jeepney and, via dpkg, each bundled system library's package and copyright file | `linux/modules.py`, `build-linux.sh`, `scripts/linux_notices.py` |
+| Settings | no "Virtual cable download" switch (nothing is downloaded for the cable); a built copy that can't update itself (a folder build, an AppImage in a folder the user can't write to) says why instead of "runs from source: git pull" | `linux/ui.py`, `linux/wording.py` |
 | Self-update | the release's `OnionBoard-x86_64.AppImage` (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
 | Import from other soundboards | Soundux for Linux's own config (`~/.config/Soundux`, or its Flatpak's), its hotkeys X key codes turned into Windows ones; EXP Soundboard's last board from Java's preferences file; Soundpad and Resanance (and Soundux for Windows) in Wine / Proton prefixes (`$WINEPREFIX`, `~/.wine`, Steam's `compatdata`). A board's Windows paths are found here: `\` turned into `/`, `Z:` is `/`, another drive is that drive in the board's own prefix (else `$WINEPREFIX` / `~/.wine`); a file's name comes out right even when it's missing | `linux/otherboards.py`, `linux/soundux.py`, `linux/expboard.py`, `linux/wine.py` |
 | Voice engine suggestion | *Who's listening* suggests the game in front's voice engine: the X11 active window (`_NET_ACTIVE_WINDOW`, so games under XWayland too) → `_NET_WM_PID` → a Proton / Wine game's .exe from its command line (`Z:\` is `/`, another drive in its `WINEPREFIX`), a native program's `/proc/<pid>/exe`; the scan is upstream's. Desktop and Wine programs (`/usr`, `C:\windows`) don't count. A native libvivoxsdk.so isn't looked for; Wayland windows give nothing | `linux/voicesdk.py`, `linux/x11.py`, `linux/ui.py` |
@@ -84,10 +85,6 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    `OnionBoard-x86_64.AppImage` (job `release`); the README and the website link
    `releases/latest/download/OnionBoard-x86_64.AppImage`, and DEVELOPING.md's release
    steps say so. Not yet tried on a real release (this repo has none).
-5. **Smaller**: Settings' "Virtual cable download" switch
-   does nothing on Linux (its text says so); it could be hidden. A frozen copy that
-   can't update itself (a folder build, an AppImage in a read-only folder) says it
-   "runs from source".
 
 ## Licences in the Linux build
 
