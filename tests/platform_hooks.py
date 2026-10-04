@@ -7,7 +7,8 @@
   them (tests/test_linux_wording.py checks it)
 - the Linux versions of conftest's "never touch the real thing" guards: real MIDI
   devices, the real autostart folder, the real sound server (a stand-in with
-  speakers, a mic and the cable answers instead)"""
+  speakers, a mic and the cable answers instead), and the desktop's own display"""
+import os
 import sys
 
 import pytest
@@ -16,6 +17,13 @@ __all__ = ["pytest_collection_modifyitems", "_linux_never_touches_the_real_deskt
 
 REAL: dict = {}   # what the guards replace, for the tests of those very functions
 if sys.platform != "win32":
+    # Run from a desktop, every test that made the app grabbed its hotkeys on the
+    # desktop's own X server (or asked its portal, on Wayland), and the hotkey
+    # threads they left behind kept signalling objects later tests had deleted
+    # (segfaults in Qt's event loop). A test that needs an X server starts
+    # its own Xvfb (tests/xvfb.py) and sets DISPLAY itself.
+    for _var in ("DISPLAY", "WAYLAND_DISPLAY"):
+        os.environ.pop(_var, None)
     from soundboard.linux.tts import EspeakTTS
     REAL["tts_warm_up"] = EspeakTTS.warm_up   # conftest stubs it outside test_speech.py
     from soundboard import updates as _updates

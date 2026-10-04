@@ -123,6 +123,14 @@ def test_appdata_is_the_xdg_data_folder():
     assert os.environ.get("APPDATA") == data_home() or "APPDATA" in os.environ
 
 
+# ------------------------------------------------------------------ the test run itself
+def test_tests_never_see_the_desktops_display():
+    """Run from a desktop, the app made by a test grabbed hotkeys on the real X
+    server (tests/platform_hooks.py takes the display away)."""
+    assert os.environ.get("DISPLAY") is None
+    assert os.environ.get("WAYLAND_DISPLAY") is None
+
+
 # ------------------------------------------------------------------ the build's PortAudio
 def test_a_built_copy_loads_its_own_portaudio(tmp_path, monkeypatch):
     """sounddevice only searched the system: without the distribution's
