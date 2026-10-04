@@ -34,7 +34,16 @@ first lines, but reworded two texts the wording table matched: since then
 `tests/test_linux_wording.py` also fails when a table entry no longer matches any
 upstream text. 1.6.7 (the new voice changer, 8 commits, 37 files) merged with no
 conflicts and no new Windows text; its one Windows-only addition, the overlay
-preview letting clicks through, got a Linux hook. After a merge, grep the new
+preview letting clicks through, got a Linux hook. Before 1.6.8 upstream rewrote
+its history (same files, messages and dates, new hashes), so `main..upstream/main`
+listed 133 commits, 1.6.6 and 1.6.7 again: the rewritten twin of the last commit
+merged (same tree, checked with `git rev-parse <old>^{tree} <new>^{tree}`) was
+recorded as merged with `git merge -s ours <twin>`, which changes no file, and
+`upstream/main` then merged its 23 new commits. Do the same if it happens again,
+only after checking the trees match. 1.6.8 had two conflicts (upstream changed the
+last lines of `autostart.py` and `tests/conftest.py`, where the hooks sit), and its
+radio fix (no `no_proxy` for FFmpeg) needed the same in `linux/net.py`, which sets
+both spellings. After a merge, grep the new
 upstream code for Windows-only calls (`windll`, `WinDLL`, `winreg`, `powershell`,
 `.exe`, `CREATE_NO_WINDOW`) and give anything new a Linux hook. New "Windows" text
 fails `tests/test_linux_wording.py`, which lists each string: reword it in
@@ -52,7 +61,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | One copy at a time | flock()ed lock file, same "come to the front" socket | `linux/singleinstance.py` |
 | Data folder | `~/.local/share/OnionBoard` | `linux/__init__.py` |
 | Removed sounds | the desktop's Trash | `linux/library.py` |
-| Proxy / privacy relay | proxy variables set in both spellings (Linux's environment is case-sensitive) | `linux/net.py` |
+| Proxy / privacy relay | proxy variables set in both spellings (Linux's environment is case-sensitive), and neither `no_proxy` nor `NO_PROXY` (a radio station redirecting to 127.0.0.1 would step around the relay, as upstream fixed in 1.6.8) | `linux/net.py` |
 | Tor | Linux Expert Bundle (pinned SHA-256), bundled libs via `LD_LIBRARY_PATH`, exec bits, `/` in transport paths, distro `tor` as fallback; exits with the app via `__OwningControllerProcess` | `linux/tor.py`, `linux/torget.py` |
 | Text-to-speech | eSpeak NG voices (short list: translation languages, English accents, the desktop's language); Piper / voice servers unchanged | `linux/tts.py` |
 | Audio devices | the sound server's devices by name (`pactl`); each stream opens on PortAudio's `pulse` device aimed with `PULSE_SINK` / `PULSE_SOURCE`; shows as "Onion Board" in volume mixers. Verified end to end on PipeWire and on plain PulseAudio. A device unplugged mid-stream: the sound server quietly moves its stream to the default device (sounds meant for the cable on the speakers) and the watchdog sees no stall, so the engine asks every 2 s (on a thread) whether each stream's device is still there, closes the stream if not ("device not found", as on Windows) and the watchdog's retry reopens it once the device is back; a device that's gone is never opened. Tested by unplugging and replugging a device on a real PulseAudio 16 and PipeWire 1.0.5. On PulseAudio the cable is a null sink, which gives a new stream a few callbacks and then none for 1.6-2 s, and does the same after every underrun: the watchdog (1.5 s) reopened it forever and at "low" buffering busy moments underran it, so the cable carried sound in bursts (found by the WSL "call" test; PipeWire and sound cards don't do it). A stream now gets `START_S` (3 s) from opening before it counts as stalled, and a PulseAudio null sink opens at "high" (Safer, ~0.1 s more delay for listeners). See `docs/LINUX-AUDIO-SPIKE.md` | `linux/audio.py`, `linux/engine.py` |
