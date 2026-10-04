@@ -4,6 +4,11 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32",
+                                reason="the Linux build (its tree has symlinks)")
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import prune_build_linux as pbl  # noqa: E402
@@ -126,9 +131,8 @@ def test_elf_needed_reads_a_real_library():
     path = next((Path(d) / libm for d in ("/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu",
                                           "/lib64", "/usr/lib64", "/lib", "/usr/lib")
                  if libm and (Path(d) / libm).exists()), None)
-    if sys.platform == "win32" or path is None:
-        import pytest
-        pytest.skip("no ELF libm here")
+    if path is None:
+        pytest.skip("no libm found here")
     assert any(n.startswith("libc.so") for n in pbl.elf_needed(path))
     assert pbl.elf_needed(Path(__file__)) == []           # not ELF
     assert pbl.elf_needed(Path("/nonexistent/lib.so")) == []
