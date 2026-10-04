@@ -100,3 +100,7 @@ def _is_config(f: str) -> bool:
 
 # its config is a plain config.json: a dropped one is only taken when it is one
 SOURCE = Source("soundux", "Soundux", (".json",), default_config, read, claims=_is_config)
+
+
+if __import__("sys").platform != "win32":   # Linux: Soundux for Linux's X key codes
+    from soundboard.linux.soundux import *  # noqa: E402,F403

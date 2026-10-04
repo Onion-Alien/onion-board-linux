@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import process_events
+from xvfb import start_xvfb
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32" or not shutil.which("Xvfb"),
                                 reason="needs Linux and Xvfb")
@@ -19,11 +20,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32" or not shutil.which("Xvf
 
 @pytest.fixture(scope="module")
 def xserver():
-    for n in range(91, 120):
-        if not os.path.exists(f"/tmp/.X11-unix/X{n}") and not os.path.exists(f"/tmp/.X{n}-lock"):
-            break
-    proc = subprocess.Popen(["Xvfb", f":{n}", "-nolisten", "tcp", "-screen", "0", "640x480x24"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc, n = start_xvfb("-screen", "0", "640x480x24")
     old = os.environ.get("DISPLAY")
     os.environ["DISPLAY"] = f":{n}"
     # the socket appears before Xvfb answers (it's still loading its keymap on a slow
@@ -187,11 +184,11 @@ def test_the_x_server_going_away_doesnt_end_the_app(qapp, tmp_path):
         import os, subprocess, sys, time
         sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        n = int(sys.argv[1])
-        x = subprocess.Popen(["Xvfb", f":{{n}}", "-nolisten", "tcp"],
+        r, w = os.pipe()
+        x = subprocess.Popen(["Xvfb", "-displayfd", str(w), "-nolisten", "tcp"], pass_fds=(w,),
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        while not os.path.exists(f"/tmp/.X11-unix/X{{n}}"):
-            time.sleep(0.05)
+        os.close(w)
+        n = int(os.fdopen(r).readline())
         os.environ["DISPLAY"] = f":{{n}}"
         from PySide6.QtWidgets import QApplication
         app = QApplication([])
@@ -207,9 +204,6 @@ def test_the_x_server_going_away_doesnt_end_the_app(qapp, tmp_path):
         app.processEvents()
         print("still here", flush=True)
     """))
-    for n in range(121, 160):
-        if not os.path.exists(f"/tmp/.X11-unix/X{n}"):
-            break
-    out = subprocess.run([sys.executable, str(script), str(n)], capture_output=True,
+    out = subprocess.run([sys.executable, str(script)], capture_output=True,
                          text=True, timeout=60)
     assert "still here" in out.stdout, out.stderr[-2000:]

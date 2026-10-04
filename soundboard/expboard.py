@@ -138,3 +138,7 @@ def read(path: str | Path) -> list[Entry]:
 # its boards are plain .json: a dropped one is only taken for one when it says so
 SOURCE = Source("expboard", "EXP Soundboard", (".json",), default_board, read,
                 claims=lambda f: _is_board(Path(f)))
+
+
+if __import__("sys").platform != "win32":   # Linux: Java's preferences file, not the registry
+    from soundboard.linux.expboard import *  # noqa: E402,F403
