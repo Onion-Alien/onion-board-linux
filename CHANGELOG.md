@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+## 1.6.7 — 2026-10-04
+
+- **A much better voice changer.**
+  - **Sounds like a person, not a cartoon:** pitch now has *Natural sound*, which
+    keeps the shape of your voice where a real person's would be, and *Voice size*
+    (a bigger or smaller throat). Deep voice and Demon stop sounding muddy, and the
+    new *Female voice* and *Male voice* sound like someone else instead of a
+    chipmunk or a giant. Pitch also moves in half steps.
+  - **Clean up my mic**, on to start with: a noise gate that learns your room by
+    itself and hiss removal, before any effect. Fan hum and hiss used to come out
+    as warble; between words the noise now drops from about -48 dB to -70 dB.
+  - **New voices:** Female voice, Male voice, Talkbox, Autotune, Masked caller,
+    Anonymous, Dark lord and Hothead (talk normally, shout and it blows out like a
+    megaphone). Walkie-talkie now clicks when you start talking and goes "kshh"
+    when you stop.
+  - **New effects:** Autotune (gentle to full T-Pain), Monster growl (a voice an
+    octave below yours, no extra delay), Helmet, Shout blowout, and Robot's
+    *Follow my pitch* (a talkbox that sings the note you speak).
+  - **Shows the delay:** a label tells you how far behind your real voice the
+    changed one is. The pitch voices cost about 50-70 ms; the rest about 10 ms.
+  - **Hear my voice is just your voice:** it no longer plays your sounds in your
+    headphones too (the mixer's *Hear what they hear* still plays everything).
+  - **A tidier Voice tab:** *Make it yours* keeps pitch, voice size, autotune and
+    mic clean-up in view under the voices; every other effect is a card with an
+    on/off switch, grouped, with what it does written on it and a Reset.
+  - Your saved voices and older settings load as before and sound the same: the
+    new controls start where the old sound was.
+- **Sliders jump to where you click:** click anywhere on a slider's bar (volume,
+  seek, speed, fades, everything) and it goes straight there, instead of creeping
+  a step towards it; you no longer have to grab the circle. The circles are no
+  longer cut off flat at the top and bottom, and light up when you point at them.
+- **Getting Onion Watch shows real progress:** the bar under *Get Onion Watch*
+  used to sit full while nothing seemed to happen. It now glides while the app asks
+  GitHub for the newest version, installs and starts it, shows the download's real
+  percentage in between, and the button says which step it's on.
+- **Space pauses the sound you're on:** with a pad selected, Space pauses it while
+  it plays and carries on from there when pressed again, like a media player,
+  instead of starting it over. A sound that isn't playing still starts.
+- **Live tabs are green to start with:** a tab whose feature is on (a sound
+  playing, the voice changer, the radio) gets a soft green tint and a green icon.
+  Prefer the old look? Settings → Appearance → *Live tabs* (now first, above the
+  themes) picks the tint or a small green dot, one or the other. The tint lines up
+  with the open tab's underline instead of sticking out past it.
+- **Tidier small things:** no blank pad windows flash up behind the splash on
+  start, and Bun sits on the splash nodding to his headphones; Settings →
+  Connection → Network activity has no empty space under its list, and *Open log*
+  works without a saved history (it shows this run's list, still not saved);
+  *Start in the tray* is only ticked once *Start when I sign in* is on; the
+  overlay's *Show preview* closes on any click or key instead of making Windows
+  ding at every click while it's up; *Check now* in Settings → Updates sits on
+  the left with its result beside it, not alone on a line of its own.
+
 ## 1.6.6 — 2026-10-04
 
 - **Bring your board over from another soundboard.** Coming from Soundpad,

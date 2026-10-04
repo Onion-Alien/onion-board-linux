@@ -27,6 +27,17 @@ class Note:
 
 # newest first; add one per release that has something worth telling
 NOTES = (
+    Note("1.6.7", "A much better voice changer", (
+        ("voice", "Sounds like a person, not a cartoon",
+         "Natural sound and Voice size on the Voice tab, mic clean-up on to start with, "
+         "and new voices: Female, Male, Talkbox, Autotune, Masked caller and more."),
+        ("sliders", "Click anywhere on a slider",
+         "Every slider jumps straight to where you click its bar; no need to grab the "
+         "circle."),
+        ("check", "Fixes",
+         "Space pauses the sound you're on instead of restarting it, live tabs glow "
+         "green, and getting Onion Watch shows its real progress."),
+    )),
     Note("1.6.6", "Coming from another soundboard?", (
         ("sounds", "Bring your sounds over",
          "Backup → Import from another soundboard copies in your Soundpad, Resanance, "

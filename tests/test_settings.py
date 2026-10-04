@@ -288,3 +288,16 @@ def test_about_shows_the_version_and_only_opens_pages(window, monkeypatch):  # n
     assert opened and all(u.startswith("https://") for u in opened)
     assert any("/security/advisories/new" in u for u in opened)
     d.close()
+
+
+def test_live_tabs_comes_first_on_appearance_tint_or_dot(window, qapp):  # noqa: F811
+    d = SettingsDialog(window, "appearance")
+    assert d.live_green.isChecked() == window.cfg.live_tab_green
+    card = d.live_green.parentWidget()
+    assert card.findChild(QLabel).text() == "LIVE TABS"
+    assert card.parentWidget().layout().itemAt(0).widget() is card    # first on the page
+    d.live_dot.click()
+    assert window.cfg.live_tab_green is False
+    d.live_green.click()
+    assert window.cfg.live_tab_green is True
+    d.close()
