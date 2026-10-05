@@ -105,6 +105,10 @@ def patch_main_window(cls):
     # it "Hands-Free", the sound server's name for it says Bluetooth
     upstream_hands_free = mw.is_hands_free
     mw.is_hands_free = lambda name: upstream_hands_free(name) or audio.bluetooth_mic(name)
+    # upstream starts load_triggers' timer while the window is being built and the
+    # splash's pump runs pending events before __init__ sets _shut_down: on a slow
+    # PC the timer fired first (AttributeError at every start on the Fedora VM)
+    cls._shut_down = False
     # ...and it never asks for attention (triggers brought over from Windows)
     cls._nudge_triggers = lambda self, index: None
     cls.install_cable = install_cable

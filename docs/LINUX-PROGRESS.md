@@ -56,7 +56,7 @@ the number move: new work found means the number can go down, and that's fine.
 | self-update | Self-update from an AppImage | 2 | done |
 | real-release | A real release: AppImage attached, link works, update from it | 2 | open |
 | tests | Upstream suite + Linux tests green on Linux, 4 workers | 4 | done |
-| ci | CI: Linux and Windows workflows green | 2 | half |
+| ci | CI: Linux and Windows workflows green | 2 | done |
 | ci-win-abort | Windows CI native abort in test_radio (cause found) | 1 | open |
 | pocket | Onion Pocket installs and works on Linux | 1 | half |
 | discord | A real Discord call: Linux app's cable → Windows listener | 3 | open |
@@ -64,6 +64,12 @@ the number move: new work found means the number can go down, and that's fine.
 | distros | Checked on more than one real distro (Ubuntu desktop, Arch) | 2 | half |
 | upstream-merge | Upstream releases merged and kept current | 1 | done |
 | launch | Merged back into the public repo, Linux download live | 3 | open |
+| upstream-191 | 1.9.1 merged: direct mic hidden, the cable the route, capture and update hooks, Fedora checked | 1 | done |
+| usage-linux | Usage count on Linux: no installer "Count me in" box, Linux not told apart | 1 | half |
+| direct-mic-design | Straight into my mic on Linux: designed (virtual default mic, holder) | 1 | done |
+| direct-mic | Straight into my mic on Linux: Onion Board Mic as the default input, fed the send mix | 5 | open |
+| direct-mic-safe | The user's own mic back as the default on quit, route change, crash, kill -9 | 2 | open |
+| direct-mic-fedora | Direct mic on Fedora: Default hears pads + mic, the meter never the pads, kill -9 safe | 2 | open |
 
 ## After launch (not counted)
 
@@ -104,3 +110,5 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-05 | 67% | HTTPS fix confirmed with the CI AppImage on Fedora 44 (update check works with no setting) |
 | 2026-10-05 | 69% | drop-outs at low: cause found (the unplug poll's pactl list stalled every stream every 2-3 s), fixed + measured on WSLg (30 -> 4 underruns); Fedora check left |
 | 2026-10-05 | 70% | drop-out fix checked on Fedora 44 with the CI AppImage (0 underruns / stalls at low, no pactl left after a quit or kill -9); Linux CI green again (clip editor test flake fixed); Windows CI red on upstream flaky tests |
+| 2026-10-06 | 64% | merged upstream 1.9.1 (direct mic hidden on Linux, the cable stays the route); found + fixed: Update now's .exe update copy, the Apps tab capture's new wait/running API, a start-up crash on slow PCs, an order-dependent gc test; both CIs green, CI AppImage clean on Fedora; new rows for direct mic |
+| 2026-10-06 | 65% | Straight into my mic on Linux designed (docs/LINUX-PORT.md): a virtual default mic fed the send mix, a holder shell for crashes; checked on Fedora that PipeWire moves recordings back when it goes |

@@ -239,3 +239,30 @@ def test_overlay_preview_has_no_input_shape_on_x11(tmp_path):
     assert line, r.stderr[-2000:]
     during, after = map(int, line[0].split()[1:])
     assert during == 0 and after >= 1
+
+
+def test_the_triggers_timer_firing_mid_build_is_no_crash(qapp, app_dir, server, monkeypatch):
+    """The window starts load_triggers' 50 ms timer half-way through being built, and
+    the splash's pump runs pending events after that: on a slow PC (the Fedora VM, at
+    every start) the timer fired before __init__ had set _shut_down (AttributeError,
+    logged as a crash). Upstream's code; the Linux hook gives it a class default."""
+    import time
+
+    from PySide6.QtCore import QEvent
+
+    from soundboard.ui import mainwindow, splash
+
+    def slow_pump():
+        time.sleep(mainwindow.TRIGGERS_LOAD_MS / 1000 + 0.02)
+        qapp.processEvents()
+    monkeypatch.setattr(splash, "pump", slow_pump)
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *e: errors.append(e[1]))
+    w = mainwindow.MainWindow()
+    try:
+        assert errors == []
+    finally:
+        w._load_thread.join(15)
+        w.close()
+        w.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.DeferredDelete)
