@@ -26,6 +26,7 @@ the number move: new work found means the number can go down, and that's fine.
 | hotkeys-x11 | Global hotkeys on X11 / XWayland (grabs, key-up, hold-to-play) | 4 | done |
 | hotkeys-kde | Wayland hotkeys via the portal on KDE Plasma | 3 | done |
 | hotkeys-gnome | Wayland hotkeys via the portal on GNOME 48+ | 2 | open |
+| hotkeys-other | Wayland with no GlobalShortcuts portal (Sway / wlroots, GNOME before 48): a clear message on what to do, and Hyprland's portal checked | 2 | open |
 | audio-core | Audio devices and streams on PipeWire and PulseAudio (pulse / pipewire device, unplug watchdog) | 6 | done |
 | audio-fedora | Stock Fedora sound (no "pulse" device, 40 ms floor) | 2 | done |
 | dropouts | No drop-outs at "low" with the whole app running | 4 | open |
@@ -64,6 +65,33 @@ the number move: new work found means the number can go down, and that's fine.
 | upstream-merge | Upstream releases merged and kept current | 1 | done |
 | launch | Merged back into the public repo, Linux download live | 3 | open |
 
+## After launch (not counted)
+
+What other Linux soundboards showed us (checked 2026-10-05). These don't block the
+launch, so they aren't in the estimate; move one up into *Items* when it's picked up.
+
+- **Where the others stand.** Soundux, the old favourite, is unmaintained (last
+  release 2021). The active ones (PipeWire Soundpad, Linux-SoundBoard, OpenWire,
+  HonkHonk, Noisitron) each do part of the job: a PipeWire virtual mic and
+  hotkeys, plus one of trim, effects or a MyInstants search. None has YouTube
+  import, trim, effects, a voice changer and a phone remote together, and none has
+  a phone remote at all. The pitch: *the Soundux replacement that does it all*.
+- **Flathub, then AUR.** Every maintained Linux soundboard ships a Flatpak, most an
+  AUR package too; AppImage-only is harder to find. Flathub needs PipeWire / Pulse
+  socket access, the portal for hotkeys, and `pactl` reachable from the sandbox for
+  the cable (or the cable made another way).
+- **Hotkeys without the portal.** The others fall back to evdev (PipeWire Soundpad:
+  reads `/dev/input`, needs the `input` group) or swhkd (Linux-SoundBoard: a heavy
+  install). If we add one, keep it opt-in with the group step explained in words.
+- **Import from today's boards.** People coming from PipeWire Soundpad or
+  Linux-SoundBoard (SQLite library), next to the Soundux import we already have.
+- **Onion Pocket on Linux** is the one thing no Linux soundboard has; worth
+  finishing the `pocket` row and saying so in the launch post.
+- **Loudness per sound.** Linux-SoundBoard evens out sounds by loudness (LUFS) when
+  they're added; an upstream idea, not Linux-only.
+- **Tray on GNOME** needs the AppIndicator extension; say so if the tray matters
+  for closing to tray.
+
 ## History
 
 | Date | Estimate | Change |
@@ -72,3 +100,4 @@ the number move: new work found means the number can go down, and that's fine.
 | 2026-10-05 | 68% | scorecard starts: counts launch, a real release, Discord, GNOME the old rating didn't |
 | 2026-10-05 | 69% | CI AppImage passes on Fedora (cable, hold-to-play); found + fixed HTTPS on Fedora (half until the next CI build is checked) |
 | 2026-10-05 | 68% | merged upstream 1.8.0 (AI voices, clip editor); add-ons need Python 3.12; new row: AI voices on a real desktop |
+| 2026-10-05 | 66% | new row from looking at other Linux soundboards: hotkeys on Wayland desktops with no portal; after-launch ideas listed |
