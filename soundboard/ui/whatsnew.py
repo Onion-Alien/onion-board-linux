@@ -27,6 +27,32 @@ class Note:
 
 # newest first; add one per release that has something worth telling
 NOTES = (
+    Note("1.7.1", "Onion Pocket stays up to date", (
+        ("cable", "Update Onion Pocket from Settings",
+         "When a newer Onion Pocket is out, Settings → Remote offers it in one click. "
+         "Your phones stay paired."),
+        ("triggers", "Alarms on your phone",
+         "While an Onion Watch trigger rings, its pad lights up on your phone, and "
+         "stopping it there stops the alarm."),
+    ), "remote", "Open Remote"),
+    Note("1.7.0", "Your own highlight colour", (
+        ("palette", "Pick any colour",
+         "Settings → Appearance → Highlight colour: slide along the rainbow or pick any "
+         "colour for live tabs and the Live button. Theme's colour puts it back."),
+        ("play", "A longer play bar",
+         "The bar under your pads now starts right after the sound's name, so short "
+         "names don't leave a big empty gap."),
+    ), "appearance", "Open Appearance"),
+    Note("1.6.9", "Your pads on your phone", (
+        ("cable", "Onion Pocket, a free add-on",
+         "Settings → Remote → Get Onion Pocket. Scan the code with your phone's camera "
+         "and tap a pad on the phone: it plays here. Nothing to install on the phone."),
+        ("shield", "Only your home Wi-Fi",
+         "It's off until you switch it on, only phones on your own network with the "
+         "code's key can use it, and it can never touch your mic."),
+        ("check", "Fixes",
+         "Dozens of small fixes from a full code audit, and Settings opens faster."),
+    ), "remote", "Open Remote"),
     Note("1.6.7", "A much better voice changer", (
         ("voice", "Sounds like a person, not a cartoon",
          "Natural sound and Voice size on the Voice tab, mic clean-up on to start with, "

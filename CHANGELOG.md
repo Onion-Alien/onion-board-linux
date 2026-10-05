@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 1.7.1 — 2026-10-04
+
+- **Onion Pocket updates itself from Settings:** when a newer Onion Pocket is out,
+  Settings → Remote shows *Update Onion Pocket to …* on its card. One click downloads
+  it (checked like before) and swaps it in while Onion Board runs: your phones stay
+  paired, and the port and on/off stay as they were. If it can't update, the old
+  one keeps working. (Onion Pocket 0.1.1 stops Onion Board freezing while Windows'
+  firewall prompt is up.)
+- Your phone shows an Onion Watch alarm: while a trigger rings, its pad lights up in
+  Onion Pocket (and the Stream Deck API's status), and stopping that sound stops the
+  alarm too.
+
+## 1.7.0 — 2026-10-04
+
+- **Pick your own highlight colour:** Settings → Appearance → *Highlight colour*. A
+  rainbow slider (previews while you drag), *More colours…* for any colour, and
+  *Theme's colour* to go back. It stays when you change theme, and changes in a
+  blink.
+- The play bar under your pads starts right after the sound's name: a short name
+  like *Pick a sound* no longer leaves a big empty gap before it.
+
+## 1.6.9 — 2026-10-04
 
 - Recently deleted keeps Close beside its other actions. Sound pad menus no longer
   include Preview, and Apps / Triggers information is centered on the tab row.
@@ -17,6 +38,10 @@
 - The control API's `/api/sounds` also gives each pad's colour.
 - Radio: a station (or its redirect) pointing at this PC (`127.0.0.1`, `localhost`)
   is refused in Direct mode too, as it already was through a proxy or Tor.
+- **Dozens of small fixes from a full code audit** (audio, voice and speech, network and Tor,
+  saved data, the main window and its panels). An update download that's cut off
+  part-way now says why in plain words, Settings opens faster without a stray little
+  window, and What's new no longer shows twice after going back a version.
 
 ## 1.6.8 — 2026-10-04
 

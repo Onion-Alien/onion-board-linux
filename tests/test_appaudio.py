@@ -14,6 +14,7 @@ from soundboard import appaudio
 from soundboard.appaudio import GUID, WAVEFORMATEX, App, to_stereo_f32
 
 WIN = sys.platform == "win32"
+SR = appaudio.SR
 
 
 def test_guid_bytes_keep_zero_bytes():
@@ -74,6 +75,16 @@ def test_root_pid_walks_up_same_exe_only():
     assert appaudio.root_pid(5, loop) in (5, 6)
 
 
+def test_a_shared_helper_is_folded_into_the_program_that_started_it():
+    table = {1: (0, "explorer.exe"), 30: (1, "ms-teams.exe"),
+             31: (30, "msedgewebview2.exe"), 32: (31, "msedgewebview2.exe"),
+             40: (1, "steam.exe"), 41: (40, "steamwebhelper.exe"),
+             50: (1, "msedgewebview2.exe"), 51: (50, "msedgewebview2.exe")}
+    assert appaudio.root_pid(32, table) == 30      # its sound is the new Teams'
+    assert appaudio.root_pid(41, table) == 40
+    assert appaudio.root_pid(51, table) == 50      # started by Windows: stays itself
+
+
 @pytest.mark.skipif(not WIN, reason="Windows only")
 def test_list_apps_runs_and_never_lists_this_process():
     apps = appaudio.list_apps()
@@ -125,6 +136,59 @@ def test_peak_watcher_reads_meters_between_scans_and_releases_them(monkeypatch):
 
 
 @pytest.mark.skipif(not WIN, reason="Windows only")
+@pytest.mark.skipif(not WIN, reason="Windows processes")
+def test_a_reused_pid_is_not_taken_for_the_program_it_used_to_be(monkeypatch):
+    me = os.getpid()
+    real = appaudio.process_path(me)
+    assert real and os.path.basename(real).lower().startswith("python")
+    # pretend this pid used to be Spotify's: a fresh process list says otherwise
+    monkeypatch.setitem(appaudio._names, me, r"C:\Apps\Spotify.exe")
+    assert appaudio.process_path(me, os.path.basename(real).lower()) == real
+    # and a pid gone from the process list is forgotten, not kept forever
+    monkeypatch.setitem(appaudio._names, 4_000_000_001, r"C:\Apps\Spotify.exe")
+    appaudio.forget_dead_pids({me: (0, "python.exe")})
+    assert 4_000_000_001 not in appaudio._names
+
+
+@pytest.mark.skipif(not WIN, reason="Windows processes")
+def test_is_running_tells_a_newer_process_on_the_same_pid_apart():
+    me = os.getpid()
+    started = appaudio.process_started(me)
+    assert started
+    assert appaudio.is_running(me) and appaudio.is_running(me, started)
+    assert not appaudio.is_running(me, started - 1)   # "the old one" exited
+    assert not appaudio.is_running(4_000_000_001)     # no such process
+
+
+@pytest.mark.skipif(not WIN, reason="Windows events")
+def test_a_quiet_program_is_handed_over_as_silence():
+    """A program with nothing to play sends no packets at all: the engine's cushion
+    for it ran dry, grew by half each time, and kept the extra delay for good."""
+    import threading
+
+    class NoPackets:
+        def call(self, i, types, *args, what=""):
+            if i == 5:                                 # GetNextPacketSize: nothing
+                args[0]._obj.value = 0
+
+    got = []
+    cap = appaudio.AppCapture(os.getpid(), got.append, name="quiet")
+    evt = appaudio._k32.CreateEventW(None, False, False, None)
+    fmt = appaudio._format("f32")
+    th = threading.Thread(target=cap._loop, args=(NoPackets(), fmt, True, evt), daemon=True)
+    t0 = time.monotonic()
+    th.start()
+    time.sleep(0.4)
+    cap._stop.set()
+    th.join(2)
+    took = time.monotonic() - t0
+    appaudio._k32.CloseHandle(evt)
+    n = sum(len(x) for x in got)
+    assert not th.is_alive() and cap.error is None
+    assert took * SR - 0.1 * SR < n <= took * SR   # the gap, in real time
+    assert not any(x.any() for x in got)
+
+
 def test_capture_of_a_missing_process_fails_politely():
     got = []
     cap = appaudio.AppCapture(4_000_000_000 - 1, got.append, name="nobody")

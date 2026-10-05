@@ -41,7 +41,6 @@ LIST_MAX = 300             # rows shown at once
 SEARCH_DELAY_MS = 450      # typing pause before the directory is asked
 FAV_MAX = 200
 RECENT_MAX = 30
-GREEN = "#13ce66"   # the playing station's highlight on dark themes
 ROW_H = 54
 # what the globe page may load: its own files and inline data, never the network
 LOCAL_SCHEMES = ("file", "data", "blob", "about", "qrc")
@@ -221,8 +220,7 @@ class _StationDelegate(QStyledItemDelegate):
             p.setBrush(QColor(t["badge"]))
             p.drawRoundedRect(pill, 9, 9)
             p.setFont(f)
-            hi = GREEN if QColor(t["bg"]).lightness() < 128 else "#0b7a43"
-            p.setPen(QColor(hi if s.bitrate >= 256 else t["badge_text"]))
+            p.setPen(QColor(t["live_text"] if s.bitrate >= 256 else t["badge_text"]))
             p.drawText(pill, Qt.AlignCenter, pill_txt)
             right = int(pill.left()) - 8
 
@@ -359,7 +357,8 @@ class RadioTab(QWidget):
         self.dir.results.connect(self._on_results)
         self.dir.failed.connect(self._on_failed)
         self.player = RadioPlayer(self)
-        self.player.audio.connect(self._on_audio)
+        # on the decoding thread: a busy window mustn't hold the radio up
+        self.player.audio.connect(self._on_audio, Qt.DirectConnection)
         self.player.state.connect(self._on_state)
         self.player.error.connect(self._on_error)
         self.player.now_playing.connect(self._on_now_playing)
@@ -1191,6 +1190,7 @@ QFrame#stations QFrame#rule { background:$border; max-height:1px; border:none; }
             self.play(s)
 
     def _on_audio(self, x: np.ndarray):
+        """On the radio's decoding thread: only thread-safe calls here."""
         self.engine.feed_radio(x)
         self.recorder.push(x)
 

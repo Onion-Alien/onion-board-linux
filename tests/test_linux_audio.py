@@ -248,3 +248,27 @@ def test_an_unplugged_device_is_let_go_and_taken_back_when_it_returns(server, mo
         assert watch(lambda: e.mon_stream is not None) and "mon" not in e.errors
     finally:
         e.shutdown()
+
+
+BLUETOOTH = """Source #80
+\tName: bluez_input.AA_BB_CC_DD_EE_FF.0
+\tDescription: WH-1000XM4
+\tSample Specification: s16le 1ch 16000Hz
+\tMonitor of Sink: n/a
+"""
+
+
+def test_a_bluetooth_headsets_mic_gets_the_call_quality_warning(server, monkeypatch):
+    # Linux doesn't call it "Hands-Free": the sound server's name says Bluetooth
+    from soundboard.linux import wording
+    from soundboard.ui import mainwindow
+    answers = {("list", "sinks"): SINKS, ("list", "sources"): SOURCES + BLUETOOTH,
+               ("info",): INFO}
+    monkeypatch.setattr(server, "_pactl", lambda *a: answers.get(a, ""))
+    server.refresh()
+    assert mainwindow.is_hands_free("WH-1000XM4")
+    assert not mainwindow.is_hands_free("Blue Yeti Analog Stereo")
+    assert mainwindow.is_hands_free("Headset (WH-1000XM4 Hands-Free AG Audio)")  # upstream's
+    said = wording.linux("That's a Bluetooth headset's phone-call mic: while it's open, "
+                         "Windows switches the headset to call quality, so everything")
+    assert "Windows" not in said and "the headset switches to call quality" in said

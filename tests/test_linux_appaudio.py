@@ -95,3 +95,20 @@ def test_a_program_that_closed_is_said_so(monkeypatch):
     monkeypatch.setattr(la.shutil, "which", lambda name: "/usr/bin/" + name)
     cap = appaudio.AppCapture(2 ** 22 + 12345, lambda x: None)   # no such process
     assert not cap.start() and cap.ended and "isn't running" in cap.error
+
+
+def test_a_shared_helper_goes_to_the_program_that_started_it_on_linux(monkeypatch):
+    # Linux's helpers by their Linux names, and nothing is folded into systemd
+    from soundboard import appaudio
+    from soundboard.linux import appaudio as la
+    procs = {1: (0, "/usr/lib/systemd/systemd"), 900: (1, "/usr/lib/systemd/systemd"),
+             40: (900, "/opt/steam/ubuntu12_32/steam"),
+             41: (40, "/opt/steam/ubuntu12_64/steamwebhelper"),
+             42: (41, "/opt/steam/ubuntu12_64/steamwebhelper"),
+             60: (900, "/usr/lib/qt6/libexec/QtWebEngineProcess")}
+    monkeypatch.setattr(la, "process_path", lambda pid: procs.get(pid, (0, ""))[1])
+    monkeypatch.setattr(la, "_ppid", lambda pid: procs.get(pid, (0, ""))[0])
+    table = la._process_table([42, 60])
+    assert table[41] == (40, "steamwebhelper") and 900 not in table
+    assert appaudio.root_pid(42) == 40      # Steam's store / overlay sound is Steam's
+    assert appaudio.root_pid(60) == 60      # started by systemd: stays itself

@@ -417,10 +417,14 @@ class AuxSource:
     ring has one writer), read by the output callbacks. Comes and goes at runtime:
     Engine.aux is a tuple replaced under the lock, like the voices."""
 
+    MAKEUP_WINDOW_S = 4.0   # how much of its recent audio the make-up is measured on
+    MAKEUP_EVERY_S = 2.0    # ...and how often
+
     def __init__(self, key, rates: dict | None = None):
         self.key = key
         self.vol = 1.0
         self.live = True        # -> others (the whole point of capturing a program)
+        self.stream = True      # -> the stream output (Apps tab: Call + stream / Stream only)
         self.monitor = False    # -> your headphones (the program already plays there)
         self.level = 0.0
         # the program's audio clock is its device's, not ours: track drift; and a
@@ -432,6 +436,13 @@ class AuxSource:
         self._rs_mon = StreamResampler(SR, SR)
         self._rs_obs = StreamResampler(SR, SR)
         self._heard = 0.0
+        # the power each destination low cut takes from it (destination.cut_shares),
+        # measured on its last few seconds now and then: its make-up gain, as a
+        # sound's (Voice.makeup), so a bass-heavy song isn't quieter sent this way
+        self.cut_share: dict = {}
+        self._hist = np.zeros((int(SR * self.MAKEUP_WINDOW_S), CH), np.float32)
+        self._hist_w = self._hist_n = self._since = 0
+        self._gain: dict = {}   # out -> the make-up gain it's gliding at
         if rates:
             self.configure(rates)
 
@@ -455,6 +466,8 @@ class AuxSource:
         if lvl > 0.003:
             self._heard = time.monotonic()
         if main:
+            self._measure(x)
+        if main:
             self.ring_main.write(self._rs_main(x))
         if mon:
             self.ring_mon.write(self._rs_mon(x))
@@ -463,6 +476,40 @@ class AuxSource:
 
     def on_air(self) -> bool:
         return self.live and self.vol > 0 and time.monotonic() - self._heard < 0.5
+
+    def _measure(self, x: np.ndarray):
+        """Keep its recent audio and, every MAKEUP_EVERY_S, re-measure cut_share
+        (capture thread: a few ms, never on an audio callback)."""
+        h, n = self._hist, len(x)
+        if n >= len(h):
+            x, n = x[-len(h):], len(h)
+        end = self._hist_w + n
+        if end <= len(h):
+            h[self._hist_w:end] = x
+        else:
+            k = len(h) - self._hist_w
+            h[self._hist_w:] = x[:k]
+            h[:n - k] = x[k:]
+        self._hist_w = end % len(h)
+        self._hist_n = min(self._hist_n + n, len(h))
+        self._since += n
+        if self._since < SR * self.MAKEUP_EVERY_S or self._hist_n < SR:
+            return
+        self._since = 0
+        recent = np.roll(h, -self._hist_w, axis=0)[len(h) - self._hist_n:]
+        new = destination.cut_shares(recent, SR)
+        if new:   # silence measures nothing: keep what it had
+            old = self.cut_share
+            self.cut_share = {c: 0.5 * old.get(c, v) + 0.5 * v for c, v in new.items()}
+
+    def gain(self, out: str, lowcut: int) -> float:
+        """Its volume times the make-up for `lowcut` (0: none), gliding to a new
+        value over a few blocks so a re-measure never steps (audio callback)."""
+        want = self.vol * (destination.makeup(self.cut_share.get(lowcut, 0.0)) if lowcut else 1.0)
+        g = self._gain.get(out, want)
+        g += (want - g) * 0.1
+        self._gain[out] = g
+        return g
 
 
 @dataclass(eq=False)
@@ -494,6 +541,9 @@ class Voice:
     # rate; otherwise the source is read at this rate (the resampled copy wasn't
     # ready when it started, and playing must never wait for one: see Engine.play)
     step: dict = field(default_factory=dict)
+    # outs whose stream closed under it mid-play (a rescan, a stalled device): done
+    # there for now, but a reopen at the same rate resumes it from its own position
+    cut: set = field(default_factory=set)
 
     def __post_init__(self):
         self.pos = {o: 0 for o in self.data}
@@ -639,7 +689,11 @@ class Engine:
 
         self._rec_buf: list[np.ndarray] | None = None
         self._rec_frames_left = 0
-        self.rec_done: tuple[np.ndarray, int] | None = None   # (audio, rate)
+        self._rec_done: tuple[list, int] | np.ndarray | None = None   # see rec_done
+        self._mic_pow = [0.0, 0.0]   # each mic channel's recent power (_mic_channels)
+        self._mic_dead: int | None = None   # the mic channel found dead, if one is
+        self._mon_fed = False        # the mic wrote to ring_mon last block (mic check)
+        self._obs_fed = False        # ...and to ring_obs (your voice on the stream output)
         self._mic_rec: list[np.ndarray] | None = None          # mic during a test (see _mic)
         # a copy of every block sent to the send device while set to a list (the voice chat
         # check compares it with what Discord plays back); None = off
@@ -680,9 +734,10 @@ class Engine:
         return s
 
     def _resume_voices(self, key: str, rate: int):
-        """Output `key` was reopened: sounds still playing on the other output pick
-        up here again, at the same spot (with a short fade in). Data made for
-        another rate is useless, so those stay done."""
+        """Output `key` was reopened: sounds still playing on another output pick
+        up here again, at the same spot (with a short fade in); sounds this output
+        was cut from while every output was closed (a device rescan) pick up where
+        they were cut. Data made for another rate is useless, so those stay done."""
         with self.lock:
             for v in self.voices:
                 if (key not in v.done or v.stopping or not len(v.data.get(key, ()))
@@ -691,11 +746,14 @@ class Engine:
                 other = next((o for o in v.data if o != key and o not in v.done
                               and len(v.data[o])), None)
                 if other is None:
-                    continue
+                    if key not in v.cut:
+                        continue
+                    other = key   # nothing else playing it: its own spot
                 d = v.data[other]
                 frac = v.seek_to.get(other)
                 if frac is None:
                     frac = (v.pos[other] % len(d)) / len(d)
+                v.cut.discard(key)
                 v.seek_to.pop(key, None)
                 v.pos[key] = int(frac * len(v.data[key]))
                 v.gate[key] = 0.0
@@ -885,7 +943,8 @@ class Engine:
 
     # ----------------------------------------------------------------- radio input
     def feed_radio(self, x: np.ndarray):
-        """Push a chunk of radio audio ((n, 2) float32 at SR). Call from the UI thread."""
+        """Push a chunk of radio audio ((n, 2) float32 at SR). Called from one thread at
+        a time (the radio's decoding thread), like feed_aux."""
         lvl = peak(x)
         self.level_radio = max(lvl * self.radio_vol, self.level_radio)
         if lvl > 0.003:
@@ -931,6 +990,8 @@ class Engine:
         if out:  # voices can't finish on a device that's gone
             with self.lock:
                 for v in self.voices:
+                    if out in v.data and out not in v.done:
+                        v.cut.add(out)
                     v.done.add(out)
         if s is not None:
             try:
@@ -1167,6 +1228,21 @@ class Engine:
                        for v in self.voices)
 
     # ----------------------------------------------------------------- test record
+    @property
+    def rec_done(self) -> tuple[np.ndarray, int] | None:
+        """(audio, rate) of the finished test recording, or None."""
+        done = self._rec_done
+        if done is None:
+            return None
+        blocks, rate = done
+        if isinstance(blocks, list):
+            done = self._rec_done = (np.concatenate(blocks), rate)
+        return done
+
+    @rec_done.setter
+    def rec_done(self, value):
+        self._rec_done = value
+
     def start_test_record(self, seconds: float):
         self.rec_done = None
         self._rec_frames_left = int(seconds * self.rates["main"])
@@ -1379,6 +1455,12 @@ class Engine:
             f = self._send[key] = kind(self.rates[out])
         return f
 
+    def _lowcut(self) -> int:
+        """The destination mode's low cut (Hz), 0 with none: captured programs get
+        the make-up for it (AuxSource.gain), as sounds do (Voice.makeup)."""
+        d = self.dest
+        return d.lowcut if d is not None else 0
+
     def _dest(self, out: str, x: np.ndarray) -> np.ndarray:
         """Shape the sounds bus for whoever is listening (soundboard.destination)."""
         d = self.dest
@@ -1448,12 +1530,13 @@ class Engine:
             play = max(play, peak(r) * self.radio_vol)
             if self.radio_live:
                 mix += r * np.float32(self.radio_vol)
+        lowcut = self._lowcut()
         for a in self.aux:
             x = a.ring_main.read(frames)
             if x is not None:
                 play = max(play, peak(x) * a.vol)
                 if a.live:
-                    mix += x * np.float32(a.vol)
+                    mix += x * np.float32(a.gain("main", lowcut))
         self.level_play = max(play, self.level_play * 0.85)
         mix = self._send_bus("main", finite(mix), self.ring_main.read(frames))
         if not self.sending:      # muted: others get silence, nothing else changes
@@ -1472,7 +1555,9 @@ class Engine:
             self._rec_frames_left -= frames
             if self._rec_frames_left <= 0 and self._rec_buf is rec:   # not cancelled
                 self._rec_buf = None
-                self.rec_done = (np.concatenate(rec), self.rates["main"])
+                # joined by whoever reads rec_done: seconds of audio is too much
+                # to copy in an audio callback
+                self._rec_done = (rec, self.rates["main"])
 
     def _mon(self, outdata, frames):
         check = self.mic_check and self.sending   # muted: they hear nothing, so neither do you
@@ -1491,16 +1576,19 @@ class Engine:
             play = max(play, peak(r) * self.radio_vol)
             if self.radio_monitor or (check and self.radio_live):
                 mix += r * np.float32(self.radio_vol)
+        lowcut = self._lowcut()   # the headphones get the mode's shaping too (_dest)
         for a in self.aux:
             x = a.ring_mon.read(frames)
             if x is not None:
                 play = max(play, peak(x) * a.vol)
                 if a.monitor or (check and a.live):
-                    mix += x * np.float32(a.vol)
+                    mix += x * np.float32(a.gain("mon", lowcut))
         self.level_play = max(play, self.level_play)   # _main decays it; no main: the UI does
         finite(mix)
         if check:   # you hear what others get: the same send stage, your mic in it
             mix = self._send_bus("mon", mix, m)
+            if self.limiter_on:
+                mix = self._stage("mon", Limiter).process(mix)
         else:
             mix = self._dest("mon", self._eq("mon", "sounds", mix))
         mix *= np.float32(self.mon_vol)
@@ -1545,7 +1633,7 @@ class Engine:
             mix += r * np.float32(self.radio_vol)
         for a in self.aux:
             x = a.ring_obs.read(frames)
-            if x is not None and a.live:
+            if x is not None and a.stream:
                 mix += x * np.float32(a.vol)
         mix = self._eq("obs", "sounds", finite(mix))
         m = self.ring_obs.read(frames)
@@ -1594,10 +1682,36 @@ class Engine:
             return m
         return m * np.linspace(g0, g1, len(m), dtype=np.float32)[:, None]
 
+    MIC_DEAD = 0.01   # a mic channel under this share of the other's power (-20 dB) is dead
+    MIC_ALIVE = 0.05  # ...and alive again above this (-13 dB): no flapping in between
+
+    def _mic_channels(self, x: np.ndarray) -> np.ndarray:
+        """A two-channel mic with one live input (an audio interface's input 1, a
+        headset adapter): the live channel is copied over the dead one. Otherwise
+        voice chat's mono mix would halve it (-6 dB), and mic check is one-sided."""
+        p = np.einsum("ij,ij->j", x, x)   # each channel's power, in one go
+        a = self._mic_pow
+        a[0] += (float(p[0]) - a[0]) * 0.05   # ~0.2 s at 10 ms blocks
+        a[1] += (float(p[1]) - a[1]) * 0.05
+        if a[0] + a[1] > 1e-6 * len(x):   # the mic hears something (about -60 dBFS)
+            d = self._mic_dead
+            if d is not None and a[d] > a[1 - d] * self.MIC_ALIVE:
+                d = None
+            if d is None:
+                d = 0 if a[0] < a[1] * self.MIC_DEAD else 1 if a[1] < a[0] * self.MIC_DEAD else None
+            self._mic_dead = d
+        d = self._mic_dead
+        if d is not None:
+            x[:, d] = x[:, 1 - d]
+        return x
+
     def _mic(self, indata):
         x = indata
+        two = x.shape[1] >= 2
         x = np.repeat(x, 2, axis=1) if x.shape[1] == 1 else x[:, :2]
         x = np.ascontiguousarray(x, dtype=np.float32)
+        if two:   # a copy (it may still be a view of PortAudio's buffer): written to
+            x = self._mic_channels(x.copy() if np.shares_memory(x, indata) else x)
         self.level_mic = max(peak(x), self.level_mic * 0.85)
         rec = self._mic_rec
         raw = x[:, 0].copy() if rec is not None and self._rec_buf is not None else None
@@ -1608,10 +1722,18 @@ class Engine:
             rec.append(np.stack([raw, x[:, 0]], 1))
         if self.main_stream is not None:
             self.ring_main.write(self._rs_main(x))
-        if self.mic_check and self.mon_stream is not None:
+        fed = self.mic_check and self.mon_stream is not None
+        if fed:
             self.ring_mon.write(self._rs_mon(x))
-        if self.obs_voice and self.obs_stream is not None:
+        elif self._mon_fed:   # mic check stopped: an emptied ring isn't clock drift
+            self.ring_mon.clear()
+        self._mon_fed = fed
+        fed = self.obs_voice and self.obs_stream is not None
+        if fed:
             self.ring_obs.write(self._rs_obs(x))
+        elif self._obs_fed:
+            self.ring_obs.clear()
+        self._obs_fed = fed
 
 
 if __import__("sys").platform != "win32":   # Linux: the sound server's devices by name

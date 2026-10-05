@@ -45,6 +45,9 @@ PHRASES: list[tuple[str, str]] = [
      "only shows it after a restart.",
      "Still no virtual cable: press “Make the virtual cable”."),
     ("Windows' default output", "the system's default output"),
+    # a Bluetooth headset's mic (linux/ui.py: told by its sound server name)
+    ("while it's open, Windows switches the headset to call quality",
+     "while it's open, the headset switches to call quality"),
     # Settings
     ("Couldn't change Windows startup", "Couldn't change starting at sign-in"),
     ("Translation models (Voice tab), live voice's speech model (Hugging Face) and "
