@@ -144,6 +144,13 @@ def test_without_a_pulse_device_streams_go_through_pipewires_own(server, monkeyp
     assert (i, node, pulse) == (1, "onionboard_cable", None) and "Onion Board" in props
     assert (j, mic) == (1, "alsa_input.usb-mic")
     assert "PIPEWIRE_NODE" not in os.environ and "PIPEWIRE_ALSA" not in os.environ
+    # under two of PipeWire's quanta it runs dry over and over: at least 40 ms there
+    lat = []
+    monkeypatch.setattr(sounddevice, "OutputStream", lambda **k: lat.append(k.get("latency")))
+    cable = engine.find_device("output", "Onion Board Cable Input")
+    for latency in ("low", None, 0.01, "high", 0.2):
+        engine.sd.OutputStream(device=cable, samplerate=48000, channels=2, latency=latency)
+    assert lat == [0.04, 0.04, 0.04, "high", 0.2]
     # "pulse" is still the first choice where both are there
     assert server._choose(["pipewire", "pulse"]) == (1, "pulse")
     with pytest.raises(RuntimeError, match="pipewire-alsa"):
