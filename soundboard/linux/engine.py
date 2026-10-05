@@ -1,6 +1,6 @@
 """Linux side of soundboard.engine: the device lists are the sound server's
 (soundboard.linux.audio), and streams on them open through PortAudio's "pulse"
-device (`sd` here replaces the engine's sounddevice). find_device, virtual_outputs
+(or "pipewire") device (`sd` here replaces the engine's sounddevice). find_device, virtual_outputs
 and virtual_mic_for are built on list_devices, so they need no Linux version."""
 from __future__ import annotations
 

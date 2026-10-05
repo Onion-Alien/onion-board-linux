@@ -1,5 +1,5 @@
 """Linux audio devices (soundboard.linux.audio): the sound server's device lists and
-streams opened on them through PortAudio's "pulse" device. A stand-in pactl and a
+streams opened on them through PortAudio's "pulse" (or "pipewire") device. A stand-in pactl and a
 stream class that records what it was opened with: no sound server, no sound."""
 import os
 import sys
@@ -106,7 +106,7 @@ def test_a_stream_opens_on_pulse_aimed_at_its_device(server, monkeypatch):
     sd = engine.sd
     monkeypatch.setattr(sounddevice, "OutputStream", Recorded)   # looked up at each call
     monkeypatch.setattr(sounddevice, "InputStream", Recorded)
-    monkeypatch.setattr(server, "_pcm_index", lambda: 7)
+    monkeypatch.setattr(server, "_pcm", lambda: (7, server.PULSE))
     Recorded.opened = []
     monkeypatch.delenv("PULSE_SINK", raising=False)
     cable = engine.find_device("output", "Onion Board Cable Input")
@@ -119,6 +119,35 @@ def test_a_stream_opens_on_pulse_aimed_at_its_device(server, monkeypatch):
     assert (d2, src2) == (7, "alsa_input.usb-mic")
     assert (d3, sink3) == (3, None)
     assert "PULSE_SINK" not in os.environ and "PULSE_PROP_OVERRIDE" not in os.environ
+
+
+def test_without_a_pulse_device_streams_go_through_pipewires_own(server, monkeypatch):
+    """Fedora has no "pulse" ALSA device (alsa-plugins-pulseaudio isn't installed),
+    only PipeWire's "pipewire": aimed with PIPEWIRE_NODE, named with PIPEWIRE_ALSA."""
+    import sounddevice
+    from soundboard import engine
+    seen = []
+    assert server._choose(["HDA Intel PCH: ALC892 Analog (hw:0,0)", "pipewire",
+                           "default"]) == (1, "pipewire")
+    monkeypatch.setattr(server, "_pcm", lambda: (1, server.PIPEWIRE))
+    monkeypatch.setattr(sounddevice, "OutputStream", lambda **k: seen.append(
+        (k["device"], os.environ.get("PIPEWIRE_NODE"), os.environ.get("PIPEWIRE_ALSA"),
+         os.environ.get("PULSE_SINK"))))
+    monkeypatch.setattr(sounddevice, "InputStream", lambda **k: seen.append(
+        (k["device"], os.environ.get("PIPEWIRE_NODE"))))
+    monkeypatch.delenv("PIPEWIRE_NODE", raising=False)
+    engine.sd.OutputStream(device=engine.find_device("output", "Onion Board Cable Input"),
+                           samplerate=48000, channels=2)
+    engine.sd.InputStream(device=engine.find_device("input", "Blue Yeti Analog Stereo"),
+                          samplerate=44100, channels=1)
+    (i, node, props, pulse), (j, mic) = seen
+    assert (i, node, pulse) == (1, "onionboard_cable", None) and "Onion Board" in props
+    assert (j, mic) == (1, "alsa_input.usb-mic")
+    assert "PIPEWIRE_NODE" not in os.environ and "PIPEWIRE_ALSA" not in os.environ
+    # "pulse" is still the first choice where both are there
+    assert server._choose(["pipewire", "pulse"]) == (1, "pulse")
+    with pytest.raises(RuntimeError, match="pipewire-alsa"):
+        server._choose(["default"])
 
 
 def test_pulseaudios_null_sink_gets_the_safer_buffer(server, monkeypatch):
@@ -135,7 +164,7 @@ def test_pulseaudios_null_sink_gets_the_safer_buffer(server, monkeypatch):
         ("list", "sinks"): pulse_sinks, ("list", "sources"): SOURCES}.get(a, ""))
     server.refresh()
     monkeypatch.setattr(sounddevice, "OutputStream", Recorded)
-    monkeypatch.setattr(server, "_pcm_index", lambda: 7)
+    monkeypatch.setattr(server, "_pcm", lambda: (7, server.PULSE))
     lat = []
     monkeypatch.setattr(Recorded, "__init__", lambda self, **k: lat.append(k.get("latency")))
     cable = engine.find_device("output", "Onion Board Cable Input")
