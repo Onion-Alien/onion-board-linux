@@ -877,3 +877,7 @@ MY SETUP RIGHT NOW
 Keep the steps beginner-friendly. Don't suggest exposing the API to the internet, \
 port-forwarding it or running it on another machine: it's meant for this PC only.
 """
+
+
+if __import__("sys").platform != "win32":   # Linux: listens again at once after a restart
+    from soundboard.linux.remote import *  # noqa: E402,F403

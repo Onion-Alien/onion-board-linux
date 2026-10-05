@@ -244,9 +244,42 @@ def by_index(index) -> Device | None:
 
 
 # ------------------------------------------------------------------ engine's API
+_hidden = threading.local()
+
+
+class showing_hidden:
+    """`with showing_hidden():` list_devices includes Onion Board's own mic (linux/
+    directmic.py) on this thread: the engine opening it. It's hidden from every list
+    otherwise, so nobody picks it as their mic (the board would hear itself) or as
+    their speakers."""
+
+    def __enter__(self):
+        self._was = getattr(_hidden, "on", False)
+        _hidden.on = True
+
+    def __exit__(self, *exc):
+        _hidden.on = self._was
+
+
+def _shown(d: Device) -> bool:
+    from soundboard.linux import directmic
+    return getattr(_hidden, "on", False) or not directmic.is_ours(d.pulse)
+
+
 def list_devices(kind: str) -> list[dict]:
     """The sound server's devices of kind 'input' or 'output' as [{index, name}]."""
-    return [{"index": d.index, "name": d.name} for d in devices() if d.kind == kind]
+    return [{"index": d.index, "name": d.name} for d in devices()
+            if d.kind == kind and _shown(d)]
+
+
+def own_mic() -> Device | None:
+    """The mic the board itself records while Onion Board's mic is the default input:
+    the user's own (the default before it), else the first other one."""
+    from soundboard.linux import directmic
+    want = directmic.user_mic()
+    mics = [d for d in devices() if d.kind == "input" and not directmic.is_ours(d.pulse)
+            and not d.pulse.endswith(".monitor")]
+    return next((d for d in mics if d.pulse == want), None) or (mics[0] if mics else None)
 
 
 def default_device_name(kind: str) -> str | None:
@@ -322,6 +355,19 @@ def _below(lat, least: float) -> bool:
 
 def _open(kind: str, cls, kwargs: dict):
     dev = by_index(kwargs.get("device"))
+    if dev is None and kind == "input" and kwargs.get("device") is None:
+        # "the default mic" (the engine opens its mic by name; this is for anything
+        # else), pinned to the one that is the default now: a stream left on "default"
+        # follows the default, which is Onion Board's own mic once it's made (straight
+        # into my mic). With Onion Board's mic the default already: the user's own.
+        from soundboard.linux import directmic
+        cur = directmic.default_source()
+        if cur == directmic.SOURCE:
+            dev = own_mic()
+            if dev is not None:
+                log.info("the default mic is Onion Board's: recording %s", dev.name)
+        elif cur:
+            dev = next((d for d in devices() if d.kind == "input" and d.pulse == cur), None)
     if dev is None:
         return cls(**kwargs)
     # a device that's gone (unplugged since the lists were read) mustn't be opened:

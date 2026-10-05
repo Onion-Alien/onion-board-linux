@@ -108,27 +108,15 @@ NOT_ON_LINUX = {
         "the VB-Cable installer (linux/ui.py)",
     ("soundboard/ui/mainwindow.py", "Some games just use Windows' main mic"):
         "the mic control panel (Linux sets the default mic: linux/ui.py)",
-    # "Straight into my mic" (1.9.0): Windows' mic effect; not on Linux yet, so the route
-    # is never "mic" there (linux/library.py) and these never show
+    # "Straight into my mic" (1.9.0): Windows' mic effect (linux/directmic.py is the
+    # Linux one); its failures that can't happen here, and its update
     ("soundboard/directmic.py", ""): "the mic effect (linux/directmic.py answers instead)",
-    ("soundboard/ui/mainwindow.py", "Click <b>Yes</b> when Windows asks for permission"):
-        "the mic route",
-    ("soundboard/ui/mainwindow.py", "'>One click:</b>"): "the mic route",
-    ("soundboard/ui/mainwindow.py", " A newer version of the mic part is ready"):
-        "the mic route",
-    ("soundboard/ui/setupwizard.py", "Setting up… click Yes when Windows asks"):
-        "the guide's mic button (hidden: linux/ui.py)",
-    ("soundboard/ui/setupwizard.py", "Onion Board was on your mic but needs a quick repair"):
-        "the mic route",
-    ("soundboard/ui/setupwizard.py", "Windows asks for permission once, and your PC's"):
-        "the mic route",
-    ("soundboard/ui/whatsnew.py", "Onion Board puts your sounds into the mic"):
-        "1.9.1's note, about the mic only (dropped: linux/ui.py)",
-    ("soundboard/ui/mainwindow.py", "'>✗ Windows isn't running Onion Board"): "the mic route",
+    ("soundboard/ui/mainwindow.py", "'>✗ Windows isn't running Onion Board"):
+        "the effect not running on the mic (no effect: installed_on() is [])",
     ("soundboard/ui/mainwindow.py", "Another app may have your mic to itself"):
-        "the mic route",
-    ("soundboard/ui/mainwindow.py", "That's a Bluetooth headset's call mic: some of them"):
-        "after putting Onion Board on the mic",
+        "the effect not running on the mic (no effect)",
+    ("soundboard/ui/mainwindow.py", " A newer version of the mic part is ready"):
+        "the effect's update (never 'outdated' here)",
     ("soundboard/ui/mainwindow.py", "  →  Set as Default Device"):
         "the mic control panel (Linux sets the default mic: linux/ui.py)",
 }

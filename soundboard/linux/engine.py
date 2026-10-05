@@ -47,6 +47,9 @@ _STREAMS = (("main", "main_stream", "output"), ("mon", "mon_stream", "output"),
 
 
 def _device(name: str, kind: str) -> audio.Device | None:
+    from soundboard import directmic
+    if name == directmic.DEVICE and kind == "output":   # straight into my mic: its sink
+        return next((d for d in audio.devices() if d.pulse == directmic.SINK), None)
     return next((d for d in audio.devices() if d.name == name and d.kind == kind), None)
 
 
@@ -120,6 +123,46 @@ def patch_engine(cls):
         return list(dict.fromkeys(touched))
 
     cls.check_streams = check_streams
+    orig_open_out = cls._open_out
+
+    def _open_out(self, key, name, callback):
+        """Straight into my mic: what others hear plays into Onion Board's mic (linux/
+        directmic.py), an output like the cable; the mic stays the board's own stream
+        (upstream's Windows path takes the clean mic from its effect instead)."""
+        from soundboard import directmic
+        if key != "main" or name != directmic.DEVICE:
+            return orig_open_out(self, key, name, callback)
+        self.main_direct = False
+        # made now (it goes with every quit, or the sound server restarted): it takes
+        # the default too. There already, another mic as the default is the user's
+        # choice ("other": one click takes it back)
+        if not directmic.exists() and not directmic.ensure(take_default=True):
+            raise RuntimeError("couldn't make Onion Board's mic")
+        audio.refresh()   # (made just now: the lists don't have it yet)
+        with audio.showing_hidden():
+            s = orig_open_out(self, key, directmic.SINK_DESC, callback)
+        log.info("main output is straight into the mic (%s)", directmic.SOURCE_DESC)
+        return s
+
+    cls._open_out = _open_out
+    orig_set_main = cls.set_main_device
+
+    def set_main_device(self, name):
+        """...and once Onion Board's mic is the default, the board's own mic is opened
+        again: WirePlumber moves a stream whose target is the default along when the
+        default changes (follow-default-target), so a mic opened on the user's mic
+        while it was the default followed onto Onion Board's (the board heard itself,
+        Discord lost the voice: found on Fedora). Reopened, its target isn't the
+        default any more, so it stays (linux/audio.py: never "default" itself)."""
+        from soundboard import directmic
+        orig_set_main(self, name)
+        if (name == directmic.DEVICE and self.main_stream is not None
+                and self.mic_stream is not None
+                and directmic.default_source() == directmic.SOURCE):
+            log.info("reopening the mic: Onion Board's mic is the default now")
+            self.set_mic_device(self.names["mic"])
+
+    cls.set_main_device = set_main_device
     orig_shutdown = cls.shutdown
 
     def shutdown(self):

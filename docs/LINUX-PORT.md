@@ -83,7 +83,8 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Settings | no "Virtual cable download" switch (nothing is downloaded for the cable); a built copy that can't update itself (a folder build, an AppImage in a folder the user can't write to) says why instead of "runs from source: git pull" | `linux/ui.py`, `linux/wording.py` |
 | Self-update | the release's `OnionBoard-x86_64-update.AppImage` (1.9.1's update copy, counted apart from new downloads), else its `OnionBoard-x86_64.AppImage`, never the Windows installer or its update copy (SHA-256 checked as on Windows); "Restart to update" renames it over the running AppImage (same folder: atomic, the running copy keeps its open file) and a shell starts it once this process is gone (else the single-instance lock sends it back). Only from an AppImage in a writable folder; LD_LIBRARY_PATH as it was before PyInstaller's loader, no AppImage runtime variables | `linux/updates.py` |
 | Import from other soundboards | Soundux for Linux's own config (`~/.config/Soundux`, or its Flatpak's), its hotkeys X key codes turned into Windows ones; EXP Soundboard's last board from Java's preferences file; Soundpad and Resanance (and Soundux for Windows) in Wine / Proton prefixes (`$WINEPREFIX`, `~/.wine`, Steam's `compatdata`). A board's Windows paths are found here: `\` turned into `/`, `Z:` is `/`, another drive is that drive in the board's own prefix (else `$WINEPREFIX` / `~/.wine`); a file's name comes out right even when it's missing | `linux/otherboards.py`, `linux/soundux.py`, `linux/expboard.py`, `linux/wine.py` |
-| Straight into my mic | not yet (*Next* 0): the cable stays the route, the mic is never offered (Setup's choice and buttons, the guide's button, What's new's 1.9.x notes), nothing asks for admin or uses a Windows path; settings saved on the mic (from Windows) load on the cable and keep their choice | `linux/directmic.py`, `linux/library.py`, `linux/ui.py` |
+| Straight into my mic | the board makes a mic of its own, "Onion Board Mic" (a null sink the engine plays the send mix into + a source remapped from its monitor, both hidden from the app's device lists so nobody picks them as their own mic or speakers), and on the one click makes it the default input: Discord, games and browsers on Default hear your voice and your sounds with nothing to pick; no plug-in, root or restart (see *the design* below). The board keeps recording your real mic by name: WirePlumber 0.5 moves a stream aimed at the default along when the default changes, so the board's mic is opened again once its own mic is the default (it had followed onto it: the board heard itself and the voice was lost). It exists only while the board runs: a quit or another route puts your mic back as the default and takes it away, and a holder shell does the same when the app dies (kill -9, a crash, a logout), even through Ctrl+C sent to the app's group. Checked on Fedora 44 (PipeWire 1.6.2, a stand-in mic fed a tone): a recorder on Default hears the voice and the pads, the board records the real mic, kill -9 and SIGTERM leave the real mic the default with nothing left; on WSLg's PulseAudio the holder's clean-up moved a recorder on Default back to the real mic. The status is asked on a thread (each pactl stalled the window and, on PulseAudio, every stream). The cable stays as the fallback ("Use the virtual cable instead") and gets the same mix while it exists | `linux/directmic.py`, `linux/engine.py`, `linux/audio.py`, `linux/ui.py` |
+| Control API after a restart | upstream turns SO_REUSEADDR off (on Windows it lets two programs share the port); on Linux it only lets a new listener bind while the old connections wait out TIME_WAIT, so a board restarted within a minute of answering a request couldn't listen (Onion Pocket, Stream Deck dead until the next start; found by the Fedora mic test). On here; two boards still can't share the port | `linux/remote.py` |
 | Usage count (1.9.0) | as upstream: only a built copy sends, once a day, the version and a random ID (no platform: Linux and Windows copies count alike); switched off in Settings → Privacy & security. The Windows installer's "Count me in" box has no AppImage twin, so a Linux copy is counted from its first start unless switched off | upstream `usage.py` |
 | Triggers tab | hidden (not removed: everything that looks it up still finds it), and it never nudges. Onion Watch (its own repo) captures the screen with DXGI / GDI; 0.6.5's module zip does install and load here without errors, but only says it works on Windows. Porting it (X11 capture: XShm, XComposite for one window; a portal on Wayland) is its own project, in that repo; then this tab comes back | `linux/ui.py` |
 | Overlay | "The one the game is on" follows the X11 window in front (its middle picks the monitor; `overlay.pick_screen` matches it as on Windows). Upstream only asks on Windows, so `linux/ui.py` patches the overlay's screen choice. A Wayland window in front: its chosen screen. *Show preview* lets clicks through while it's up (upstream: a Windows window style; here Qt's `WindowTransparentForInput`, an empty X11 input shape, checked on Xvfb) | `linux/keys.py`, `linux/voicesdk.py`, `linux/ui.py` |
@@ -96,9 +97,6 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 
 ## Next, in order
 
-0. **Straight into my mic on Linux** (upstream's default since 1.9.0): a virtual
-   "Onion Board Mic" made the default input, fed the send mix; see *Straight into
-   my mic on Linux: the design* below.
 1. **Audio devices on real hardware.** On a real sound server here (PulseAudio 16,
    null sinks as devices): the cable end to end, made at login from `default.pa`,
    and a device unplugged mid-stream and plugged back (see *Audio devices* above).
@@ -196,9 +194,12 @@ headset, OBS's Mic/Aux, a game with its own list): the guide's line "pick **Defa
 or **Onion Board Mic** there"; Who's listening can later name an app recording the
 real mic directly (PipeWire's `Stream/Input/Audio` nodes, the `listeners` row).
 
-**Delay.** The path is the cable's (engine → null sink → remap source), measured with
-`pwlat.py` against the cable on Fedora; the real mic's own capture buffer comes on
-top, as it does for the voice changer on the cable route today.
+**Delay.** The path is the cable's (engine → null sink → remap source). Measured on
+Fedora 44 in the VM (`fedlat.sh`: a click train into a stand-in mic, the real mic and
+what the board sends recorded side by side through two identical loopbacks): your
+voice arrives 84-94 ms after the real mic through Onion Board Mic, 99-116 ms through
+the cable (two runs each; PipeWire's ALSA device never goes under 40 ms each way). No
+slower than the cable.
 
 **Settings saved on Windows or by 1.9.1 here.** 1.9.1 moves cable users to the mic
 once and writes `"route": "mic"`; this port keeps that value on disk while it runs on

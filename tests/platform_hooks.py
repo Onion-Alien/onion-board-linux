@@ -131,7 +131,7 @@ WINDOWS_ONLY = {
     "tests/test_voicesdk.py::test_is_system_never_touches_the_disk":
         "C:\\Windows paths (the voice engine watcher is off on Linux)",
     # "Straight into my mic" (1.9.0): Windows' mic effect, its registry notes and admin
-    # step; not on Linux yet, the cable stays the route (tests/test_linux_directmic.py)
+    # step (Linux makes a mic of its own: tests/test_linux_directmic.py)
     **{f"tests/test_directmic.py::{name}": why for name, why in (
         ("test_taking_it_off_puts_the_mic_back_exactly", "the mic's effect slots (registry)"),
         ("test_a_set_up_cut_off_anywhere_can_be_undone", "the mic's effect slots (registry)"),
@@ -143,16 +143,11 @@ WINDOWS_ONLY = {
          "the admin step restarting Windows' audio service"),
         ("test_a_second_board_backs_off", "another board's process asked with OpenProcess"),
         ("test_uninstaller_takes_it_off_the_mic", "the uninstaller's admin step"),
-        ("test_new_users_go_straight_into_their_mic_old_settings_keep_the_cable",
-         "the mic route (Linux keeps the cable)"),
-        ("test_window_starts_on_the_mic_with_the_cable_copy",
-         "the mic route (Linux keeps the cable)"))},
-    "tests/test_setupwizard.py::test_new_users_are_offered_their_mic_first":
-        "the mic route (Linux keeps the cable: tests/test_linux_directmic.py)",
-    "tests/test_setupwizard.py::test_a_repair_is_offered_as_one":
-        "the mic effect's repair (Windows)",
-    "tests/test_audit_data.py::test_resetting_devices_drops_a_newer_route":
-        "the default route is the mic (Linux: the cable, tests/test_linux_directmic.py)",
+        ("test_status", "the effect's registry state (Linux: linux/directmic.py's _status)"),
+        ("test_engine_runs_on_the_clean_mic", "the effect's ring (Linux plays into its mic)"),
+        ("test_engine_add_mode_leaves_the_voice_to_the_effect",
+         "the effect's add mode (Linux: the whole send mix, replace mode)"),
+        ("test_engine_reports_a_missing_effect", "the effect's ring file"))},
     "tests/test_appaudio.py::test_stop_without_waiting_returns_at_once_and_feeds_nothing_more":
         "fakes Windows' capture thread (Linux: tests/test_linux_appaudio.py)",
 }
@@ -240,6 +235,13 @@ def _linux_never_touches_the_real_desktop(request, monkeypatch, tmp_path):
     from soundboard.linux import audio
     REAL.setdefault("audio_pactl", audio._pactl)
     monkeypatch.setattr(vcable, "_pactl", lambda *a: None)
+    # ...nor Onion Board's own mic (linux/directmic.py: tests/test_linux_directmic.py
+    # gives it a stand-in server), nor its holder shell
+    from soundboard.linux import directmic
+    REAL.setdefault("directmic_pactl", directmic._pactl)
+    REAL.setdefault("directmic_hold_fn", directmic._hold)
+    monkeypatch.setattr(directmic, "_pactl", lambda *a: None)
+    monkeypatch.setattr(directmic, "_hold", lambda mods: None)
     # a set-up machine's sound server: speakers, a mic and the Onion Board cable;
     # streams on them reach conftest's silent stream, PortAudio's index 0
     answers = {("list", "sinks"): STAND_IN_SINKS, ("list", "sources"): STAND_IN_SOURCES,

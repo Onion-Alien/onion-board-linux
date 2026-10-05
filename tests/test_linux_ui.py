@@ -74,6 +74,7 @@ def test_main_window_says_when_it_cant(window, server):
 
 def test_game_with_no_mic_setting_gets_the_cable_as_default_mic(window, server):
     w, toasts = window
+    w.cfg.route = "cable"   # (a new user starts on the mic: tests/test_linux_directmic.py)
     w.open_windows_mic()
     assert server["default_mic"] == vcable.SOURCE and toasts[-1][0] == "ok"
 
@@ -83,6 +84,7 @@ def test_setup_guide_makes_the_cable_with_no_download_or_restart(window, server,
     from soundboard import net
     from soundboard.ui import setupwizard
     w, _ = window
+    w.cfg.route = "cable"   # a cable user (a new one starts on the mic)
     monkeypatch.setattr(net, "allowed", lambda feature: feature != "setup_downloads")
     setupwizard.resume_after_restart(True)   # no registry, no error
     wiz = setupwizard.SetupWizard(w)

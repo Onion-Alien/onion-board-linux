@@ -1,6 +1,6 @@
 """Linux side of soundboard.library: removed files go to the desktop's Trash (the
 freedesktop.org one GNOME, KDE and the rest share), as they go to the Recycle Bin
-on Windows. And the routes: no "Straight into my mic" yet, the cable is the way."""
+on Windows."""
 from __future__ import annotations
 
 import logging
@@ -8,26 +8,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ROUTES", "recycle"]
-
-# "Straight into my mic" isn't on Linux yet (linux/directmic.py): the routes the app
-# offers and keeps. A saved "mic" (a new user's first start, the 1.9.1 move off the
-# cable, settings brought over from Windows) is cleaned to the cable, as a newer
-# version's route is, and the value as it was is still written back.
-ROUTES = ("cable", "device", "off")
-
-
-def _first_start_on_the_cable():
-    """A new user starts on the cable (upstream: straight into the mic)."""
-    from soundboard import library
-    upstream = library.Config.first_start.__func__
-
-    def first_start(cls):
-        cfg = upstream(cls)
-        if cfg.route not in ROUTES:
-            cfg.route = "cable"
-        return cfg
-    library.Config.first_start = classmethod(first_start)
+__all__ = ["recycle"]
 
 
 def recycle(path: Path) -> bool:
@@ -50,6 +31,3 @@ def recycle(path: Path) -> bool:
     except Exception:  # noqa: BLE001
         log.debug("moving %s to the Trash failed", path, exc_info=True)
         return False
-
-
-_first_start_on_the_cable()

@@ -81,13 +81,42 @@ PHRASES: list[tuple[str, str]] = [
      "makes one (until you log out)."),
     ("install the free virtual cable.", "make the virtual cable (one click, nothing to "
      "download)."),
-    # the setup guide's "Where do your sounds go?": straight into the mic isn't on
-    # Linux yet (linux/directmic.py), the cable is the way
-    ("Straight into <b>your mic</b>: one click, and Discord and games hear your sounds "
-     "through the mic they already use. Nothing to install from the internet, nothing to "
-     "pick in Discord. (Or use a free <b>virtual cable</b> instead.)",
-     "Into a <b>virtual cable</b>: an invisible microphone Onion Board makes for you, in "
-     "one click with nothing to download. Discord or your game then uses it as its mic."),
+    # straight into my mic (linux/directmic.py): no admin prompt and no audio
+    # restart, Onion Board makes a mic of its own and makes it the default input
+    ("Click <b>Yes</b> when Windows asks for permission. Your PC's sound drops out for a "
+     "second while Windows reloads it.", "Making Onion Board's mic…"),
+    ("Windows took Onion Board off your mic (a driver or Windows update does that). "
+     "Windows asks for permission once, and your sounds are back in your mic.",
+     "Onion Board's mic isn't there (the sound server restarted, or it couldn't be "
+     "made). One click makes it again, and your sounds are back in your mic."),
+    ("put your sounds straight into your mic. Windows asks for permission once; after "
+     "that Discord and games hear them through your normal mic, with nothing to set "
+     "there.",
+     "put your sounds straight into your mic. Onion Board makes a mic of its own, "
+     "“Onion Board Mic”, with your voice and your sounds in it, and makes it your "
+     "default mic: Discord and games on <b>Default</b> hear it, with nothing to set "
+     "there."),
+    ("set up on another mic</b>", "another mic is the default</b>"),
+    ("<b>Nothing to set.</b> Discord and games keep your normal mic, and your sounds are "
+     "in it.",
+     "<b>Nothing to set</b> for an app on <b>Default</b>: it hears “Onion Board Mic”, "
+     "your voice and your sounds. An app set to your mic by name: pick <b>Default</b> "
+     "or <b>Onion Board Mic</b> there."),
+    ("</b> — your sounds are in it ", "</b> — goes out with your sounds as “Onion Board "
+     "Mic” "),
+    ("Setting up… click Yes when Windows asks", "Setting up…"),
+    ("Onion Board was on your mic but needs a quick repair: <b>one click</b>, and "
+     "Windows asks for permission once.",
+     "Onion Board's mic isn't there any more: <b>one click</b> makes it again."),
+    ("Windows asks for permission once, and your PC's sound drops out for a second.",
+     "Onion Board makes a mic of its own and makes it your default mic: nothing to "
+     "install, no permission to give."),
+    ("On the Setup tab it's one click (Windows asks once); until then nothing changes.",
+     "On the Setup tab it's one click; until then nothing changes."),
+    ("some of them skip Windows' sound effects. If nobody hears your sounds, use the "
+     "headset's USB dongle or the virtual cable.",
+     "while it's in use the headset switches to call quality. If that sounds bad, use "
+     "the headset's USB dongle or another mic."),
     # the tray isn't "by the clock" on every desktop
     ("The tray icon (by the clock) opens it again", "The tray icon opens it again"),
     ("right-click its icon by the clock → Exit", "right-click its tray icon → Exit Steam"),

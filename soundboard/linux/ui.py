@@ -78,6 +78,16 @@ def patch_main_window(cls):
             self.toast(html.escape(FAILED), "warn")
 
     def open_windows_mic(self):
+        if self.cfg.route == "mic":   # Onion Board's own mic is the default already
+            from soundboard.linux import directmic
+            if directmic.ensure():
+                self.toast(f"✓ “{directmic.SOURCE_DESC}” is your default microphone: "
+                           "restart the game.", "ok")
+            else:
+                self.toast("Couldn't make Onion Board's mic the default. Pick "
+                           f"“{directmic.SOURCE_DESC}” as the input in the system's "
+                           "Sound settings.", "warn")
+            return
         if vcable.make_default_mic():
             self.toast(f"✓ “{vcable.SOURCE_DESC}” is now your default microphone: restart "
                        "the game. To undo, pick your own mic in the system's Sound "
@@ -87,20 +97,27 @@ def patch_main_window(cls):
                        f"“{vcable.SOURCE_DESC}” as the input in the system's Sound "
                        "settings.", "warn")
 
-    orig_flow = cls._update_flow
+    # straight into my mic (linux/directmic.py): Onion Board's mic only exists while
+    # the board runs and sends into it; the user's own mic is the default again once
+    # it's another route, or the board quits (a crash: the mic's holder shell)
+    orig_set_route = cls.set_route
+    orig_shutdown = cls.shutdown
 
-    def _update_flow(self, talking=False):
-        orig_flow(self, talking)
-        self.btn_attach.hide()   # "Straight into my mic instead": not on Linux yet
+    def set_route(self, route: str, device: str | None = None):
+        orig_set_route(self, route, device)
+        if self.cfg.route != "mic":
+            from soundboard.linux import directmic
+            directmic.release()
+
+    def shutdown(self):
+        orig_shutdown(self)
+        from soundboard.linux import directmic
+        directmic.release()
 
     cls.__init__ = __init__
-    cls._update_flow = _update_flow
-    # "Straight into my mic" isn't on Linux yet (linux/directmic.py): Setup -> Devices
-    # doesn't offer it, and What's new doesn't tell about it
+    cls.set_route = set_route
+    cls.shutdown = shutdown
     mw = sys.modules[cls.__module__]
-    mw.ROUTE_CHOICES = tuple(c for c in mw.ROUTE_CHOICES if c[1] != "mic")
-    from soundboard.ui import whatsnew
-    whatsnew.NOTES = without_direct_mic(whatsnew.NOTES)
     # picking a Bluetooth headset's mic warns about call quality: Linux doesn't name
     # it "Hands-Free", the sound server's name for it says Bluetooth
     upstream_hands_free = mw.is_hands_free
@@ -117,21 +134,6 @@ def patch_main_window(cls):
     patch_speech_panel(SpeechPanel)
     from soundboard.ui.overlay import OverlayWindow
     patch_overlay(OverlayWindow)
-
-
-def without_direct_mic(notes):
-    """What's new without "Straight into my mic": 1.9.1's note is only about it; 1.9.0
-    keeps what Linux has too (the simpler modes, the lag fixes)."""
-    from dataclasses import replace
-    out = []
-    for n in notes:
-        if n.version == "1.9.1":
-            continue
-        if n.version == "1.9.0":
-            n = replace(n, headline="Simpler and smoother",
-                        items=tuple(i for i in n.items if i[0] == "check"))
-        out.append(n)
-    return tuple(out)
 
 
 def patch_overlay(cls):
@@ -201,7 +203,6 @@ def patch_setup_wizard(cls):
 
     def recheck_cable(self, rescan: bool = True):
         orig_recheck(self, rescan)
-        self.btn_attach.hide()   # straight into the mic: not on Linux yet
         # nothing is downloaded: the switch for setup downloads doesn't apply
         self.btn_cable.setEnabled(True)
         self.btn_cable.setToolTip("")
@@ -210,6 +211,12 @@ def patch_setup_wizard(cls):
         self.btn_restart.hide()   # never needed on Linux
 
     def install_cable(self):
+        # on the mic route this is "Use the virtual cable instead", as upstream's
+        if self.win.cfg.route == "mic" and self.cable_ok():   # there already: just switch
+            self._pick_route("cable")
+            return
+        if self.win.cfg.route == "mic":
+            self.win.set_route("cable")
         if vcable.install():
             self.recheck_cable(rescan=True)
         else:
