@@ -1,5 +1,6 @@
 """Linux pieces that need no desktop: the raw MIDI parser and device list, start at
-login (XDG autostart), the single-instance lock, and the data folder."""
+login (XDG autostart), the single-instance lock, the data folder, and the
+distribution's certificates."""
 import os
 import sys
 
@@ -180,6 +181,51 @@ def test_selftest_fails_on_the_systems_portaudio(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------ proxy variables
+def _no_default_cas(monkeypatch, tmp_path):
+    import ssl
+    from types import SimpleNamespace
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    gone = str(tmp_path / "usr-lib-ssl")   # Ubuntu's OpenSSL in a build, on Fedora
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: SimpleNamespace(
+        openssl_cafile=gone + "/cert.pem", openssl_capath=gone + "/certs"))
+
+
+def test_a_build_finds_fedoras_certificates_where_its_openssl_has_none(tmp_path, monkeypatch):
+    from soundboard import linux
+    _no_default_cas(monkeypatch, tmp_path)
+    bundle = tmp_path / "tls-ca-bundle.pem"
+    bundle.write_text("certs")
+    found = linux.use_system_certificates([str(tmp_path / "nope.crt"), str(bundle)], [])
+    assert found == str(bundle)
+    assert os.environ["SSL_CERT_FILE"] == str(bundle)
+
+
+def test_a_hashed_certificate_folder_is_the_fallback(tmp_path, monkeypatch):
+    from soundboard import linux
+    _no_default_cas(monkeypatch, tmp_path)
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs" / "002c0b4f.0").write_text("cert")
+    assert linux.use_system_certificates([], [str(tmp_path / "certs")]) == str(tmp_path / "certs")
+    assert os.environ["SSL_CERT_DIR"] == str(tmp_path / "certs")
+
+
+def test_working_certificates_and_the_users_own_setting_are_left_alone(tmp_path, monkeypatch):
+    import ssl
+    from types import SimpleNamespace
+    from soundboard import linux
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("certs")
+    monkeypatch.setenv("SSL_CERT_FILE", "/mine.pem")
+    assert linux.use_system_certificates([str(bundle)], []) is None
+    monkeypatch.delenv("SSL_CERT_FILE")
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: SimpleNamespace(
+        openssl_cafile=str(bundle), openssl_capath=""))
+    assert linux.use_system_certificates([str(bundle)], []) is None
+    assert "SSL_CERT_FILE" not in os.environ
+
+
 def test_ffmpeg_gets_the_relay_in_both_spellings_and_no_no_proxy(monkeypatch):
     """Linux's environment is case-sensitive: the relay goes in both spellings, and
     neither no_proxy may be left (upstream 1.6.8 took no_proxy out so a radio

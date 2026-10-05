@@ -97,6 +97,48 @@ def use_bundled_portaudio() -> str | None:
     return path
 
 
+# Where distributions keep the certificate authorities, as one file or a hashed folder
+CA_FILES = (
+    "/etc/ssl/certs/ca-certificates.crt",                  # Debian, Ubuntu, Arch, Gentoo
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",   # Fedora, RHEL
+    "/etc/pki/tls/certs/ca-bundle.crt",                    # older Fedora, RHEL
+    "/etc/ssl/ca-bundle.pem",                              # openSUSE
+    "/etc/ssl/cert.pem",                                   # Alpine, Arch
+)
+CA_DIRS = ("/etc/ssl/certs", "/etc/pki/tls/certs")
+
+
+def use_system_certificates(files=CA_FILES, dirs=CA_DIRS) -> str | None:
+    """Point OpenSSL at this distribution's certificate authorities when its built-in
+    place has none.
+
+    A built copy carries the build machine's OpenSSL (Ubuntu's), which looks in
+    /usr/lib/ssl; Fedora keeps them under /etc/pki, so every secure connection
+    (update check, radio, voice downloads) failed with "certificate verify failed".
+    Sets SSL_CERT_FILE (or SSL_CERT_DIR), which Python, Qt and FFmpeg's OpenSSL all
+    read, and returns what it set; leaves a user's own setting and a working
+    default alone."""
+    import os
+    import ssl
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return None
+    paths = ssl.get_default_verify_paths()
+    if os.path.isfile(paths.openssl_cafile or ""):
+        return None
+    capath = paths.openssl_capath or ""
+    if os.path.isdir(capath) and any(n.endswith(".0") for n in os.listdir(capath)):
+        return None
+    for f in files:
+        if os.path.isfile(f):
+            os.environ["SSL_CERT_FILE"] = f
+            return f
+    for d in dirs:
+        if os.path.isdir(d) and any(n.endswith(".0") for n in os.listdir(d)):
+            os.environ["SSL_CERT_DIR"] = d
+            return d
+    return None
+
+
 def selftest_problems() -> list[str]:
     """What `--selftest` checks on top of upstream's on Linux (a built copy)."""
     problems = []
@@ -112,6 +154,7 @@ def selftest_problems() -> list[str]:
 
 if not WIN:
     use_bundled_portaudio()
+    use_system_certificates()
     # Every "%APPDATA%\OnionBoard" in the app (library, splash, tor, ytdl…) reads the
     # APPDATA variable: pointing it at the XDG data folder puts all of it in
     # ~/.local/share/OnionBoard without touching those modules. app.py imports this
