@@ -1039,7 +1039,11 @@ def test_filter_boxes_wrap_instead_of_cutting_their_words(qapp):
     from PySide6.QtCore import QRect
     from PySide6.QtWidgets import QComboBox
 
+    from soundboard import theme
     from soundboard.ui.radiopanel import QUALITIES, SORTS, _FilterRow
+    # the app's style sheet, as the panel always has it: its padding sets how wide the
+    # boxes are (run alone, nothing else here had applied it and 230 px fit two rows)
+    theme.apply(qapp, "Dark")
     boxes = [QComboBox(), QComboBox(), QComboBox()]
     boxes[0].addItem("All countries")
     for label, _ in QUALITIES:
