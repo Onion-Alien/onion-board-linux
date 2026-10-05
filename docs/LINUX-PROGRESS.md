@@ -29,7 +29,7 @@ the number move: new work found means the number can go down, and that's fine.
 | hotkeys-other | Wayland with no GlobalShortcuts portal (Sway / wlroots, GNOME before 48): a clear message on what to do, and Hyprland's portal checked | 2 | open |
 | audio-core | Audio devices and streams on PipeWire and PulseAudio (pulse / pipewire device, unplug watchdog) | 6 | done |
 | audio-fedora | Stock Fedora sound (no "pulse" device, 40 ms floor) | 2 | done |
-| dropouts | No drop-outs at "low" with the whole app running | 4 | half |
+| dropouts | No drop-outs at "low" with the whole app running | 4 | done |
 | cable | Virtual cable made by the app (pactl, made at every login) | 3 | done |
 | cable-guide | Setup guide's "Make the virtual cable" clicked through on Fedora | 1 | open |
 | setup-guide | Setup guide and every page checked on a real desktop | 2 | half |
@@ -56,7 +56,7 @@ the number move: new work found means the number can go down, and that's fine.
 | self-update | Self-update from an AppImage | 2 | done |
 | real-release | A real release: AppImage attached, link works, update from it | 2 | open |
 | tests | Upstream suite + Linux tests green on Linux, 4 workers | 4 | done |
-| ci | CI: Linux and Windows workflows green | 2 | done |
+| ci | CI: Linux and Windows workflows green | 2 | half |
 | ci-win-abort | Windows CI native abort in test_radio (cause found) | 1 | open |
 | pocket | Onion Pocket installs and works on Linux | 1 | half |
 | discord | A real Discord call: Linux app's cable → Windows listener | 3 | open |
@@ -103,3 +103,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-05 | 66% | new row from looking at other Linux soundboards: hotkeys on Wayland desktops with no portal; after-launch ideas listed |
 | 2026-10-05 | 67% | HTTPS fix confirmed with the CI AppImage on Fedora 44 (update check works with no setting) |
 | 2026-10-05 | 69% | drop-outs at low: cause found (the unplug poll's pactl list stalled every stream every 2-3 s), fixed + measured on WSLg (30 -> 4 underruns); Fedora check left |
+| 2026-10-05 | 70% | drop-out fix checked on Fedora 44 with the CI AppImage (0 underruns / stalls at low, no pactl left after a quit or kill -9); Linux CI green again (clip editor test flake fixed); Windows CI red on upstream flaky tests |

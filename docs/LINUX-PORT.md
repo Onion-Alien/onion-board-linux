@@ -89,7 +89,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server. Upstream's suite runs on 4 workers (pytest-xdist); each test's Xvfb picks a free display itself (`-displayfd`) and each dbus-daemon has its own address, so workers never share one. The tests never see the desktop's own `DISPLAY` / `WAYLAND_DISPLAY` (`tests/platform_hooks.py`): run from a desktop, the apps tests made grabbed hotkeys on the real X server and their leftover hotkey threads segfaulted later tests | |
 | Dependencies | `requirements-linux.txt` = `requirements.txt` + jeepney (kept apart so upstream merges never touch `requirements.txt`) | |
-| CI | `.github/workflows/linux.yml`: tests on Ubuntu 24.04 (Xvfb with keymap), the AppImage on 22.04, and on a published release the AppImage attached to it. `checks.yml` runs the Windows tests | |
+| CI | `.github/workflows/linux.yml`: tests on Ubuntu 24.04 (Xvfb with keymap), the AppImage on 22.04, and on a published release the AppImage attached to it. `checks.yml` runs the Windows tests. Since 1.8.0 it fails about one run in two on upstream's own flaky tests (`test_radio_hitches.py`'s 6 ms timing limit on a shared runner, `test_mapped.py`'s cache race): upstream's main fails the same way; public PRs #17 and #18 change both | |
 | Download links | README (*Download*, *On Linux*) and the website: `releases/latest/download/OnionBoard-x86_64.AppImage` | `README.md`, `docs/index.html` |
 
 ## Next, in order
@@ -111,9 +111,13 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 3. **Wayland without XWayland on GNOME 48+** (done on KDE Plasma, see *Done*), and
    whether the overlay's *Show preview* lets clicks through on native Wayland (the
    overlay is X11 / XWayland only).
-3a. **Drop-outs with the whole app at "low"**: found and fixed on WSLg (not the GIL:
-   the unplug check's `pactl list` every 2-3 s stalled every stream at once; see
-   *Audio devices*). Left: the same measured on Fedora's PipeWire with a CI build.
+3a. **Drop-outs with the whole app at "low"**: done. Found and fixed on WSLg (not the
+   GIL: the unplug check's `pactl list` every 2-3 s stalled every stream at once; see
+   *Audio devices*). Fedora 44 with the CI build (a4ecac5), 45 s at "low" with three
+   pad presses, headless and the window on Plasma: 0 underruns, 0 stalls, clean
+   peaks through the cable (the build before was 0 there too: Fedora's `pipewire`
+   device never goes under 40 ms); the `pactl subscribe` watcher is gone after a
+   normal quit and after `kill -9`.
 4. **Who's listening: the program recording the cable.** 1.7.0 names the program
    that records the cable's far end and can switch the mode by itself
    (`voicesdk.Listeners`, `appaudio.recording_apps`); upstream only starts it on
