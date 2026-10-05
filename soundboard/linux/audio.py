@@ -43,6 +43,7 @@ TIMEOUT_S = 5.0
 PULSE, PIPEWIRE = "pulse", "pipewire"   # PortAudio's ALSA devices to the sound server
 PCMS = (PULSE, PIPEWIRE)   # ...the first one there is used
 NULL_SINK_LATENCY = 0.1    # the least buffering a PulseAudio null sink plays steadily at
+PIPEWIRE_LATENCY = 0.04    # ...and PipeWire's own ALSA device (two of its quanta)
 
 
 @dataclass
@@ -233,6 +234,11 @@ def _info(d: Device) -> dict:
             "default_high_output_latency": 0.1, "default_high_input_latency": 0.1}
 
 
+def _below(lat, least: float) -> bool:
+    """A stream's latency ("low", "high", seconds or None for low) is under `least`."""
+    return lat in (None, "low") or (isinstance(lat, (int, float)) and lat < least)
+
+
 def _open(kind: str, cls, kwargs: dict):
     dev = by_index(kwargs.get("device"))
     if dev is None:
@@ -249,14 +255,20 @@ def _open(kind: str, cls, kwargs: dict):
     # carries sound in 2 s bursts. "high" (Safer, 0.1 s) keeps it flowing. Sound
     # cards and PipeWire's sinks don't do this and keep the user's choice.
     lat = kwargs.get("latency")
-    if dev.null_sink and (lat in (None, "low") or (isinstance(lat, (int, float))
-                                                    and lat < NULL_SINK_LATENCY)):
+    if dev.null_sink and _below(lat, NULL_SINK_LATENCY):
         kwargs = {**kwargs, "latency": "high"}
         # the engine's "opened … (latency low)" line names what it asked for
         log.info("%s is a PulseAudio null sink: opened at latency high, not %s",
                  dev.name, lat)
     with _lock:
         index, pcm = _pcm()
+        # PipeWire's own ALSA device feeds the graph a quantum (about 21 ms) at a time:
+        # a buffer under two of them runs dry over and over (on Fedora 44 "low", 8.7 ms,
+        # stalled the cable and dropped out hundreds of times in 10 s; 40 ms none)
+        if pcm == PIPEWIRE and _below(kwargs.get("latency"), PIPEWIRE_LATENCY):
+            log.info("%s through PipeWire's ALSA device: opened at %d ms, not %s", dev.name,
+                     PIPEWIRE_LATENCY * 1000, kwargs.get("latency"))
+            kwargs = {**kwargs, "latency": PIPEWIRE_LATENCY}
         env = _aim(pcm, kind, dev)
         old = {k: os.environ.get(k) for k in env}
         os.environ.update(env)
