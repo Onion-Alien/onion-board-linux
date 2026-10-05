@@ -49,7 +49,8 @@ the number move: new work found means the number can go down, and that's fine.
 | listeners | Who's listening: the program recording the cable (PipeWire) | 2 | open |
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
-| ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | open |
+| ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
+| certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | half |
 | self-update | Self-update from an AppImage | 2 | done |
 | real-release | A real release: AppImage attached, link works, update from it | 2 | open |
 | tests | Upstream suite + Linux tests green on Linux, 4 workers | 4 | done |
@@ -68,3 +69,4 @@ the number move: new work found means the number can go down, and that's fine.
 |---|---|---|
 | 2026-10-05 | 80% | last gut rating, before this scorecard |
 | 2026-10-05 | 68% | scorecard starts: counts launch, a real release, Discord, GNOME the old rating didn't |
+| 2026-10-05 | 69% | CI AppImage passes on Fedora (cable, hold-to-play); found + fixed HTTPS on Fedora (half until the next CI build is checked) |
