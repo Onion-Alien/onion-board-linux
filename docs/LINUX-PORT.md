@@ -1,5 +1,8 @@
 # Linux port: how it's built and where it stands
 
+How complete it is: `docs/LINUX-PROGRESS.md` (`python scripts/linux_progress.py`),
+updated after every finished task.
+
 Private until launch. This repo is `main` of the public repo plus the port; upstream
 releases are merged in (never rebased), and at launch it merges back as one codebase
 with a Linux download next to the Windows one.
