@@ -190,6 +190,11 @@ unshare -rm sh -c "mount -t tmpfs tmpfs /tmp/.X11-unix && \
   exec unshare -U --map-user=$(id -u) --map-group=$(id -g) -- python -m pytest"
 ```
 
+WSL's mirrored networking drops a connection to a closed loopback port instead of
+refusing it, so tests that expect "connection refused" wait out their timeout there
+(`test_customvoices.py::test_server_errors_say_what_happened` takes 60 s); a real
+Linux refuses at once.
+
 As root (containers), Chromium needs `QTWEBENGINE_DISABLE_SANDBOX=1` or the radio
 globe test aborts the run. A machine whose own `https_proxy` / `no_proxy` are set can
 fail `test_net.py`'s environment tests: unset them for the run.
