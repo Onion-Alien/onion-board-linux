@@ -281,13 +281,13 @@ class AppCapture:
                                         daemon=True)
 
     def start(self, timeout: float = 6.0) -> bool:
+        if self.include_tree and not is_running(self.pid):   # whatever the sound server
+            self.error = "That program isn't running any more."
+            self.ended = True
+            return False
         ok, why = supported()
         if not ok:
             self.error = why
-            return False
-        if self.include_tree and not is_running(self.pid):
-            self.error = "That program isn't running any more."
-            self.ended = True
             return False
         self._thread.start()
         if not self._ready.wait(timeout):

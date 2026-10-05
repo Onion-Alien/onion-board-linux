@@ -112,3 +112,15 @@ def test_a_shared_helper_goes_to_the_program_that_started_it_on_linux(monkeypatc
     assert table[41] == (40, "steamwebhelper") and 900 not in table
     assert appaudio.root_pid(42) == 40      # Steam's store / overlay sound is Steam's
     assert appaudio.root_pid(60) == 60      # started by systemd: stays itself
+
+
+def test_a_program_thats_gone_says_so_even_without_pipewire(monkeypatch):
+    # CI's runner has no pw-dump: "not running" is still the answer that helps
+    from soundboard import appaudio
+    from soundboard.linux import appaudio as la
+    monkeypatch.setattr(la.shutil, "which", lambda name: None)
+    cap = appaudio.AppCapture(4_000_000_000 - 1, lambda x: None, name="nobody")
+    assert cap.start() is False and "running" in cap.error and cap.ended
+    monkeypatch.setattr(la, "is_running", lambda pid: True)
+    cap = appaudio.AppCapture(4_000_000_000 - 1, lambda x: None, name="nobody")
+    assert cap.start() is False and "PipeWire" in cap.error
