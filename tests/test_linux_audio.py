@@ -150,7 +150,7 @@ def test_without_a_pulse_device_streams_go_through_pipewires_own(server, monkeyp
         server._choose(["default"])
 
 
-def test_pulseaudios_null_sink_gets_the_safer_buffer(server, monkeypatch):
+def test_pulseaudios_null_sink_gets_the_safer_buffer(server, monkeypatch, caplog):
     """On PulseAudio the cable is a null sink, which stops asking for sound for about
     2 s after an underrun: at "low" it carried sound in bursts. It opens at "high";
     a sound card, and PipeWire's cable, keep what the user picked."""
@@ -169,10 +169,14 @@ def test_pulseaudios_null_sink_gets_the_safer_buffer(server, monkeypatch):
     monkeypatch.setattr(Recorded, "__init__", lambda self, **k: lat.append(k.get("latency")))
     cable = engine.find_device("output", "Onion Board Cable Input")
     speakers = engine.find_device("output", "Built-in Audio Analog Stereo")
+    caplog.set_level("INFO", logger="soundboard.linux.audio")
     for latency in ("low", 0.01, "high", 0.2):
         engine.sd.OutputStream(device=cable, samplerate=48000, channels=2, latency=latency)
     engine.sd.OutputStream(device=speakers, samplerate=48000, channels=2, latency="low")
     assert lat == ["high", "high", "high", 0.2, "low"]
+    # the log says so next to the engine's "latency low"
+    said = "Onion Board Cable Input is a PulseAudio null sink: opened at latency high, not low"
+    assert said in caplog.text
     monkeypatch.setattr(server, "_pactl", lambda *a: {     # PipeWire: "Driver: PipeWire"
         ("list", "sinks"): SINKS.replace("\tName:", "\tDriver: PipeWire\n\tName:"),
         ("list", "sources"): SOURCES}.get(a, ""))

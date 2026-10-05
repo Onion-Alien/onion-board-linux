@@ -252,6 +252,9 @@ def _open(kind: str, cls, kwargs: dict):
     if dev.null_sink and (lat in (None, "low") or (isinstance(lat, (int, float))
                                                     and lat < NULL_SINK_LATENCY)):
         kwargs = {**kwargs, "latency": "high"}
+        # the engine's "opened … (latency low)" line names what it asked for
+        log.info("%s is a PulseAudio null sink: opened at latency high, not %s",
+                 dev.name, lat)
     with _lock:
         index, pcm = _pcm()
         env = _aim(pcm, kind, dev)
