@@ -212,7 +212,7 @@ def _linux_never_touches_the_real_desktop(request, monkeypatch, tmp_path):
     answers = {("list", "sinks"): STAND_IN_SINKS, ("list", "sources"): STAND_IN_SOURCES,
                ("info",): STAND_IN_INFO}
     monkeypatch.setattr(audio, "_pactl", lambda *a: answers.get(a, ""))
-    monkeypatch.setattr(audio, "_pcm_index", lambda: 0)
+    monkeypatch.setattr(audio, "_pcm", lambda: (0, audio.PULSE))
     monkeypatch.setattr(audio, "_devices", None)
     yield
 

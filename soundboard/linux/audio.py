@@ -11,7 +11,9 @@ engine opens up to four streams on devices the user picked. So:
                 (PULSE_SOURCE for a mic) naming the device just while it opens:
                 the pulse ALSA plugin reads it then, so each stream goes to its own
                 device, one process, no extra libraries. Works on PulseAudio and on
-                PipeWire (pipewire-pulse).
+                PipeWire (pipewire-pulse). Where there's no "pulse" device (Fedora
+                doesn't install that plugin), PipeWire's own "pipewire" device,
+                aimed the same way with PIPEWIRE_NODE.
   unplugged     the sound server moves a stream whose device goes away onto its
                 default device and the stream plays on there: no error, no stall
                 for the engine's watchdog to see. linux/engine.py asks every few
@@ -38,7 +40,8 @@ log = logging.getLogger(__name__)
 
 FIRST_INDEX = 100_000      # stand-in indices: far above any real PortAudio index
 TIMEOUT_S = 5.0
-PCM = "pulse"              # PortAudio's ALSA device that goes through the sound server
+PULSE, PIPEWIRE = "pulse", "pipewire"   # PortAudio's ALSA devices to the sound server
+PCMS = (PULSE, PIPEWIRE)   # ...the first one there is used
 NULL_SINK_LATENCY = 0.1    # the least buffering a PulseAudio null sink plays steadily at
 
 
@@ -190,13 +193,35 @@ def list_name(index: int) -> str:
 
 
 # ------------------------------------------------------------------ sounddevice
-def _pcm_index() -> int:
+def _pcm() -> tuple[int, str]:
+    """PortAudio's index of the ALSA device that goes through the sound server, and
+    which one it is: "pulse" if it's there, else PipeWire's own "pipewire" (Fedora
+    ships only that one: its alsa-plugins-pulseaudio isn't installed by default)."""
     import sounddevice
-    for i, d in enumerate(sounddevice.query_devices()):
-        if d["name"] == PCM:
-            return i
-    raise RuntimeError("PortAudio has no 'pulse' device: is PipeWire (pipewire-pulse) "
-                       "or PulseAudio running, with its ALSA plugin installed?")
+    return _choose([d["name"] for d in sounddevice.query_devices()])
+
+
+def _choose(names: list[str]) -> tuple[int, str]:
+    for pcm in PCMS:
+        if pcm in names:
+            return names.index(pcm), pcm
+    raise RuntimeError("PortAudio has no 'pulse' or 'pipewire' device: is PipeWire or "
+                       "PulseAudio running, with its ALSA plugin installed (pipewire-alsa "
+                       "or alsa-plugins-pulseaudio)?")
+
+
+def _aim(pcm: str, kind: str, dev: Device) -> dict[str, str]:
+    """The environment that points a stream opened on `pcm` at `dev`, read by the ALSA
+    plugin as it opens, and names it "Onion Board" in volume mixers (else "ALSA
+    plug-in [python3]")."""
+    if pcm == PIPEWIRE:
+        return {"PIPEWIRE_NODE": dev.pulse,   # the sink / source's node.name
+                "PIPEWIRE_ALSA": "{ application.name = \"Onion Board\" "
+                                 "application.icon_name = onionboard }"}
+    # the pulse plugin sets its own name, which only the OVERRIDE variant beats
+    return {"PULSE_SINK" if kind == "output" else "PULSE_SOURCE": dev.pulse,
+            "PULSE_PROP_OVERRIDE": "application.name='Onion Board' "
+                                   "application.icon_name=onionboard"}
 
 
 def _info(d: Device) -> dict:
@@ -227,16 +252,13 @@ def _open(kind: str, cls, kwargs: dict):
     if dev.null_sink and (lat in (None, "low") or (isinstance(lat, (int, float))
                                                     and lat < NULL_SINK_LATENCY)):
         kwargs = {**kwargs, "latency": "high"}
-    var = "PULSE_SINK" if kind == "output" else "PULSE_SOURCE"
-    # the volume mixer's name for the stream's app (else "ALSA plug-in [python3]"):
-    # the plugin sets its own, which only the OVERRIDE variant of PULSE_PROP beats
-    props = "application.name='Onion Board' application.icon_name=onionboard"
     with _lock:
-        old = {k: os.environ.get(k) for k in (var, "PULSE_PROP_OVERRIDE")}
-        os.environ[var] = dev.pulse
-        os.environ["PULSE_PROP_OVERRIDE"] = props
+        index, pcm = _pcm()
+        env = _aim(pcm, kind, dev)
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
         try:
-            return cls(**{**kwargs, "device": _pcm_index()})
+            return cls(**{**kwargs, "device": index})
         finally:
             for k, v in old.items():
                 if v is None:
