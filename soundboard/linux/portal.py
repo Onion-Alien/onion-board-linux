@@ -19,6 +19,7 @@ import logging
 import secrets
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,11 @@ APP_ID = "onionboard"   # the AppImage's .desktop file (scripts/make_appdir.py)
 TIMEOUT_S = 5.0         # a portal call's reply (not the user's answer to the dialog)
 ANSWER_S = 300.0        # the user answering the desktop's "allow these shortcuts?" dialog
 POLL_S = 0.25           # how often the thread looks for a changed set of hotkeys
+# action -> the words the desktop shows for it ("Stop everything", "Play Airhorn");
+# linux/ui.py sets it from the main window, which knows the sounds' names
+describe: Callable[[str], str] = str
+REGISTER_TRIES = 5      # the portal may not have noticed a just-written .desktop file
+REGISTER_WAIT_S = 0.4
 
 # winkeys MOD_* -> the XDG shortcuts spec's modifier names
 _MODS = ((0x2, "CTRL"), (0x1, "ALT"), (0x4, "SHIFT"), (0x8, "LOGO"))
@@ -49,6 +55,34 @@ _NAMED = {
 }
 _NAMED.update({0xFFBE + i: f"F{i + 1}" for i in range(24)})
 _NAMED.update({0xFFB0 + d: f"KP_{d}" for d in range(10)})
+
+
+def desktop_entry() -> Path:
+    from soundboard.linux import data_home
+    return Path(data_home()) / "applications" / f"{APP_ID}.desktop"
+
+
+def write_desktop_entry() -> bool:
+    """The .desktop file the portal looks the app id up in (xdg-desktop-portal's
+    Registry refuses an id without one: "App info not found"). An AppImage installs
+    none, so the app writes its own, hidden (NoDisplay: no new menu entry), and keeps
+    its Exec pointing at wherever the app runs from. True if it's there."""
+    from soundboard.linux import autostart
+    p = desktop_entry()
+    text = ("[Desktop Entry]\nType=Application\nName=Onion Board\n"
+            f"Exec={autostart.command(False)}\nIcon={APP_ID}\nTerminal=false\n"
+            "NoDisplay=true\n")
+    try:
+        if p.is_file() and p.read_text(encoding="utf-8") == text:
+            return True
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(p)
+        return True
+    except OSError:
+        log.warning("couldn't write %s: the portal may not take the app id", p, exc_info=True)
+        return False
 
 
 def trigger(combo: str) -> str:
@@ -170,14 +204,31 @@ class Shortcuts:
 
     def _register_app(self, conn):
         """Tell the portal which app this is (xdg-desktop-portal 1.19+, for apps that
-        aren't Flatpaks or Snaps); older portals don't have it, which is fine."""
+        aren't Flatpaks or Snaps); older portals don't have it, which is fine. The
+        portal only takes an id it finds a .desktop file for, so that's written first;
+        it can take a moment to notice a new one."""
         from jeepney import DBusAddress, new_method_call
-        msg = new_method_call(DBusAddress(PATH, BUS_NAME, "org.freedesktop.host.portal.Registry"),
-                              "Register", "sa{sv}", (APP_ID, {}))
-        try:
-            conn.send_and_get_reply(msg, timeout=TIMEOUT_S)
-        except Exception:  # noqa: BLE001
-            log.debug("portal registry: not there or refused", exc_info=True)
+        from jeepney import HeaderFields, MessageType
+        write_desktop_entry()
+        for attempt in range(REGISTER_TRIES):
+            msg = new_method_call(
+                DBusAddress(PATH, BUS_NAME, "org.freedesktop.host.portal.Registry"),
+                "Register", "sa{sv}", (APP_ID, {}))
+            try:
+                reply = conn.send_and_get_reply(msg, timeout=TIMEOUT_S)
+            except Exception:  # noqa: BLE001
+                log.debug("portal registry: not there", exc_info=True)
+                return
+            if reply.header.message_type != MessageType.error:
+                return
+            name = str(reply.header.fields.get(HeaderFields.error_name, ""))
+            if name.endswith(("UnknownMethod", "UnknownInterface")):
+                return   # an older portal: it needs no app id
+            if attempt == REGISTER_TRIES - 1:
+                log.warning("the portal didn't take the app id %r: %s", APP_ID,
+                            reply.body[0] if reply.body else name)
+            else:
+                self._quit.wait(REGISTER_WAIT_S)
 
     def _loop(self, conn):
         from jeepney import HeaderFields, MatchRule, message_bus
@@ -271,7 +322,11 @@ class Shortcuts:
                 raise PortalError("CreateSession: no session")
             shortcuts = []
             for sid, (combo, action) in ids.items():
-                opts = {"description": ("s", f"Onion Board: {action}")}
+                try:
+                    what = describe(action) or action
+                except Exception:  # noqa: BLE001 - only words
+                    what = action
+                opts = {"description": ("s", f"Onion Board: {what}")}
                 pref = trigger(combo)
                 if pref:
                     opts["preferred_trigger"] = ("s", pref)

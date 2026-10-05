@@ -47,6 +47,7 @@ class FakePortal:
         self.sessions: list[str] = []
         self.closed: list[str] = []
         self.registered: list[str] = []
+        self.refused: list[str] = []
         self._emitter = DBusAddress(portal.PATH, interface=IFACE)
         self._stop = False
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -88,8 +89,16 @@ class FakePortal:
             if member == "Get" and msg.body[1] == "version" and self.version:
                 self.conn.send(new_method_return(msg, "v", (("u", self.version),)))
             elif member == "Register":
-                self.registered.append(msg.body[0])
-                self.conn.send(new_method_return(msg))
+                # as xdg-desktop-portal: only an id with a .desktop file it can find
+                app = msg.body[0]
+                apps = os.path.join(os.environ["XDG_DATA_HOME"], "applications")
+                if os.path.isfile(os.path.join(apps, app + ".desktop")):
+                    self.registered.append(app)
+                    self.conn.send(new_method_return(msg))
+                else:
+                    self.refused.append(app)
+                    self.conn.send(new_error(msg, "org.freedesktop.portal.Error.Failed", "s",
+                                             (f"App info not found for '{app}'",)))
             elif member == "CreateSession":
                 opts = msg.body[0]
                 session = f"{portal.PATH}/session/x/{opts['session_handle_token'][1]}"
@@ -161,6 +170,53 @@ def test_hotkeys_are_bound_pressed_held_and_let_go(bus):
     finally:
         s.stop(5)
         fake.close()
+
+
+def test_the_app_writes_the_desktop_file_the_portal_needs_and_names_its_shortcuts(
+        bus, monkeypatch):
+    # Plasma 6.6's portal refused "onionboard" ("App info not found"): an AppImage
+    # installs no .desktop file, and then CreateSession said "An app id is required"
+    fake = FakePortal()
+    monkeypatch.setattr(portal, "describe", {"play:boom": "Play Boom"}.get)
+    s = portal.Shortcuts(lambda a: None, lambda a: None, lambda f: None)
+    try:
+        assert s.wait_ready(5) and s.alive
+        assert fake.registered == [portal.APP_ID] and fake.refused == []
+        text = portal.desktop_entry().read_text(encoding="utf-8")
+        assert "NoDisplay=true" in text and "Exec=" in text   # no new menu entry
+        s.register({"ctrl+f1": "play:boom", "ctrl+f2": "stop"})
+        assert _until(lambda: fake.bound)
+        words = sorted(o["description"][1] for _sid, o in fake.bound[0])
+        assert words == ["Onion Board: Play Boom", "Onion Board: stop"]
+    finally:
+        s.stop(5)
+        fake.close()
+
+
+def test_a_refused_app_id_is_tried_again_then_logged(bus, monkeypatch, caplog):
+    fake = FakePortal()
+    monkeypatch.setattr(portal, "write_desktop_entry", lambda: False)   # couldn't write it
+    monkeypatch.setattr(portal, "REGISTER_WAIT_S", 0.01)
+    s = portal.Shortcuts(lambda a: None, lambda a: None, lambda f: None)
+    try:
+        assert s.wait_ready(5)
+        assert fake.refused == [portal.APP_ID] * portal.REGISTER_TRIES
+        assert "didn't take the app id 'onionboard': App info not found" in caplog.text
+    finally:
+        s.stop(5)
+        fake.close()
+
+
+def test_hotkey_actions_are_described_in_words():
+    from types import SimpleNamespace
+
+    from soundboard.linux.ui import describe_action
+    from soundboard.ui.mainwindow import RANDOM
+    win = SimpleNamespace(cfg=SimpleNamespace(sounds=[SimpleNamespace(id="ab12", name="Airhorn")]))
+    assert describe_action(win, "__stop__") == "Stop everything"
+    assert describe_action(win, "ab12") == "Play Airhorn"
+    assert describe_action(win, RANDOM + "Memes") == "Random from Memes"
+    assert describe_action(win, "zz") == "zz"
 
 
 def test_a_desktop_without_the_portal_reports_every_hotkey_failed(bus):
