@@ -59,8 +59,9 @@ from soundboard.ui.triggershost import BoardHost
 from soundboard.ui.triggerstab import TriggersTab
 from soundboard.ui.radiopanel import RadioOff, RadioTab
 from soundboard.ui.voicepanel import VoicePanel
-from soundboard.ui.widgets import (Meter, Pad, PadGrid, SeekSlider, SteadyTabs, TabInfoCorner,
-                                   expand_dropped, fmt_pos, pad_height, spectrum, SLIM_PAD_H)
+from soundboard.ui.widgets import (Meter, NameAndSeek, Pad, PadGrid, SeekSlider, SteadyTabs,
+                                   TabInfoCorner, expand_dropped, fmt_pos, pad_height, spectrum,
+                                   SLIM_PAD_H)
 from soundboard.wheelguard import no_wheel
 from soundboard.winkeys import Hotkeys
 from soundboard import errors
@@ -93,6 +94,10 @@ TICK_IDLE_MS = 250   # ...and while it's in the tray or minimised (push-to-talk,
 GLOW_STEPS = 4       # how many glow levels the taskbar / tray icon has while sound plays
 ICON_GLOW_MS = 120   # ...and how often at most it changes
 DEFAULT_POLL_MS = 1500   # how often Windows' default output is checked
+# a device that won't open while Windows lists it: re-scan, then wait this long
+# (seconds) before the next re-scan, so one that really won't open isn't re-scanned
+# over and over (each re-scan reopens every stream)
+RECOVER_WAIT_S = (20, 40, 80, 160, 300)
 LOOSE_WAIT_MS = 1500   # a file dragged into the sounds folder is looked at again (ms)
 LOOSE_EMPTY_LOOKS = 20   # an empty file that long (~30 s) waits for the folder to change
 MINI_SIZE = QSize(440, 380)   # below this the window becomes the mini player...
@@ -142,6 +147,18 @@ class Bridge(QObject):
     preview = Signal(str, object, float, int)  # id, audio with unsaved effects|None, gain, gen
 
 
+def is_hands_free(name: str | None) -> bool:
+    """A Bluetooth headset's phone-call mic ("Headset (… Hands-Free AG Audio)")."""
+    n = (name or "").lower()
+    return "hands-free" in n or "hands free" in n
+
+
+def _listed(name: str, names) -> bool:
+    """`name` (as the app saved it) is one of `names` (Windows' own), spacing aside."""
+    squash = " ".join(name.split()).lower()
+    return any(" ".join(n.split()).lower() == squash for n in names)
+
+
 class MainWindow(QMainWindow):
     update_done = Signal(object, str)   # an update check finished: Release|None, error
     voice_engine = Signal(object)       # the voice engine of the game in front (a mode key|None)
@@ -161,7 +178,8 @@ class MainWindow(QMainWindow):
         tor.qt_status().changed.connect(self._on_tor)
         app = QApplication.instance()
         if app is not None:   # before the UI is built, so everything polishes in-theme
-            self.cfg.theme = theme.apply(app, self.cfg.theme)
+            self.cfg.theme = theme.apply(app, self.cfg.theme, self.cfg.live_color)
+            self.cfg.live_color = theme.live_override
             app.commitDataRequest.connect(self._on_session_end)   # log-off / installer
         self.engine = Engine()
         self.audio: dict[str, np.ndarray] = {}
@@ -271,6 +289,8 @@ class MainWindow(QMainWindow):
         QApplication.instance().applicationStateChanged.connect(self._set_tick_rate)
         # which voice chat the game you're playing uses: a hint by Who's listening
         self.voice_suggestion: str | None = None
+        self.voice_why = ""   # why it's suggested, for the hint ("Discord is listening…")
+        self.listeners = voicesdk.Listeners() if sys.platform == "win32" else None
         self.voice_watch = voicesdk.Watcher() if sys.platform == "win32" else None
         self._voice_timer = QTimer(self)
         self._voice_timer.timeout.connect(self._poll_voice)
@@ -279,6 +299,8 @@ class MainWindow(QMainWindow):
         # the headphones follow Windows' default output when it changes
         self._default_timer = QTimer(self)
         self._default_timer.timeout.connect(self._follow_default_output)
+        self._default_timer.timeout.connect(self._recover_devices)
+        self._recover_n, self._recover_at = 0, 0.0   # see _recover_devices
         if sys.platform == "win32":
             self._default_timer.start(DEFAULT_POLL_MS)
         self._init_fit()
@@ -437,7 +459,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(self.cfg.tab if 0 <= self.cfg.tab < self.tabs.count() else 0)
         self.tabs.currentChanged.connect(lambda i: self.set_option("tab", i))
         self.tabs.currentChanged.connect(lambda _i: self._update_status())
-        # a green badge on a tab's icon (and, if picked in Settings, a green wash) while
+        # a badge on a tab's icon (or, by default, a wash) in the theme's live colour while
         # its feature is live — the voice changer, a radio station, a program being
         # sent, the screen watched — so it's never left on without you noticing
         set_live_tint(self.tabs, self.cfg.live_tab_green)
@@ -552,6 +574,7 @@ class MainWindow(QMainWindow):
     def _set_np_name(self, text: str):
         self.np_name.setText(self.np_name.fontMetrics().elidedText(text, Qt.ElideRight, 186))
         self.np_name.setToolTip(text)
+        self._name_seek.relayout()
         self.mini_name.setText(text)   # hides itself when it has no room
 
     def _build_mixer(self) -> QFrame:
@@ -717,6 +740,14 @@ class MainWindow(QMainWindow):
         size.setToolTip("Pad size")
         size.valueChanged.connect(self.set_pad_width)
         no_wheel(size)
+        # Who's listening, one click away (the full picker is on the Setup tab)
+        from soundboard.ui.destpanel import ModeCombo
+        mode_lbl = QLabel("Listening:")
+        mode_lbl.setObjectName("muted")
+        self.mode_combo = ModeCombo(self)
+        tb.addWidget(mode_lbl)
+        tb.addWidget(self.mode_combo)
+        self._mode_pick = (mode_lbl, self.mode_combo)
         size_lbl = QLabel("Pad size")
         size_lbl.setObjectName("muted")
         tb.addWidget(size_lbl)
@@ -816,10 +847,10 @@ class MainWindow(QMainWindow):
         self.np_name = QLabel("Pick a sound")
         self.np_name.setToolTip("Select a sound pad to use these playback controls.")
         self.np_name.setTextFormat(Qt.PlainText)   # sound names are user / web text
-        # fixed in both directions (the row's height, set by its buttons): a label that
-        # can grow makes Qt lay out the whole page again on every new text, and the
-        # name changes with every pad press (every pad on the board was repainted)
-        self.np_name.setFixedSize(190, 34)
+        # the row's height, set by its buttons; its width follows the text inside
+        # NameAndSeek, which never asks the page for a new layout (the name changes
+        # with every pad press, and a relayout repainted every pad on the board)
+        self.np_name.setFixedHeight(34)
         self.np_name.setStyleSheet("font-weight:600;")
         self.seek = SeekSlider(Qt.Horizontal)
         self.seek.setRange(0, 1000)
@@ -834,8 +865,8 @@ class MainWindow(QMainWindow):
         self.np_time.setObjectName("muted")
         th.addWidget(self.btn_pp)
         th.addWidget(self.btn_st)
-        th.addWidget(self.np_name)
-        th.addWidget(self.seek, 1)
+        self._name_seek = NameAndSeek(self.np_name, self.seek, 190)
+        th.addWidget(self._name_seek, 1)
         th.addWidget(self.np_time)
         # only for a pad made from a video (soundboard.videos): shows it in step
         self.btn_video = QPushButton("Video")
@@ -1043,6 +1074,11 @@ class MainWindow(QMainWindow):
         self.btn_game = QPushButton("Set up game voice chat")
         self.btn_game.clicked.connect(lambda: self.show_chat_guide("game"))
         hv.addWidget(self.btn_game)
+        self.btn_meeting = QPushButton("Zoom, Teams or a browser call")
+        self.btn_meeting.setToolTip("The settings in Zoom, Microsoft Teams and calls in a "
+                                    "web page that stop them treating your sounds as noise")
+        self.btn_meeting.clicked.connect(lambda: self.show_chat_guide("meeting"))
+        hv.addWidget(self.btn_meeting)
         self.btn_nomic = QPushButton("Game has no microphone setting?")
         self.btn_nomic.clicked.connect(self.open_windows_mic)
         hv.addWidget(self.btn_nomic)
@@ -1264,6 +1300,35 @@ class MainWindow(QMainWindow):
         name = eng.list_name(idx) if idx is not None else None
         return None if name is None or is_virtual_cable(name) else name
 
+    def _recover_devices(self):
+        """A device the app uses won't open, but Windows lists it: PortAudio's device
+        list is out of date (it was plugged in after the last scan, or its format was
+        changed in Windows' sound settings), and the engine's retries can't fix that.
+        Re-scan, waiting longer each time it doesn't help (RECOVER_WAIT_S)."""
+        e = self.engine
+        failing = [(k, e.names[k]) for k in ("main", "mon", "mic", "obs")
+                   if e.names.get(k) and getattr(e, f"{k}_stream") is None
+                   and k in e.errors_snapshot()]
+        if not failing:
+            self._recover_n = 0
+            return
+        now = time.monotonic()
+        if now < self._recover_at:
+            return
+        listed: dict[str, set[str] | None] = {}
+        for key, name in failing:
+            kind = "input" if key == "mic" else "output"
+            if kind not in listed:
+                listed[kind] = appaudio.endpoint_names(kind)
+            if _listed(name, listed[kind] or ()):
+                break
+        else:
+            return   # really gone (unplugged): the engine's retries pick it up again
+        self._recover_at = now + RECOVER_WAIT_S[min(self._recover_n, len(RECOVER_WAIT_S) - 1)]
+        self._recover_n += 1
+        log.info("%s device %r is listed by Windows but won't open: re-scanning", key, name)
+        self.refresh_devices()
+
     def _follow_default_output(self):
         """Windows' default output changed (headphones → speakers): the headphones
         output moves with it, unless another device was picked for it by hand."""
@@ -1353,6 +1418,12 @@ class MainWindow(QMainWindow):
         self._apply_send_outputs(force_main=attr == "main_device")
         self._save_now()
         self._update_status()
+        if attr == "mic_device" and is_hands_free(name):   # after: it'd be overwritten
+            self.status.setText(
+                f"<span style='color:{theme.status('warn')}'>That's a Bluetooth headset's "
+                "phone-call mic: while it's open, Windows switches the headset to call "
+                "quality, so everything you hear sounds muffled. A wired mic, or the "
+                "headset's own USB dongle, sounds much better.</span>")
         self._prepare_all()
 
     def set_route(self, route: str, device: str | None = None):
@@ -1588,6 +1659,7 @@ class MainWindow(QMainWindow):
         self.btn_nomic.setVisible(mic_side)
         self.btn_chat.setVisible(mic_side)
         self.btn_game.setVisible(mic_side)
+        self.btn_meeting.setVisible(mic_side)
         self.btn_cablefix.setVisible(mic_side and bool(self.cable_bad))
         # "off" was picked on purpose: it's set up, as far as the rest of the app goes
         self.setup_state = "ok" if state == "off" else state
@@ -1610,8 +1682,8 @@ class MainWindow(QMainWindow):
         if self.pill.text() != pill:
             good = state in ("ok", "off")
             self.pill.setText(pill)
-            self.pill.setIcon(icons.icon("headphones", "ok_text") if state == "off" else
-                              icons.icon("check", "ok_text") if good else
+            self.pill.setIcon(icons.icon("headphones", "live_text") if state == "off" else
+                              icons.icon("check", "live_text") if good else
                               icons.icon("warn", "warn_text"))
             self.pill.setProperty("state", "ok" if good else "warn")
             self.pill.style().unpolish(self.pill)
@@ -1684,10 +1756,38 @@ class MainWindow(QMainWindow):
         self._save_later()
 
     def _poll_voice(self):
+        """Which Who's listening mode suits: the program recording the cable's far end
+        (voicesdk.Listeners), else the voice engine of the game in front. Switches to it
+        when the picker's *Pick the mode by itself* is ticked."""
         key = self.voice_watch.poll() if self.voice_watch is not None else None
-        if key != self.voice_suggestion:
-            self.voice_suggestion = key
+        why = (f"The game you have open uses {voicesdk.NAMES.get(key, key)} for voice "
+               "chat") if key else ""
+        heard = ()
+        if self.listeners is not None:
+            heard = self.listeners.poll(eng.virtual_mic_for(self._main_name()))
+        if heard:   # the game in front, if it's one of them; else the first
+            key, name = next((h for h in heard if h[0] == key), heard[0])
+            why = f"{name} is listening to the virtual cable"
+        if key != self.voice_suggestion or why != self.voice_why:
+            self.voice_suggestion, self.voice_why = key, why
+            self._auto_dest()
             self.voice_engine.emit(key)
+
+    def _auto_dest(self):
+        """*Pick the mode by itself*: the suggested mode, as soon as it's suggested.
+        Nothing listening keeps the mode it has."""
+        d = self.cfg.dest if isinstance(self.cfg.dest, dict) else {}
+        key = self.voice_suggestion
+        if not d.get("auto") or key not in destination.BUILTIN_BY_KEY:
+            return
+        if destination.resolve(d).key == key:
+            return
+        d["mode"] = key
+        self.cfg.dest = d
+        mode = destination.apply(self.cfg, self.engine)
+        self._save_later()
+        log.info("who's listening: switched to %s (%s)", key, self.voice_why)
+        self.toast(f"Who's listening: {mode.label}. {self.voice_why}.")
 
     def _save_later(self):
         self._save_timer.start(400)
@@ -1790,6 +1890,17 @@ class MainWindow(QMainWindow):
         self.set_option("level_volumes", b)
         for m in self.cfg.sounds:
             self.engine.set_gain(m.id, self.gain_for(m))
+
+    def set_live_color(self, colour: str) -> bool:
+        """The user's own highlight colour ("" = the theme's). Only what's drawn in it
+        is restyled (quick); False when it's the colour in use already."""
+        if theme.valid_colour(colour) == theme.live_override:
+            return False
+        self.set_option("live_color", theme.apply_live(QApplication.instance(), colour))
+        icons.retheme_live()
+        self.pill.setText("")   # forces _update_flow to repaint its icon
+        self._update_status()
+        return True
 
     def set_live_tab_tint(self, on: bool):
         self.set_option("live_tab_green", on)
@@ -3847,9 +3958,38 @@ class MainWindow(QMainWindow):
 
     def load_remote_addon(self, info):
         """Start a remote add-on installed while the app runs (Settings → Remote's
-        *Get Onion Pocket*), in place of any copy of it that didn't load. Its object,
+        *Get Onion Pocket*, or its *Update* button), in place of any copy of it. A
+        running copy is stopped first (its server lets go of the port) and its package
+        forgotten, so the new version's code loads; its settings in
+        Config.remote_addons are the board's and stay as they are. If the new one
+        doesn't start, the old one is started again and stays. The add-on's object,
         or None."""
+        from soundboard import modules
+        old = next(((i, a) for i, a in self.remote_addons if i.id == info.id), None)
+        saved = {}
+        if old is not None and old[1] is not None:
+            try:
+                old[1].stop()
+            except Exception:  # noqa: BLE001
+                log.exception("remote add-on %s didn't stop cleanly", info.id)
+            pkg = old[0].package
+            saved = {n: m for n, m in sys.modules.items()
+                     if pkg and (n == pkg or n.startswith(pkg + "."))}
+            modules._forget(pkg)
         addon = self._start_remote_addon(info)
+        if addon is None and saved:
+            log.warning("remote add-on %s %s didn't start (%s): keeping %s",
+                        info.id, info.version, info.error, old[0].version)
+            if info.package:
+                modules._forget(info.package)
+            sys.modules.update(saved)
+            try:
+                restart = getattr(old[1], "apply", None)
+                if callable(restart):
+                    restart()
+            except Exception:  # noqa: BLE001
+                log.exception("remote add-on %s didn't start again", info.id)
+            return None
         self.remote_addons = [(i, a) for i, a in self.remote_addons if i.id != info.id]
         self.remote_addons.append((info, addon))
         return addon
@@ -4445,6 +4585,8 @@ class MainWindow(QMainWindow):
         f = self._fit = r.Fitter(self._full)
         f.add(10, "w", r.hide(self.tagline))
         f.add(10, "w", r.hide(*self._pad_size))
+        f.add(16, "w", r.hide(self._mode_pick[0]))   # the dropdown's tooltip says what it is
+        f.add(38, "w", r.hide(self._mode_pick[1]))   # also on the Setup tab
         f.add(12, "w", r.hide(*self._mixer_send))
         f.add(14, "w", r.hide(self.np_time))
         f.add(45, "w", r.hide(self.speed_btn))

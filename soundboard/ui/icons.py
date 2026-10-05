@@ -561,7 +561,7 @@ def _tab_icon(name: str, tint: str | None, badge: bool = False) -> QIcon:
     elif tint is None:
         ic = icon(name, "muted", "accent")
     else:
-        ic = QIcon()   # one colour whatever the tab's state (e.g. green while it's live)
+        ic = QIcon()   # one colour whatever the tab's state (e.g. the live colour while it's live)
         for s in SIZES:
             pm = pixmap(name, s, theme.T.get(tint, tint))
             for mode in (QIcon.Normal, QIcon.Selected, QIcon.Active):
@@ -574,7 +574,7 @@ def _with_badge(ic: QIcon) -> QIcon:
     a thin gap so it reads on any background. Drawn into the icon itself, so the
     tab it's on keeps its size."""
     out = QIcon()
-    color = QColor(theme.status("ok"))
+    color = QColor(theme.T["live_text"])
     for s in SIZES:
         r = s * 0.2
         gap = max(1.0, s / 12)
@@ -604,7 +604,7 @@ def _with_badge(ic: QIcon) -> QIcon:
 def set_tab_icon(tabs, index: int, name: str, tint: str | None = None, badge: bool = False):
     """`tint` colours the icon in every state; None is the usual muted / accent.
     "art:<key>" shows that picture from ui/art.py instead of a painted icon. `badge`
-    adds the small green "live" dot."""
+    adds the small "live" dot."""
     # on the bar itself: QTabWidget.setTabIcon also lays the whole widget out again and
     # repaints every page under it (the live badge did that to the whole board each
     # time a sound started or stopped); the bar asks for a layout only if it changed
@@ -620,6 +620,25 @@ def tab_icon_name(tabs, index: int) -> str | None:
         if ref() is tabs and i == index:
             return name
     return None
+
+
+def retheme_live():
+    """Re-draw only the icons in the live colour (a live tab's, the mic pill's) after
+    the user picks a new one: retheme() re-draws every icon in the app."""
+    for ref, name, color, checked in _applied:
+        w = ref()
+        if w is not None and "live_text" in (color, checked):
+            try:
+                w.setIcon(icon(name, color, checked))
+            except RuntimeError:   # the C++ widget is gone
+                pass
+    for ref, index, name, tint, badge in _tabs:
+        t = ref()
+        if t is not None and (tint == "live_text" or badge):
+            try:
+                t.setTabIcon(index, _tab_icon(name, tint, badge))
+            except RuntimeError:
+                pass
 
 
 def retheme():

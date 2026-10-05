@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 SR = 48000            # what the sink gets (the engine's storage rate)
 MIN_BUILD = 20348     # first Windows build with process loopback
+GAP_S = 0.03          # no packets from the program this long: it's quiet, send silence
 
 S_OK = 0
 E_NOINTERFACE = -2147467262
@@ -43,7 +44,7 @@ RPC_E_CHANGED_MODE = -2147417850
 VT_BLOB = 0x41
 VT_LPWSTR = 31
 STGM_READ = 0
-E_RENDER, DEVICE_STATE_ACTIVE = 0, 1
+E_RENDER, E_CAPTURE, DEVICE_STATE_ACTIVE = 0, 1, 1
 E_CONSOLE = 0   # ERole: the default device (not the communications one)
 AUDCLNT_SHAREMODE_SHARED = 0
 AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
@@ -59,6 +60,11 @@ AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK = 1
 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK = "VAD\\Process_Loopback"
 # Windows' own sounds and helpers: never something you'd want to send to a call
 SYSTEM_EXES = {"svchost.exe", "audiodg.exe", "explorer.exe", "shellexperiencehost.exe"}
+# shared helpers that play audio for whichever program started them (the new Teams,
+# Steam's store and overlay, launchers built on CEF / Qt WebEngine): their sound is
+# that program's, so they're folded into it instead of showing up on their own
+HELPER_EXES = {"msedgewebview2.exe", "steamwebhelper.exe", "cefsharp.browsersubprocess.exe",
+               "qtwebengineprocess.exe", "epicwebhelper.exe", "upc_webhelper.exe"}
 
 _win = sys.platform == "win32"
 if _win:
@@ -70,6 +76,7 @@ if _win:
         (_k32.OpenProcess, c_void_p, (c_ulong, c_int, c_ulong)),
         (_k32.CloseHandle, c_int, (c_void_p,)),
         (_k32.GetExitCodeProcess, c_int, (c_void_p, c_void_p)),
+        (_k32.GetProcessTimes, c_int, (c_void_p, c_void_p, c_void_p, c_void_p, c_void_p)),
         (_k32.QueryFullProcessImageNameW, c_int, (c_void_p, c_ulong, c_void_p, c_void_p)),
         (_k32.CreateToolhelp32Snapshot, c_void_p, (c_ulong, c_ulong)),
         (_k32.Process32FirstW, c_int, (c_void_p, c_void_p)),
@@ -89,6 +96,10 @@ if _win:
         (_ole32.PropVariantClear, c_long, (c_void_p,)),
     ):
         _f.restype, _f.argtypes = _res, _args
+    # its own copy, so OpenProcess's error code is kept for ctypes.get_last_error()
+    _k32le = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32le.OpenProcess.restype = c_void_p
+    _k32le.OpenProcess.argtypes = (c_ulong, c_int, c_ulong)
 
 
 def supported() -> tuple[bool, str]:
@@ -247,9 +258,9 @@ def _enumerator() -> Com:
     return Com(out.value)
 
 
-def _render_devices(en: Com) -> list[Com]:
+def _render_devices(en: Com, flow: int = E_RENDER) -> list[Com]:
     coll = c_void_p()
-    en.call(3, (c_int, c_ulong, POINTER(c_void_p)), E_RENDER, DEVICE_STATE_ACTIVE, byref(coll),
+    en.call(3, (c_int, c_ulong, POINTER(c_void_p)), flow, DEVICE_STATE_ACTIVE, byref(coll),
             what="EnumAudioEndpoints")
     devs = []
     with Com(coll.value) as c:
@@ -291,13 +302,19 @@ def _cotaskmem_str(p: c_void_p) -> str:
 
 # --------------------------------------------------------------------------- processes
 
-_names: dict[int, str] = {}   # pid -> full image path (a pid can be reused, but rarely mid-list)
+_names: dict[int, str] = {}   # pid -> full image path; see forget_dead_pids
+_names_lock = threading.Lock()
 
 
-def process_path(pid: int) -> str:
-    """Full path of the process's .exe ('' if it can't be opened)."""
-    if pid in _names:
-        return _names[pid]
+def process_path(pid: int, exe: str = "") -> str:
+    """Full path of the process's .exe ('' if it can't be opened). `exe`, the name a
+    fresh process list gives this pid, catches a pid Windows has handed to another
+    program since it was cached."""
+    with _names_lock:
+        path = _names.get(pid)
+    if path is not None and (not exe or not path
+                             or os.path.basename(path).lower() == exe.lower()):
+        return path
     path = ""
     h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if h:
@@ -308,22 +325,53 @@ def process_path(pid: int) -> str:
                 path = buf.value
         finally:
             _k32.CloseHandle(h)
-    _names[pid] = path
+    with _names_lock:
+        _names[pid] = path
     return path
 
 
-def is_running(pid: int) -> bool:
-    """False once the process has exited. A process we may not open (a service, a
-    game guarded by anti-cheat) counts as running: we can't tell."""
+def forget_dead_pids(table: dict[int, tuple[int, str]]):
+    """Drops cached paths of pids missing from a fresh process list: Windows reuses
+    pids, and a stale entry would put a remembered program's name (and its auto-send)
+    on whatever new process gets the number."""
+    with _names_lock:
+        for pid in [p for p in _names if p not in table]:
+            del _names[pid]
+
+
+def process_started(pid: int) -> int | None:
+    """When the process started (FILETIME ticks), None if it can't be opened. With
+    the pid it names one process for good: a reused pid starts at another time."""
     h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
-        return ctypes.get_last_error() == 5 or _k32.GetLastError() == 5   # ERROR_ACCESS_DENIED
+        return None
     try:
-        code = c_ulong()
-        return bool(_k32.GetExitCodeProcess(h, byref(code))) and code.value == STILL_ACTIVE
+        t = [ctypes.c_ulonglong() for _ in range(4)]
+        if not _k32.GetProcessTimes(h, *(byref(x) for x in t)):
+            return None
+        return t[0].value
     finally:
         _k32.CloseHandle(h)
 
+
+def is_running(pid: int, started: int | None = None) -> bool:
+    """False once the process has exited, or (with `started`, from process_started)
+    once its pid belongs to a newer process. A process we may not open (a service, a
+    game guarded by anti-cheat) counts as running: we can't tell."""
+    h = _k32le.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return ctypes.get_last_error() == 5   # ERROR_ACCESS_DENIED
+    try:
+        code = c_ulong()
+        if not (_k32.GetExitCodeProcess(h, byref(code)) and code.value == STILL_ACTIVE):
+            return False
+        if started is not None:
+            t = [ctypes.c_ulonglong() for _ in range(4)]
+            if _k32.GetProcessTimes(h, *(byref(x) for x in t)) and t[0].value != started:
+                return False
+        return True
+    finally:
+        _k32.CloseHandle(h)
 
 class _PROCESSENTRY32W(Structure):
     _fields_ = [("dwSize", c_ulong), ("cntUsage", c_ulong), ("th32ProcessID", c_ulong),
@@ -353,11 +401,22 @@ def _process_table() -> dict[int, tuple[int, str]]:
 def root_pid(pid: int, table: dict[int, tuple[int, str]] | None = None) -> int:
     """The topmost ancestor with the same .exe name. Browsers and chat apps play
     their audio from a helper child process that comes and goes; capturing the main
-    process *and its tree* keeps following them."""
+    process *and its tree* keeps following them. A shared helper (HELPER_EXES) goes
+    to the program that started it, unless that's Windows itself."""
     table = table if table is not None else _process_table()
     if pid not in table:
         return pid
     exe = table[pid][1]
+    if exe in HELPER_EXES:
+        seen, host = {pid}, pid
+        while table[host][1] in HELPER_EXES:
+            parent = table[host][0]
+            if parent in seen or parent not in table or table[parent][1] in SYSTEM_EXES:
+                break
+            seen.add(parent)
+            host = parent
+        if table[host][1] not in HELPER_EXES:
+            pid, exe = host, table[host][1]
     seen = {pid}
     while True:
         parent = table[pid][0]
@@ -438,6 +497,29 @@ def default_output_name() -> str | None:
             _ole32.CoUninitialize()
 
 
+def endpoint_names(kind: str) -> set[str] | None:
+    """Names of Windows' active playback ('output') or recording ('input') devices,
+    asked now (PortAudio's list is from when it started or was last re-scanned).
+    None if Windows can't be asked."""
+    if not _win:
+        return None
+    own = _co_init()
+    try:
+        with _enumerator() as en:
+            devs = _render_devices(en, E_CAPTURE if kind == "input" else E_RENDER)
+        try:
+            return {n for n in map(_device_name, devs) if n}
+        finally:
+            for d in devs:
+                d.release()
+    except ComError:
+        log.debug("listing %s devices failed", kind, exc_info=True)
+        return None
+    finally:
+        if own:
+            _ole32.CoUninitialize()
+
+
 def list_apps() -> list[App]:
     """Every program with a live audio session on any playback device, this
     process excluded and grouped by process tree. Safe from any thread."""
@@ -454,17 +536,39 @@ def list_apps() -> list[App]:
             _ole32.CoUninitialize()
 
 
-def _list_apps(meters: dict | None = None) -> list[App]:
+def recording_apps(device: str) -> list[App]:
+    """The programs recording from the recording device named `device` (who listens
+    to the virtual cable's far end: Discord, a game, OBS), this process excluded.
+    Safe from any thread."""
+    if not _win or not device:
+        return []
+    own = _co_init()
+    try:
+        return _list_apps(flow=E_CAPTURE, only=device)
+    except ComError:
+        log.debug("listing recording sessions failed", exc_info=True)
+        return []
+    finally:
+        if own:
+            _ole32.CoUninitialize()
+
+
+def _list_apps(meters: dict | None = None, flow: int = E_RENDER,
+               only: str | None = None) -> list[App]:
     """With `meters`, also keeps each session's IAudioMeterInformation there
-    (root pid -> [Com]) for the caller to read and release; window titles are skipped."""
+    (root pid -> [Com]) for the caller to read and release; window titles are skipped.
+    `flow` E_CAPTURE lists recording sessions instead, `only` on one device."""
     me = os.getpid()
     table = _process_table()
+    forget_dead_pids(table)
     apps: dict[int, App] = {}
     with _enumerator() as en:
-        devices = _render_devices(en)
+        devices = _render_devices(en, flow)
     try:
         for dev in devices:
             dname = _device_name(dev)
+            if only is not None and dname != only:
+                continue
             mgr = c_void_p()
             try:
                 dev.call(3, (POINTER(GUID), c_ulong, c_void_p, POINTER(c_void_p)),
@@ -522,7 +626,9 @@ def _read_session(c: Com, dname: str, me: int, table, apps: dict[int, App],
         root = pid.value
     app = apps.get(root)
     if app is None:
-        path = process_path(pid.value) or process_path(root)
+        exe = table.get(pid.value, (0, ""))[1]
+        path = (process_path(root, table.get(root, (0, ""))[1])   # a helper's host, not it
+                or (process_path(pid.value, exe) if exe not in HELPER_EXES else ""))
         exe = os.path.basename(path) or table.get(root, (0, ""))[1] or f"pid {root}"
         app = apps[root] = App(root, exe, path)
     app.session_pids.add(pid.value)
@@ -744,10 +850,14 @@ class AppCapture:
         self.frames = 0              # captured so far, at 48 kHz
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self._started: int | None = None   # process_started: a reused pid isn't ours
         self._thread = threading.Thread(target=self._run, name=f"appcapture-{pid}", daemon=True)
 
     # -- lifecycle
-    def start(self, timeout: float = 6.0) -> bool:
+    def start(self, timeout: float = 6.0, wait: bool = True) -> bool:
+        """With wait=False it returns once the thread is going: `ready` turns True
+        when Windows has started the capture, or `error` says why it couldn't (opening
+        it can take seconds, which mustn't freeze the window)."""
         if not _win:
             self.error = supported()[1]
             return False
@@ -755,7 +865,10 @@ class AppCapture:
             self.error = "That program isn't running any more."
             self.ended = True
             return False
+        self._started = process_started(self.pid)
         self._thread.start()
+        if not wait:
+            return True
         if not self._ready.wait(timeout):
             self.error = "Windows didn't answer in time. Switch Send on to try again."
             self._stop.set()
@@ -770,6 +883,11 @@ class AppCapture:
     @property
     def running(self) -> bool:
         return self._thread.is_alive() and self.error is None and not self.ended
+
+    @property
+    def ready(self) -> bool:
+        """Windows has started the capture (start(wait=False) returns before)."""
+        return self._ready.is_set() and self.error is None
 
     # -- the thread
     def _run(self):
@@ -863,12 +981,26 @@ class AppCapture:
             client.release()
             _k32.CloseHandle(evt)
 
+    def _hand_over(self, x: np.ndarray) -> bool:
+        self.frames += len(x)
+        try:
+            self.sink(x)
+            return True
+        except Exception:  # noqa: BLE001
+            from soundboard import applog
+            applog.report(where=f"sending {self.name}'s audio")
+            # surfaces on the Apps tab, which stops the capture and shows this
+            self.error = "Sending this program's sound failed. Switch Send on to try again."
+            return False
+
     def _loop(self, cap: Com, fmt: WAVEFORMATEX, is_float: bool, evt):
         align = fmt.nBlockAlign
         n, frames, flags, data = c_uint(), c_uint(), c_ulong(), c_void_p()
         next_alive = time.monotonic() + 1.0
+        heard = time.monotonic()   # when the audio handed over so far ends, in real time
         while not self._stop.is_set():
             _k32.WaitForSingleObject(evt, 20)
+            got = False
             while True:
                 cap.call(5, (POINTER(c_uint),), byref(n), what="GetNextPacketSize")
                 if not n.value:
@@ -884,19 +1016,23 @@ class AppCapture:
                                           fmt, is_float)
                 finally:
                     cap.call(4, (c_uint,), frames.value, what="ReleaseBuffer")
-                self.frames += len(x)
-                try:
-                    self.sink(x)
-                except Exception:  # noqa: BLE001
-                    from soundboard import applog
-                    applog.report(where=f"sending {self.name}'s audio")
-                    # surfaces on the Apps tab, which stops the capture and shows this
-                    self.error = "Sending this program's sound failed. Switch Send on to try again."
+                got = True
+                if not self._hand_over(x):
                     return
             now = time.monotonic()
+            if got:
+                heard = now
+            elif now - heard > GAP_S:
+                # a program with nothing to play sends no packets at all: hand over
+                # the silence ourselves, or the engine's cushion for it runs dry, grows
+                # (more delay), and stays grown
+                x = np.zeros((int((now - heard) * SR), 2), np.float32)
+                heard += len(x) / SR
+                if len(x) and not self._hand_over(x):
+                    return
             if now >= next_alive:
                 next_alive = now + 1.0
-                if not is_running(self.pid):
+                if not is_running(self.pid, self._started):
                     self.ended = True
                     return
 

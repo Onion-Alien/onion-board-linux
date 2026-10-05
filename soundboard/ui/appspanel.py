@@ -7,19 +7,22 @@ until you click again and adds it to your Sounds as a pad.
 
 The capture is Windows' per-process loopback (soundboard.appaudio), a *copy* of
 the program's audio: the program keeps playing on your speakers. Programs you
-switch on are remembered by their .exe and picked up again next time they run.
+switch on are remembered by their .exe and folder (path_key), and picked up again
+next time they run.
 """
 from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import threading
 import time
+import zlib
 
 from PySide6.QtCore import QFileInfo, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter
-from PySide6.QtWidgets import (QCheckBox, QFileIconProvider, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileIconProvider, QFrame, QHBoxLayout, QLabel,
                                QLayout, QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QVBoxLayout, QWidget)
 
@@ -41,6 +44,31 @@ METER_MS = 60
 MAX_REMEMBERED = 30
 CARD_MIN_W = 300        # programs are cards, as many across as fit at this width
 MAX_VOL = 10.0          # 1000 %, the most the volume box takes
+CONNECTING = "Connecting…"   # a card's status while its capture is starting
+# where a sent program goes (cfg.apps[exe]["to"], cfg.apps_paths[path]["to"]): the
+# choice shows once a stream output is set (Settings → Audio), or while it's set to
+# anything but both
+TO = (("both", "Call + stream", "Others in the call and your stream output both get it"),
+      ("call", "Call only", "Only others in the call get it, not your stream output"),
+      ("stream", "Stream only", "Only your stream output gets it (music for your viewers), "
+                                "not the call"))
+TO_KEYS = tuple(k for k, *_ in TO)
+
+
+# a version folder in a program's path (Discord's app-1.0.9156, 24.1.3): it changes on
+# every update, so it doesn't count when telling two programs of the same name apart
+_VERSION_DIR = re.compile(r"(app-)?v?\d+(\.\d+)+([-_+][\w.]*)?", re.I)
+
+
+def path_key(path: str) -> str:
+    """How a program's .exe path is remembered: lower case, version folders as *."""
+    parts = re.split(r"[\\/]+", path.lower())
+    return "\\".join("*" if _VERSION_DIR.fullmatch(p) else p for p in parts)
+
+
+def is_path_key(key: str) -> bool:
+    """A row / remembered key that is a path (cfg.apps_paths), not an .exe name."""
+    return "\\" in key
 
 
 def saved_volume(v) -> float:
@@ -105,6 +133,12 @@ class ElidedLabel(QLabel):
         p.drawText(r, int(self.alignment() | Qt.AlignVCenter), shown)
 
 
+def _route(src, to: str):
+    """Point a sent program (engine.AuxSource) at the call, the stream or both."""
+    src.live = to in ("both", "call")
+    src.stream = to in ("both", "stream")
+
+
 class AppRow(HoverCard):
     """One program, as a card: icon and name, its level, Send and Record, volume and
     Hear it myself."""
@@ -112,13 +146,19 @@ class AppRow(HoverCard):
     rec_toggled = Signal(object, bool)
     vol_changed = Signal(object, float)
     hear_toggled = Signal(object, bool)
+    to_changed = Signal(object, str)        # row, one of TO_KEYS
     forget = Signal(object)
 
-    def __init__(self, exe: str, meter_cls, vol: float = 1.0, hear: bool = False):
+    def __init__(self, exe: str, meter_cls, vol: float = 1.0, hear: bool = False,
+                 to: str = "both", key: str = "", path: str = ""):
         super().__init__()
         self.exe = exe
+        self.key = key or exe.lower()   # AppsTab.rows' key: the .exe, or a path_key
+        self.path = path                # path_key of the program it is ("" not known yet)
+        self.folder = ""                # shown after the name: two programs share it
         self.app: appaudio.App | None = None
         self.capture: appaudio.AppCapture | None = None
+        self.remember_pending = False   # Send clicked: remembered once the capture is up
         self.src = None                 # engine.AuxSource while sending
         self.rec: ArmedRecorder | None = None   # while Record is on
         self.status_text = ""
@@ -175,6 +215,16 @@ class AppRow(HoverCard):
         for b in (self.btn_send, self.btn_rec):
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             buttons.addWidget(b)
+        self.cb_to = QComboBox()
+        for i, (key, label, tip) in enumerate(TO):
+            self.cb_to.addItem(label, key)
+            self.cb_to.setItemData(i, tip, Qt.ToolTipRole)
+        self.cb_to.setToolTip("Where this program's sound goes when Send is on")
+        self.cb_to.setCurrentIndex(TO_KEYS.index(to) if to in TO_KEYS else 0)
+        self.cb_to.currentIndexChanged.connect(lambda _i: self.to_changed.emit(self, self.to))
+        no_wheel(self.cb_to)
+        self.cb_to.setVisible(self.to != "both")
+        buttons.addWidget(self.cb_to)
         v.addLayout(buttons)
         mix = QHBoxLayout()
         mix.setSpacing(8)
@@ -238,6 +288,16 @@ class AppRow(HoverCard):
     def sending(self) -> bool:
         return self.btn_send.isChecked()
 
+    @property
+    def to(self) -> str:
+        """Where it goes when sent: one of TO_KEYS."""
+        return self.cb_to.currentData() or "both"
+
+    def show_to(self, stream_output: bool):
+        """The call / stream choice: only worth showing with a stream output set
+        (or when it's already set to something else)."""
+        self.cb_to.setVisible(stream_output or self.to != "both")
+
     def _label_send(self):
         self.btn_send.setText("" if "send" in self._TIGHTEN[:self._tight]
                               else "Sending" if self.sending else "Send")
@@ -247,7 +307,7 @@ class AppRow(HoverCard):
         self.app = app
         running = app is not None
         if running:
-            self.name.setText(app.name)
+            self.name.setText(app.name + self.folder)
             self._set_icon(app.path)
             where = ", ".join(app.devices[:2])
             sub = app.title or app.exe
@@ -256,7 +316,8 @@ class AppRow(HoverCard):
             if not self.status_text:   # an error stays up until the next attempt
                 self.sub.setText(sub)
         else:
-            self.name.setText(self.exe.rsplit(".", 1)[0].capitalize() if self.exe else "?")
+            self.name.setText((self.exe.rsplit(".", 1)[0].capitalize() if self.exe else "?")
+                              + self.folder)
             self.set_status("")
             self.sub.setText("Not running — it'll be picked up when it starts")
         self.btn_send.setEnabled(running)
@@ -320,7 +381,9 @@ class AppsTab(QWidget):
         self.engine, self.cfg, self._save, self._meter_cls = engine, cfg, save_cb, meter_cls
         if not isinstance(cfg.apps, dict):
             cfg.apps = {}
-        self.rows: dict[str, AppRow] = {}     # exe (lower) -> row
+        if not isinstance(cfg.apps_paths, dict):
+            cfg.apps_paths = {}
+        self.rows: dict[str, AppRow] = {}     # exe (lower) or path_key -> row
         self._sending: tuple[str, ...] = ()   # the programs being sent, as last reported
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 8, 0, 0)
@@ -397,7 +460,14 @@ class AppsTab(QWidget):
 
         for exe, spec in list(cfg.apps.items())[:MAX_REMEMBERED]:   # remembered programs
             if isinstance(spec, dict):
-                self._row(exe, saved_volume(spec.get("vol", 1.0)), bool(spec.get("monitor")))
+                self._row(exe, saved_volume(spec.get("vol", 1.0)), bool(spec.get("monitor")),
+                          str(spec.get("to", "both")), path=str(spec.get("path") or ""))
+        for key, spec in list(cfg.apps_paths.items())[:MAX_REMEMBERED]:
+            if isinstance(spec, dict) and is_path_key(key):
+                self._row(str(spec.get("exe") or key.rsplit("\\", 1)[-1]),
+                          saved_volume(spec.get("vol", 1.0)), bool(spec.get("monitor")),
+                          str(spec.get("to", "both")), key=key, path=key)
+        self._label_folders()
 
         self.lister = _Lister(self)
         self.lister.ready.connect(self._on_apps)
@@ -475,21 +545,24 @@ class AppsTab(QWidget):
     def _report_active(self):
         """Tell the tab's live dot when the set of programs being sent changes
         (on / off, and which: its tip names them)."""
-        now = tuple(sorted(exe for exe, row in self.rows.items() if row.sending))
+        now = tuple(sorted(key for key, row in self.rows.items() if row.sending))
         if now != self._sending:
             self._sending = now
             self.active_changed.emit(bool(now))
 
     # ------------------------------------------------------------------ rows
-    def _row(self, exe: str, vol: float = 1.0, hear: bool = False) -> AppRow:
-        key = exe.lower()
+    def _row(self, exe: str, vol: float = 1.0, hear: bool = False, to: str = "both",
+             key: str = "", path: str = "") -> AppRow:
+        key = key or exe.lower()
         row = self.rows.get(key)
         if row is None:
-            row = self.rows[key] = AppRow(exe, self._meter_cls, vol, hear)
+            row = self.rows[key] = AppRow(exe, self._meter_cls, vol, hear, to, key, path)
+            row.show_to(self._stream_output())
             row.send_toggled.connect(self._on_send)
             row.rec_toggled.connect(self._on_rec)
             row.vol_changed.connect(self._on_vol)
             row.hear_toggled.connect(self._on_hear)
+            row.to_changed.connect(self._on_to)
             row.forget.connect(self._on_forget)
             self.grid.addWidget(row)
             self.empty.setVisible(False)
@@ -497,7 +570,7 @@ class AppsTab(QWidget):
 
     def _drop_row(self, row: AppRow):
         self._stop_capture(row)
-        self.rows.pop(row.exe.lower(), None)
+        self.rows.pop(row.key, None)
         self.grid.removeWidget(row)
         row.deleteLater()
         self.empty.setVisible(not self.rows)
@@ -506,22 +579,87 @@ class AppsTab(QWidget):
     def _hidden(self) -> set[str]:
         return {str(e).lower() for e in self.cfg.apps_hidden}
 
-    def _on_apps(self, apps: list):
-        by_exe: dict[str, appaudio.App] = {}
-        hidden = self._hidden()
+    # ------------------------------------------------------------------ keys
+    # A program is remembered by its .exe name (cfg.apps, all an older version reads)
+    # and the folder it runs from (spec["path"]). Another program with the same name
+    # from another folder gets a row of its own, keyed and remembered by its path
+    # (cfg.apps_paths), so the two never share a volume, a Send or an auto-send.
+    def _spec(self, key: str) -> dict | None:
+        """What's remembered about the row `key`, None if nothing."""
+        spec = (self.cfg.apps_paths if is_path_key(key) else self.cfg.apps).get(key)
+        return spec if isinstance(spec, dict) else None
+
+    def _keys_for(self, apps: list) -> list[str]:
+        """The row key for each listed program: its .exe for the one program of that
+        name that "owns" it (the remembered folder; else the one already on the row;
+        else the first listed), its path_key for any other one."""
+        paths: dict[str, list[str]] = {}
         for app in apps:
-            key = app.exe.lower()
+            paths.setdefault(app.exe.lower(), []).append(path_key(app.path) if app.path else "")
+        owner: dict[str, str] = {}
+        for exe, found in paths.items():
+            spec = self._spec(exe)
+            home = str(spec.get("path") or "") if spec is not None else ""
+            row = self.rows.get(exe)
+            if home:
+                owner[exe] = home
+            elif row is not None and row.path and row.path in found:
+                owner[exe] = row.path
+            else:
+                owner[exe] = next((p for p in found if p not in self.cfg.apps_paths), found[0])
+        keys = []
+        for app in apps:
+            exe, p = app.exe.lower(), path_key(app.path) if app.path else ""
+            if p and p in self.cfg.apps_paths:
+                keys.append(p)
+            elif not p or p == owner[exe]:
+                keys.append(exe)
+            else:
+                keys.append(p)
+        return keys
+
+    def _label_folders(self):
+        """Two rows of the same .exe name: each shows the folder it runs from."""
+        count: dict[str, int] = {}
+        for row in self.rows.values():
+            count[row.exe.lower()] = count.get(row.exe.lower(), 0) + 1
+        for row in self.rows.values():
+            folder = ""
+            if count[row.exe.lower()] > 1 and row.path:
+                parts = [p for p in row.path.split("\\")[:-1] if p and p != "*"]
+                stem = os.path.splitext(row.exe.lower())[0]
+                while len(parts) > 1 and parts[-1] in (stem, "bin", "app", "application"):
+                    parts.pop()   # ...\spotify\spotify.exe: "spotify" tells nothing
+                folder = f" ({parts[-1]})" if parts else ""
+            if folder != row.folder:
+                row.folder = folder
+                row.name.setToolTip(row.app.path if row.app is not None else row.path)
+                row.set_app(row.app)
+
+    def _on_apps(self, apps: list):
+        stream = self._stream_output()   # set or cleared in Settings meanwhile
+        for row in self.rows.values():
+            row.show_to(stream)
+        by_key: dict[str, appaudio.App] = {}
+        hidden = self._hidden()
+        for app, key in zip(apps, self._keys_for(apps)):
             if key in hidden and key not in self.rows:
                 continue                          # taken off the list with ✕
             cur = self.rows.get(key)
             if cur is not None and cur.capture is not None and cur.capture.pid == app.pid:
-                by_exe[key] = app   # two copies running: stay on the one being captured
+                by_key[key] = app   # two copies running: stay on the one being captured
             else:
-                by_exe.setdefault(key, app)
-            self._row(app.exe)
+                by_key.setdefault(key, app)
+            self._row(app.exe, key=key)
         for key, row in list(self.rows.items()):
-            app = by_exe.get(key)
-            remembered = key in self.cfg.apps
+            app = by_key.get(key)
+            if app is not None and app.path:
+                row.path = path_key(app.path)
+                spec = self._spec(key)
+                if spec is not None and not is_path_key(key) and not spec.get("path"):
+                    spec["path"] = row.path   # remembered by an older version: by name only
+                    self._save()
+            remembered = self._spec(key) is not None
             if app is None:                       # not running
                 self._stop_capture(row)
                 row.set_sending(False)
@@ -532,13 +670,9 @@ class AppsTab(QWidget):
                 continue
             appeared = row.app is None
             row.set_app(app)
-            cap = row.capture
-            if cap is not None and cap.error:     # the capture died: say so, don't retry blindly
-                self._stop_capture(row)
-                row.set_sending(False)
-                row.set_status(cap.error, error=True)
-                log.warning("capturing %s stopped: %s", row.exe, cap.error)
+            if self._poll_capture(row):           # the capture died: said so, no blind retry
                 continue
+            cap = row.capture
             if cap is not None and (cap.ended or cap.pid != app.pid):
                 rec, row.rec = row.rec, None      # a recording carries on across the restart
                 self._stop_capture(row)           # it closed / restarted / the device changed
@@ -555,10 +689,37 @@ class AppsTab(QWidget):
                     self._finish_rec(row)         # reopening failed: nothing feeds the clip
             elif row.status_text and row.status_error:
                 row.set_status("")
+        self._label_folders()
         self.empty.setVisible(not self.rows)
         self._report_active()
 
+    def _poll_capture(self, row: AppRow) -> bool:
+        """A capture started without waiting (start(wait=False)): clears *Connecting…*
+        once it's up, or stops it and says why. True if it failed."""
+        cap = row.capture
+        if cap is None:
+            return False
+        if cap.error:
+            row.remember_pending = False
+            self._stop_capture(row)
+            row.set_sending(False)
+            row.set_status(cap.error, error=True)
+            log.warning("capturing %s stopped: %s", row.exe, cap.error)
+            self._report_active()
+            return True
+        if cap.ready:
+            if row.status_text == CONNECTING:
+                row.set_status("")
+            if row.remember_pending:
+                row.remember_pending = False
+                self._remember(row)
+        return False
+
     def _meters(self):
+        for row in list(self.rows.values()):
+            if row.capture is not None and (row.remember_pending or row.status_text == CONNECTING
+                                            or row.capture.error):
+                self._poll_capture(row)
         if not self.isVisible() and not any(r.rec for r in self.rows.values()):
             self.meter_timer.stop()   # hidden, nothing to cap: showEvent restarts it
             return
@@ -599,7 +760,7 @@ class AppsTab(QWidget):
             return False
         cap = appaudio.AppCapture(row.app.pid, lambda x, r=row: self._sink(r, x),
                                   name=row.app.name)
-        if not cap.start():
+        if not cap.start(wait=False):   # opening it can take seconds: see _poll_capture
             row.set_status(cap.error or "Couldn't capture it.", error=True)
             log.warning("capturing %s failed: %s", row.exe, cap.error)
             return False
@@ -617,20 +778,20 @@ class AppsTab(QWidget):
         """Send on: the program's audio goes into the mix."""
         if row.app is None or row.src is not None:
             return
-        row.set_status("Connecting…")   # opening its audio can take a moment
-        row.sub.repaint()
-        key = ("app", row.exe.lower())
+        row.set_status(CONNECTING)   # opening its audio can take a moment (_poll_capture)
+        key = ("app", row.key)
         src = self.engine.add_aux(key)
         src.vol = row.vol.value()
         src.monitor = row.chk_hear.isChecked()
+        _route(src, row.to)
         row.src = src
         if not self._open_capture(row):
             row.src = None
             self.engine.remove_aux(key)
             row.set_sending(False)
             return
-        row.set_status("")
         row.set_sending(True)
+        self._poll_capture(row)
 
     def _stop_send(self, row: AppRow):
         """Send off; the capture stays open while Record is on."""
@@ -650,7 +811,10 @@ class AppsTab(QWidget):
 
     # ------------------------------------------------------------------ record
     def _spool_path(self, row: AppRow):
-        return library.APP_DIR / f"app-recording-{re.sub(r'[^A-Za-z0-9._-]', '_', row.exe)}.tmp.wav"
+        name = re.sub(r'[^A-Za-z0-9._-]', '_', row.exe)
+        if is_path_key(row.key):   # another program of the same name: its own file
+            name += f"-{zlib.crc32(row.key.encode()):08x}"
+        return library.APP_DIR / f"app-recording-{name}.tmp.wav"
 
     def _on_rec(self, row: AppRow, on: bool):
         if not on:
@@ -704,21 +868,36 @@ class AppsTab(QWidget):
 
     # ------------------------------------------------------------------ controls
     def _remember(self, row: AppRow):
-        self.cfg.apps[row.exe.lower()] = {"vol": row.vol.value(),
-                                          "monitor": row.chk_hear.isChecked()}
-        while len(self.cfg.apps) > MAX_REMEMBERED:
-            self.cfg.apps.pop(next(iter(self.cfg.apps)))
+        spec = {"vol": row.vol.value(), "monitor": row.chk_hear.isChecked()}
+        if row.to != "both":
+            spec["to"] = row.to
+        if is_path_key(row.key):
+            spec["exe"] = row.exe.lower()
+            store = self.cfg.apps_paths
+        else:
+            if row.path:
+                spec["path"] = row.path
+            store = self.cfg.apps
+        store[row.key] = spec
+        while len(store) > MAX_REMEMBERED:
+            store.pop(next(iter(store)))
         self._save()
+
+    def _unremember(self, key: str) -> dict | None:
+        spec = (self.cfg.apps_paths if is_path_key(key) else self.cfg.apps).pop(key, None)
+        return spec if isinstance(spec, dict) else None
 
     def _on_send(self, row: AppRow, on: bool):
         row._label_send()
         if on:
             self._start_capture(row)
             if row.capture is not None:
-                self._remember(row)
+                row.remember_pending = True
+                self._poll_capture(row)
         else:
+            row.remember_pending = False
             self._stop_send(row)
-            self.cfg.apps.pop(row.exe.lower(), None)
+            self._unremember(row.key)
             self._save()
             row.btn_forget.setVisible(True)
             if row.app is None:
@@ -728,29 +907,40 @@ class AppsTab(QWidget):
     def _on_vol(self, row: AppRow, v: float):
         if row.src is not None:
             row.src.vol = v
-        if row.exe.lower() in self.cfg.apps:
+        if self._spec(row.key) is not None:
             self._remember(row)
+
+    def _on_to(self, row: AppRow, to: str):
+        if row.src is not None:
+            _route(row.src, to)
+        if self._spec(row.key) is not None:
+            self._remember(row)
+        self._report_active()
+
+    def _stream_output(self) -> bool:
+        """A stream output is set (Settings → Audio → Stream output)."""
+        return bool(self.engine.names.get("obs"))
 
     def _on_hear(self, row: AppRow, on: bool):
         if row.src is not None:
             row.src.monitor = on
-        if row.exe.lower() in self.cfg.apps:
+        if self._spec(row.key) is not None:
             self._remember(row)
 
     def _on_forget(self, row: AppRow):
         """✕: forget what's remembered about the program and take it off the list. A
         running one stays off (cfg.apps_hidden) until it's brought back from the
         Undo bar or *Forgotten programs…*."""
-        key = row.exe.lower()
-        spec = self.cfg.apps.pop(key, None)
-        spec = spec if isinstance(spec, dict) else {}
+        key = row.key
+        spec = self._unremember(key) or {}
         running = row.app is not None
         if running and key not in self._hidden():
             self.cfg.apps_hidden.append(key)
         self._save()
         if spec or running:          # something to bring back: keep it in the bin
             name = row.name.text() or row.exe
-            item = trash.put_app(key, spec, name, hidden=running)
+            item = trash.put_app(row.exe.lower(), spec, name, hidden=running,
+                                 path=key if is_path_key(key) else "")
             self._label_bin()
             self.undo_bar.show_for(f"Removed “{name}”",
                                    lambda: self._undo_forget(item.id))
@@ -777,23 +967,29 @@ class AppsTab(QWidget):
         exe, spec = str(item.data.get("exe", "")).lower(), item.data.get("spec")
         if not exe or not isinstance(spec, dict):
             return False
-        self.cfg.apps_hidden = [e for e in self.cfg.apps_hidden if str(e).lower() != exe]
+        key = str(item.data.get("path") or "").lower()
+        key = key if is_path_key(key) else exe
+        self.cfg.apps_hidden = [e for e in self.cfg.apps_hidden if str(e).lower() != key]
         if not spec:                 # only taken off the list: back on the next listing
             self._save()
             self._label_bin()
             if self._started:
                 self.lister.refresh()
             return True
-        self.cfg.apps[exe] = dict(spec)
-        while len(self.cfg.apps) > MAX_REMEMBERED:
-            self.cfg.apps.pop(next(iter(self.cfg.apps)))
+        store = self.cfg.apps_paths if is_path_key(key) else self.cfg.apps
+        store[key] = dict(spec)
+        while len(store) > MAX_REMEMBERED:
+            store.pop(next(iter(store)))
         self._save()
-        old = self.rows.get(exe)
+        old = self.rows.get(key)
         app = old.app if old is not None else None
         if old is not None and not old.sending:
             self._drop_row(old)   # built again with the remembered volume
-        row = self._row(exe, saved_volume(spec.get("vol", 1.0)), bool(spec.get("monitor")))
+        row = self._row(exe, saved_volume(spec.get("vol", 1.0)), bool(spec.get("monitor")),
+                        str(spec.get("to", "both")), key=key,
+                        path=key if is_path_key(key) else str(spec.get("path") or ""))
         row.set_app(app)
+        self._label_folders()
         self._label_bin()
         if not self._started:
             self.start()

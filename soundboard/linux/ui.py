@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import html
 import logging
+import sys
 
-from soundboard.linux import vcable, x11
+from soundboard.linux import audio, vcable, x11
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,11 @@ def patch_main_window(cls):
                        "settings.", "warn")
 
     cls.__init__ = __init__
+    # picking a Bluetooth headset's mic warns about call quality: Linux doesn't name
+    # it "Hands-Free", the sound server's name for it says Bluetooth
+    mw = sys.modules[cls.__module__]
+    upstream_hands_free = mw.is_hands_free
+    mw.is_hands_free = lambda name: upstream_hands_free(name) or audio.bluetooth_mic(name)
     # ...and it never asks for attention (triggers brought over from Windows)
     cls._nudge_triggers = lambda self, index: None
     cls.install_cable = install_cable

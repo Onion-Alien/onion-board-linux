@@ -331,6 +331,51 @@ THEMES: dict[str, dict[str, str]] = {
         texture="grid",
     ),
 }
+
+
+def _contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio of two colours (1 = same, 21 = black on white)."""
+    def lum(hex_: str) -> float:
+        c = QColor(hex_)
+        ch = [v / 255 for v in (c.red(), c.green(), c.blue())]
+        ch = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in ch]
+        return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    """`a` moved fraction `t` of the way to `b`."""
+    ca, cb = QColor(a), QColor(b)
+    return QColor(*(round(x + (y - x) * t) for x, y in (
+        (ca.red(), cb.red()), (ca.green(), cb.green()), (ca.blue(), cb.blue())))).name()
+
+
+def _add_live_tokens(t: dict[str, str], colour: str = "") -> None:
+    """The "it's on" highlight (voice changer on, live on air, the mic pill when it's
+    connected, a live tab's tint): the theme's own accent, not one green for every
+    theme. `live` / `live_hi` / `on_live` fill a switched-on button; `live_text` is
+    the same colour where it's drawn on the background (text, icons, a tab's wash),
+    moved towards the theme's text colour until it reads there (Flashbang's yellow
+    on white, Onion's purple on purple). A theme can set any of these itself.
+    `colour`: one the user picked instead (Settings → Appearance), whatever the theme."""
+    if colour:
+        t["live"], t["live_hi"] = colour, _mix(colour, "#ffffff", 0.18)
+        t["on_live"] = max(("#ffffff", "#111111"), key=lambda c: _contrast(c, colour))
+        t.pop("live_text", None)
+        t.pop("live_border", None)
+    t.setdefault("live", t["accent"])
+    t.setdefault("live_hi", t["accent_hi"])
+    t.setdefault("on_live", t["on_accent"])
+    if "live_text" not in t:
+        t["live_text"] = next(c for c in (_mix(t["live"], t["text_hi"], i / 10) for i in range(11))
+                              if _contrast(c, t["bg"]) >= 4.5 or c == t["text_hi"])
+    t.setdefault("live_border", _mix(t["live_text"], t["bg"], 0.45))
+
+
+for _t in THEMES.values():
+    _add_live_tokens(_t)
+
 DEFAULT = "Dark"
 # How the Settings window groups the theme cards. Every theme is in exactly one group.
 GROUPS: list[tuple[str, list[str]]] = [
@@ -346,6 +391,31 @@ FONT = "Segoe UI"   # a theme can swap it with a `font` token
 
 T: dict[str, str] = dict(THEMES[DEFAULT])   # current theme (read at paint time)
 current_name = DEFAULT
+live_override = ""   # the user's own highlight colour ("" = each theme's own)
+
+
+def valid_colour(colour: str) -> str:
+    """`colour` as "#rrggbb", or "" when it isn't one (a hand-edited or damaged setting)."""
+    if not isinstance(colour, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", colour.strip()):
+        return ""
+    return colour.strip().lower()
+
+
+def tokens(name: str | None = None) -> dict[str, str]:
+    """Theme `name`'s colours (default: the current one), with the user's own highlight
+    colour if they picked one."""
+    t = dict(THEMES.get(name or current_name, THEMES[DEFAULT]))
+    if live_override:
+        _add_live_tokens(t, live_override)
+    return t
+
+
+def set_live(colour: str) -> str:
+    """Use `colour` for the live highlight in every theme ("" = back to each theme's
+    own). Takes effect on the next apply(). Returns what was kept."""
+    global live_override
+    live_override = valid_colour(colour)
+    return live_override
 
 
 def status(kind: str) -> str:
@@ -366,9 +436,9 @@ def set_tone(label, kind: str = "") -> None:
 def set_current(name: str) -> str:
     global current_name
     name = name if name in THEMES else DEFAULT
-    T.clear()
-    T.update(THEMES[name])
     current_name = name
+    T.clear()
+    T.update(tokens(name))
     return name
 
 
@@ -423,11 +493,11 @@ QFrame#chip QPushButton#chipstop { border-radius:12px; padding:0; }
 QFrame#chip QPushButton#chipstop:hover { background:$danger_bg; }
 QLabel#iconlabel { background:transparent; }
 QPushButton#pill { border-radius:15px; padding:5px 14px; font-weight:600; }
-QPushButton#pill[state="ok"] { color:$ok_text; border:1px solid $ok_border; }
+QPushButton#pill[state="ok"] { color:$live_text; border:1px solid $live_border; }
 QPushButton#onair { border-radius:15px; padding:5px 14px; font-weight:700;
     background:$danger_bg; border:1px solid $danger_border; color:$danger_text; }
-QPushButton#onair:checked { background:#13a35a; border:1px solid #13ce66; color:white; }
-QPushButton#onair:checked:hover { background:#16b865; }
+QPushButton#onair:checked { background:$live; border:1px solid $live_hi; color:$on_live; }
+QPushButton#onair:checked:hover { background:$live_hi; }
 QWidget#decktop { background:transparent; }
 QLabel#decktitle { color:$section; font-size:8pt; font-weight:700; letter-spacing:1px; }
 QPushButton#pill[state="warn"] { background:$warn_bg; color:$warn_text; border:1px solid $warn_text; }
@@ -568,6 +638,13 @@ QFrame#card[roomy="true"] QPushButton#primary { padding:10px 16px; }
 QFrame#card[roomy="true"] QPushButton#voicetile { padding:7px 12px; text-align:left; }
 QFrame#card[roomy="true"] QPushButton#fold { padding:8px 10px; text-align:left; }
 QFrame#card[roomy="true"] QComboBox { padding:9px 12px; }
+QSlider#hue::groove:horizontal { height:12px; border-radius:6px; border:1px solid $border;
+    background:qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff0000, stop:0.167 #ffff00,
+        stop:0.333 #00ff00, stop:0.5 #00ffff, stop:0.667 #0000ff, stop:0.833 #ff00ff,
+        stop:1 #ff0000); }
+QSlider#hue::sub-page:horizontal, QSlider#hue::sub-page:horizontal:disabled { background:transparent; }
+QSlider#hue::handle:horizontal { width:16px; height:16px; margin:-3px 0; border-radius:8px;
+    border:2px solid $text_hi; }
 QPlainTextEdit#speechlog { background:$bg; border:1px solid $border; border-radius:8px; padding:8px; }
 
 QFrame#fxcard { background:$card; border:1px solid $border; border-radius:12px; }
@@ -590,16 +667,17 @@ QPushButton#fold { background:transparent; border:none; color:$muted; padding:3p
 QPushButton#fold:hover, QPushButton#fold:checked { color:$text; background:transparent; }
 QFrame#card QPushButton#fold, QFrame#card QPushButton#fold:checked { background:transparent; }
 QPushButton#power { font-weight:700; }
-QPushButton#power:checked, QFrame#card QPushButton#power:checked { background:#13a35a; border:1px solid #13ce66; color:white; }
+QPushButton#power:checked, QFrame#card QPushButton#power:checked { background:$live; border:1px solid $live_hi; color:$on_live; }
+QPushButton#power:checked:hover, QFrame#card QPushButton#power:checked:hover { background:$live_hi; }
 QPushButton#live:checked { background:#e53935; border:1px solid #ff6b6b; color:white; }
 QPushButton#rec:checked { background:#e53935; border:1px solid #ff6b6b; color:white; font-weight:700; }
-QPushButton#lite:checked { background:#13a35a; border:1px solid #13ce66; color:white; font-weight:700; }
 QFrame#setcard { background:$panel; border-radius:12px; }
 QFrame#setcard QWidget { background:transparent; }
 QFrame#setcard QPushButton { background:$btn; }
 QFrame#setcard QPushButton:hover { background:$btn_hover; border-color:$border_hi; }
 QFrame#setcard QPushButton:checked { background:$accent; color:$on_accent; }
 QFrame#setcard QPushButton#primary { background:$accent; color:$on_accent; border:none; }
+QFrame#setcard QPushButton#power:checked { background:$live; border:1px solid $live_hi; color:$on_live; }
 QFrame#setcard QPushButton#primary:hover { background:$accent_hi; }
 QTableView, QFrame#setcard QTableView { background:$card; alternate-background-color:$card_hi;
     color:$text; border:1px solid $border; border-radius:6px;
@@ -635,6 +713,23 @@ QFrame#card QComboBox QAbstractItemView, QFrame#setcard QComboBox QAbstractItemV
 QFrame#card QComboBoxPrivateContainer, QFrame#setcard QComboBoxPrivateContainer,
 QFrame#card QMenu, QFrame#setcard QMenu { background:$card; }
 """)
+
+
+# The widgets drawn in the live colour (by objectName): a colour change restyles just
+# these (apply_live), not the whole app, which takes seconds on a full board.
+LIVE_NAMES = ("power", "onair", "pill")
+LIVE_STYLE = Template("""
+QPushButton#power:checked, QPushButton#onair:checked {
+    background:$live; border:1px solid $live_hi; color:$on_live; }
+QPushButton#power:checked:hover, QPushButton#onair:checked:hover { background:$live_hi; }
+QPushButton#pill[state="ok"] { color:$live_text; border:1px solid $live_border; }
+""")
+
+
+def live_sheet() -> str:
+    """The live rules in the current colours, as a widget's own stylesheet (it wins
+    over the app's, so it also beats the cards' generic `:checked` rules)."""
+    return LIVE_STYLE.substitute(T)
 
 
 def _check_image(colour: str, size: int) -> QImage:
@@ -818,25 +913,25 @@ def is_light(name: str | None = None) -> bool:
 
 
 def stylesheet(name: str | None = None) -> str:
-    tokens = dict(THEMES.get(name or current_name, THEMES[DEFAULT]))
-    tokens.setdefault("font", FONT)
-    tokens["check"] = _check_url(tokens["on_accent"])
-    tokens["check_off"] = _check_url(tokens["muted"])   # ticked but greyed out: on $inset
-    tokens["radio"] = _radio_url(tokens["off"], tokens["card"])
-    tokens["radio_hover"] = _radio_url(tokens["border_hi"], tokens["card"])
-    tokens["radio_on"] = _radio_url(tokens["accent"], tokens["accent"], tokens["on_accent"])
-    tokens["radio_on_hover"] = _radio_url(tokens["accent_hi"], tokens["accent_hi"], tokens["on_accent"])
-    tokens["radio_off"] = _radio_url(tokens["border"], tokens["inset"])
-    tokens["radio_on_off"] = _radio_url(tokens["border"], tokens["inset"], tokens["muted"])
-    for key, colour in (("", tokens["muted"]), ("_off", tokens["off"])):
-        tokens["down" + key] = _chevron_url(colour, 10, up=False)
-        tokens["up" + key] = _chevron_url(colour, 10, up=True)
-        tokens["down_small" + key] = _chevron_url(colour, 8, up=False)
-        tokens["up_small" + key] = _chevron_url(colour, 8, up=True)
-        tokens["left" + key] = _chevron_url(colour, 10, False, side="left")
-        tokens["right" + key] = _chevron_url(colour, 10, False, side="right")
-    css = STYLE.substitute(tokens)
-    if tokens.get("texture") and (url := _texture_url(tokens["texture"], tokens["panel"])):
+    tk = tokens(name)
+    tk.setdefault("font", FONT)
+    tk["check"] = _check_url(tk["on_accent"])
+    tk["check_off"] = _check_url(tk["muted"])   # ticked but greyed out: on $inset
+    tk["radio"] = _radio_url(tk["off"], tk["card"])
+    tk["radio_hover"] = _radio_url(tk["border_hi"], tk["card"])
+    tk["radio_on"] = _radio_url(tk["accent"], tk["accent"], tk["on_accent"])
+    tk["radio_on_hover"] = _radio_url(tk["accent_hi"], tk["accent_hi"], tk["on_accent"])
+    tk["radio_off"] = _radio_url(tk["border"], tk["inset"])
+    tk["radio_on_off"] = _radio_url(tk["border"], tk["inset"], tk["muted"])
+    for key, colour in (("", tk["muted"]), ("_off", tk["off"])):
+        tk["down" + key] = _chevron_url(colour, 10, up=False)
+        tk["up" + key] = _chevron_url(colour, 10, up=True)
+        tk["down_small" + key] = _chevron_url(colour, 8, up=False)
+        tk["up_small" + key] = _chevron_url(colour, 8, up=True)
+        tk["left" + key] = _chevron_url(colour, 10, False, side="left")
+        tk["right" + key] = _chevron_url(colour, 10, False, side="right")
+    css = STYLE.substitute(tk)
+    if tk.get("texture") and (url := _texture_url(tk["texture"], tk["panel"])):
         css += ("QFrame#card, QFrame#transport, QFrame#deck, QFrame#setcard "
                 f'{{ background-image:url("{url}"); }}\n')
     return css
@@ -845,7 +940,7 @@ def stylesheet(name: str | None = None) -> str:
 # Text colours code writes straight into a label's rich text or a widget's own stylesheet
 # (status(), T["faint"]...): a live theme switch swaps the old theme's for the new one's.
 _INLINE_KEYS = ("ok_text", "warn_text", "error_text", "danger_text", "text", "text_hi",
-                "muted", "faint", "section", "accent", "accent_hi")
+                "muted", "faint", "section", "accent", "accent_hi", "live_text")
 _TEXT_COLOUR = re.compile(r"(?<![-\w])(color:\s*)(#[0-9a-fA-F]{6})(?![0-9a-fA-F])")
 
 
@@ -884,16 +979,42 @@ def _recolour_inline(widgets, old: dict[str, str]) -> None:
             pass
 
 
-def apply(app, name: str) -> str:
-    """Switch the whole app to theme `name` (live)."""
+def apply(app, name: str, live: str | None = None) -> str:
+    """Switch the whole app to theme `name` (live). `live`: the user's own highlight
+    colour ("" = the theme's), None = keep the one set already."""
     old = dict(T)
+    if live is not None:
+        set_live(live)
     name = set_current(name)
     app.setStyleSheet(stylesheet(name))
     widgets = app.allWidgets()
     _recolour_inline(widgets, old)
+    sheet = live_sheet()
+    for w in widgets:   # restyled by apply_live: keep them in step with the new theme
+        if w.objectName() in LIVE_NAMES and w.styleSheet():
+            w.setStyleSheet(sheet)
     for w in widgets:   # hand-painted widgets read T in paintEvent
         w.update()
     return name
+
+
+def apply_live(app, colour: str) -> str:
+    """Switch only the live highlight to `colour` ("" = the theme's): restyles the
+    LIVE_NAMES widgets and repaints, a fraction of a second where apply() takes
+    seconds. Returns the colour kept ("" for the theme's, or for a bad one)."""
+    old = dict(T)
+    set_live(colour)
+    T.clear()
+    T.update(tokens())
+    sheet = live_sheet()
+    widgets = app.allWidgets()
+    for w in widgets:
+        if w.objectName() in LIVE_NAMES:
+            w.setStyleSheet(sheet)
+    _recolour_inline(widgets, old)
+    for w in widgets:   # hand-painted widgets (a live tab's wash) read T in paintEvent
+        w.update()
+    return live_override
 
 
 # --------------------------------------------------------------------------- logo

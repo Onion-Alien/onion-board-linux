@@ -173,6 +173,14 @@ def default_device_name(kind: str) -> str | None:
     return None
 
 
+def bluetooth_mic(name: str | None) -> bool:
+    """`name` is a Bluetooth headset's mic (bluez_input.… on PipeWire, bluez_source.…
+    on PulseAudio): opening it switches the headset to its call profile, as Windows'
+    "Hands-Free" mic does."""
+    return any(d.kind == "input" and d.name == name
+               and d.pulse.startswith(("bluez_input.", "bluez_source.")) for d in devices())
+
+
 def list_name(index: int) -> str:
     d = by_index(index)
     if d is not None:

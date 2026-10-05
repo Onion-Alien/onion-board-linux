@@ -17,6 +17,7 @@ from soundboard.ui.widgets import Meter
 class FakeCapture:
     made = []
     fail = False
+    slow = False   # Windows still opening it (start(wait=False) returned already)
 
     def __init__(self, pid, sink, include_tree=True, name=""):
         self.pid, self.sink, self.name = pid, sink, name
@@ -25,12 +26,16 @@ class FakeCapture:
         self.started = self.stopped = False
         FakeCapture.made.append(self)
 
-    def start(self, timeout=0):
+    def start(self, timeout=0, wait=True):
         if FakeCapture.fail:
             self.error = "Windows refused (fake)."
             return False
         self.started = True
         return True
+
+    @property
+    def ready(self):
+        return self.started and self.error is None and not FakeCapture.slow
 
     def stop(self):
         self.stopped = True
@@ -45,7 +50,7 @@ def tab(qapp, monkeypatch):
     monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
     monkeypatch.setattr(appaudio, "list_apps", lambda: [])
     FakeCapture.made = []
-    FakeCapture.fail = False
+    FakeCapture.fail = FakeCapture.slow = False
     cfg = Config()
     saved = []
     t = AppsTab(Engine(), cfg, lambda: saved.append(1), Meter)
@@ -87,7 +92,8 @@ def test_rows_follow_running_programs_and_send_captures_into_the_engine(tab):
     assert row.sending and row.capture is not None and row.capture.started
     assert row.capture.pid == 100
     assert [a.key for a in tab.engine.aux] == [("app", "music.exe")]
-    assert tab.cfg.apps == {"music.exe": {"vol": 1.0, "monitor": False}} and tab.saved
+    assert tab.cfg.apps == {"music.exe": {"vol": 1.0, "monitor": False,
+                                          "path": r"c:\programs\music.exe"}} and tab.saved
     src = row.src
     src.ring_main.prefill = 0
     tab.engine.main_stream = object()            # a cable output is open
@@ -98,7 +104,8 @@ def test_rows_follow_running_programs_and_send_captures_into_the_engine(tab):
     row.vol.spin.setValue(50)                    # its own volume, remembered
     row.chk_hear.setChecked(True)
     assert src.vol == 0.5 and src.monitor is True
-    assert tab.cfg.apps["music.exe"] == {"vol": 0.5, "monitor": True}
+    assert tab.cfg.apps["music.exe"] == {"vol": 0.5, "monitor": True,
+                                         "path": appspanel.path_key(music().path)}
 
     row.btn_send.setChecked(False)               # Send off: stopped and forgotten
     assert row.capture is None and tab.engine.aux == () and "music.exe" not in tab.cfg.apps
@@ -174,7 +181,7 @@ def test_a_capture_that_errors_says_so_and_stops_sending(tab):
 
 def test_remembered_programs_start_from_the_config_and_auto_send(qapp, monkeypatch):
     monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
-    FakeCapture.made, FakeCapture.fail = [], False
+    FakeCapture.made, FakeCapture.fail, FakeCapture.slow = [], False, False
     cfg = Config()
     cfg.apps = {"music.exe": {"vol": 0.8, "monitor": True}}
     t = AppsTab(Engine(), cfg, lambda: None, Meter)
@@ -224,6 +231,60 @@ def test_a_failed_capture_reports_and_is_not_remembered(tab):
     FakeCapture.fail = False
     row.btn_send.setChecked(True)                # trying again clears it
     assert row.sending and "refused" not in row.sub.text()
+
+
+def test_a_capture_opens_without_freezing_the_window_and_can_fail_later(tab):
+    FakeCapture.slow = True                      # Windows takes its time
+    tab._on_apps([music()])
+    row = tab.rows["music.exe"]
+    row.btn_send.setChecked(True)
+    assert row.sending and "Connecting" in row.sub.text()
+    assert "music.exe" not in tab.cfg.apps       # remembered once it's really up
+    FakeCapture.slow = False
+    tab._meters()
+    assert "Connecting" not in row.sub.text() and "music.exe" in tab.cfg.apps
+    row.btn_send.setChecked(False)
+    FakeCapture.slow = True
+    row.btn_send.setChecked(True)
+    row.capture.error = "Windows refused (fake, late)."
+    tab._meters()
+    assert not row.sending and row.capture is None and "late" in row.sub.text()
+    assert "music.exe" not in tab.cfg.apps and tab.engine.aux == ()
+    FakeCapture.slow = False
+
+
+def test_a_program_can_go_to_the_stream_only(qapp, monkeypatch):
+    """Music for the viewers but not the call: the choice shows once a stream output
+    is set, and is remembered with the program."""
+    monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
+    FakeCapture.made, FakeCapture.fail, FakeCapture.slow = [], False, False
+    cfg = Config()
+    e = Engine()
+    t = AppsTab(e, cfg, lambda: None, Meter)
+    try:
+        t._on_apps([music()])
+        row = t.rows["music.exe"]
+        assert row.cb_to.isHidden()                  # no stream output: nothing to pick
+        e.names["obs"] = "Stream (fake)"
+        t._on_apps([music()])
+        assert not row.cb_to.isHidden()
+        row.btn_send.setChecked(True)
+        assert row.src.live and row.src.stream       # both, by default
+        row.cb_to.setCurrentIndex(appspanel.TO_KEYS.index("stream"))
+        assert not row.src.live and row.src.stream
+        assert not e.aux_on_air()                    # the call doesn't hear it: no push-to-talk
+        assert cfg.apps["music.exe"]["to"] == "stream"
+    finally:
+        t.shutdown()
+    e.names["obs"] = None
+    t = AppsTab(e, cfg, lambda: None, Meter)
+    try:
+        row = t.rows["music.exe"]
+        assert row.to == "stream" and not row.cb_to.isHidden()   # set: stays in sight
+        t._on_apps([music()])
+        assert row.sending and not row.src.live and row.src.stream
+    finally:
+        t.shutdown()
 
 
 def test_shutdown_stops_every_capture(tab):
@@ -414,3 +475,91 @@ def test_cards_settle_instead_of_jumping(tab, qapp, monkeypatch):
             qapp.processEvents()
         assert Count.n == 0, f"cards still resizing at {width} px"
     tab.hide()
+
+
+# ---------------------------------------------------------------- same name, other folder
+
+def player(pid, folder, title=""):
+    return App(pid, "player.exe", rf"C:\{folder}\player.exe", title)
+
+
+def test_path_key_lower_cases_and_ignores_version_folders():
+    assert appspanel.path_key(r"C:\Apps\Discord\app-1.0.9156\Discord.exe") == \
+        r"c:\apps\discord\*\discord.exe"
+    assert appspanel.path_key("C:/Tools/24.1.3/x.exe") == r"c:\tools\*\x.exe"
+    assert appspanel.path_key(r"C:\Games\Doom 2\doom.exe") == r"c:\games\doom 2\doom.exe"
+    assert appspanel.is_path_key(appspanel.path_key(r"C:\a.exe"))
+    assert not appspanel.is_path_key("a.exe")
+
+
+def test_two_programs_of_one_name_get_a_card_each_and_are_sent_apart(tab):
+    tab._on_apps([player(100, "Music"), player(200, "Tools")])
+    music_key, tools_key = "player.exe", r"c:\tools\player.exe"
+    assert set(tab.rows) == {music_key, tools_key}
+    a, b = tab.rows[music_key], tab.rows[tools_key]
+    assert a.name.text() == "Player (music)" and b.name.text() == "Player (tools)"
+    b.btn_send.setChecked(True)                    # only the second one goes out
+    assert b.capture.pid == 200 and a.capture is None
+    assert [s.key for s in tab.engine.aux] == [("app", tools_key)]
+    assert tab.cfg.apps == {}                      # an older version sees nothing of it
+    assert tab.cfg.apps_paths == {tools_key: {"vol": 1.0, "monitor": False,
+                                              "exe": "player.exe"}}
+    a.btn_send.setChecked(True)
+    assert tab.cfg.apps["player.exe"]["path"] == r"c:\music\player.exe"
+    tab._on_apps([])                               # both close
+    tab._on_apps([player(301, "Tools"), player(302, "Music")])   # back, other order
+    assert a.capture.pid == 302 and b.capture.pid == 301 and a.sending and b.sending
+    assert a.vol is not b.vol
+
+
+def test_a_remembered_program_does_not_auto_send_another_one_of_its_name(tab):
+    tab.cfg.apps["player.exe"] = {"vol": 1.0, "monitor": False, "path": r"c:\music\player.exe"}
+    tab._on_apps([player(100, "Tools")])           # same name, another folder
+    assert set(tab.rows) == {r"c:\tools\player.exe"}
+    other = tab.rows[r"c:\tools\player.exe"]
+    assert not other.sending and other.capture is None
+
+
+def test_an_update_into_a_new_version_folder_is_still_the_same_program(tab):
+    old = r"C:\Apps\Chat\app-1.0.1\chat.exe"
+    tab._on_apps([App(100, "chat.exe", old)])
+    tab.rows["chat.exe"].btn_send.setChecked(True)
+    tab._on_apps([])
+    tab._on_apps([App(101, "chat.exe", old.replace("1.0.1", "1.0.2"))])
+    row = tab.rows["chat.exe"]
+    assert set(tab.rows) == {"chat.exe"} and row.sending and row.capture.pid == 101
+
+
+def test_a_program_remembered_by_name_only_takes_the_first_folder_seen(tab):
+    tab.cfg.apps["player.exe"] = {"vol": 0.5, "monitor": False}   # by an older version
+    tab._on_apps([player(100, "Music"), player(200, "Tools")])
+    row = tab.rows["player.exe"]
+    assert row.sending and row.capture.pid == 100
+    assert tab.cfg.apps["player.exe"]["path"] == r"c:\music\player.exe"
+    assert not tab.rows[r"c:\tools\player.exe"].sending
+
+
+def test_forgetting_and_bringing_back_a_second_program_of_a_name(tab, monkeypatch):
+    from soundboard import trash
+    put = []
+
+    def fake_put(exe, spec, name, hidden=False, path=""):
+        put.append(trash.Item("id1", trash.APP, name, 0.0,
+                              {"exe": exe, "spec": dict(spec), "hidden": hidden,
+                               **({"path": path} if path else {})}))
+        return put[-1]
+    monkeypatch.setattr(trash, "put_app", fake_put)
+    monkeypatch.setattr(trash, "items", lambda kind: put)
+    key = r"c:\tools\player.exe"
+    tab._on_apps([player(100, "Music"), player(200, "Tools")])
+    tab.rows[key].btn_send.setChecked(True)       # remembered, by its folder
+    tab._on_forget(tab.rows[key])
+    assert key not in tab.rows and key in tab.cfg.apps_hidden and not tab.cfg.apps_paths
+    assert put[-1].data["exe"] == "player.exe" and put[-1].data["path"] == key
+    tab._on_apps([player(100, "Music"), player(200, "Tools")])
+    assert key not in tab.rows and "player.exe" in tab.rows   # stays off the list
+    assert tab._unforget(put[-1])
+    assert key not in tab.cfg.apps_hidden and key in tab.cfg.apps_paths
+    assert "player.exe" not in tab.cfg.apps        # the other one is left as it was
+    tab._on_apps([player(100, "Music"), player(200, "Tools")])
+    assert tab.rows[key].sending and not tab.rows["player.exe"].sending

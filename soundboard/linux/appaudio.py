@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -73,17 +74,34 @@ def _ppid(pid: int) -> int:
         return 0
 
 
+# Linux names of the shared helpers the Windows version folds into the program that
+# started them (Steam's store and overlay, Qt WebEngine's renderer)
+HELPERS = {"steamwebhelper", "qtwebengineprocess"}
+_upstream = sys.modules["soundboard.appaudio"]   # this runs at its end
+_upstream.HELPER_EXES.update(HELPERS)
+_upstream_root_pid = _upstream.root_pid
+
+
+def _process_table(pids) -> dict[int, tuple[int, str]]:
+    """pid -> (parent pid, program name in lower case), as the Windows table, for
+    `pids` and their parents up the tree (all root_pid reads). init / systemd are
+    left out, so nothing is taken for a program they started."""
+    table: dict[int, tuple[int, str]] = {}
+    for pid in pids:
+        while pid > 1 and pid not in table:
+            name = os.path.basename(process_path(pid)).lower()
+            if not name or name == "systemd":
+                break
+            table[pid] = (_ppid(pid), name)
+            pid = table[pid][0]
+    return table
+
+
 def root_pid(pid: int, table=None) -> int:
     """The top of the process's tree of the same program (a browser's tab processes
-    -> the browser), as the Windows version groups them."""
-    exe = process_path(pid)
-    if not exe:
-        return pid
-    while True:
-        parent = _ppid(pid)
-        if parent <= 1 or process_path(parent) != exe:
-            return pid
-        pid = parent
+    -> the browser), a shared helper going to the program that started it: the
+    Windows version's rules, on a table of this system's processes."""
+    return _upstream_root_pid(pid, _process_table([pid]) if table is None else table)
 
 
 def _in_tree(pid: int, root: int) -> bool:
@@ -132,10 +150,11 @@ def list_apps() -> list:
     App = _a().App
     me = os.getpid()
     apps: dict[int, object] = {}
-    for n in stream_nodes():
-        if not n["pid"] or n["pid"] == me or _in_tree(n["pid"], me):
-            continue
-        root = root_pid(n["pid"])
+    nodes = [n for n in stream_nodes()
+             if n["pid"] and n["pid"] != me and not _in_tree(n["pid"], me)]
+    table = _process_table(n["pid"] for n in nodes)
+    for n in nodes:
+        root = root_pid(n["pid"], table)
         app = apps.get(root)
         if app is None:
             path = process_path(root)

@@ -2,13 +2,16 @@
 general options."""
 from __future__ import annotations
 
+import html
 import logging
 import threading
+import time
 
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QPainter, QPainterPath,
                            QPixmap)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox,
+                               QDialog, QFrame,
                                QGridLayout,
                                QHBoxLayout, QLabel, QLayout, QListWidget, QListWidgetItem,
                                QPushButton, QRadioButton, QScrollArea, QSlider, QTabWidget,
@@ -488,10 +491,10 @@ class SettingsDialog(QDialog):
                               "voice changer, the radio…) is marked, so nothing is left on "
                               "without you noticing.")
         row = QVBoxLayout()   # one under the other: side by side made the page too wide
-        green = QRadioButton("Tint the tab green")
-        green.setToolTip("A soft green background and a green icon, easy to spot from "
+        green = QRadioButton("Tint the tab")
+        green.setToolTip("A soft wash and a coloured icon in the theme's colour, easy to spot from "
                          "across the room")
-        dot = QRadioButton("A small green dot on its icon")
+        dot = QRadioButton("A small dot on its icon")
         dot.setToolTip("Quieter: only a dot on the tab's icon")
         modes = QButtonGroup(card)
         for b in (green, dot):
@@ -502,6 +505,7 @@ class SettingsDialog(QDialog):
         self.live_green, self.live_dot = green, dot
         cv.addLayout(row)
         v.addWidget(card)
+        v.addWidget(self._highlight_card())
         hints = {"Classic": "Changes the whole app instantly.",
                  "Meme": "For when you want your soundboard to be a bit."}
         for group, names in theme.GROUPS:
@@ -518,9 +522,114 @@ class SettingsDialog(QDialog):
         v.addStretch(1)
         return w
 
+    def _highlight_card(self) -> QFrame:
+        """Your own colour for what's on right now (the voice changer, Live, a live tab),
+        kept whatever the theme: for when you like a theme but not its colour."""
+        card, cv = self._card("Highlight colour",
+                              "What's switched on (the voice changer, Live, a live tab) is "
+                              "shown in the theme's colour. Slide to pick your own; it stays "
+                              "when you change theme.")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        swatch = QPushButton("On")   # a switched-on button, as it will look
+        swatch.setObjectName("power")
+        swatch.setCheckable(True)
+        swatch.setChecked(True)
+        swatch.setFocusPolicy(Qt.NoFocus)
+        swatch.setAttribute(Qt.WA_TransparentForMouseEvents)
+        swatch.setFixedWidth(64)
+        swatch.setAccessibleName("Highlight colour preview")
+        hue = QSlider(Qt.Horizontal)
+        hue.setObjectName("hue")
+        hue.setRange(0, 359)
+        hue.setAccessibleName("Highlight colour hue")
+        hue.setToolTip("Drag along the rainbow to pick the highlight colour")
+        no_wheel(hue)
+        row.addWidget(swatch)
+        row.addWidget(hue, 1)
+        cv.addLayout(row)
+        btns = QHBoxLayout()
+        more = QPushButton("More colours…")
+        more.setToolTip("Pick any colour, including how strong and how bright it is")
+        reset = QPushButton("Theme's colour")
+        reset.setToolTip("Go back to each theme's own highlight colour")
+        btns.addWidget(more)
+        btns.addWidget(reset)
+        btns.addStretch(1)
+        cv.addLayout(btns)
+        now = QLabel()
+        now.setObjectName("hint")
+        now.setWordWrap(True)
+        cv.addWidget(now)
+        self.hue_slider, self.hue_swatch, self.hue_reset, self.hue_now = hue, swatch, reset, now
+        # arrow keys / clicks on the strip come in bursts: apply once they stop
+        settle = QTimer(card, singleShot=True, interval=250)
+        self.hue_settle = settle
+
+        def own(h: int) -> str:
+            """Hue `h` at the strength / brightness of the current colour (a vivid one
+            when it's too grey for a hue to show)."""
+            c = QColor(theme.T["live"])
+            sat, val = c.hsvSaturationF(), c.valueF()
+            if sat < 0.35 or val < 0.45:
+                sat, val = 0.75, 0.95
+            return QColor.fromHsvF(h / 360, sat, val).name()
+
+        def preview(colour: str = ""):
+            """Show `colour` on the swatch only (while dragging); "" = what's applied."""
+            if colour:
+                on = max(("#ffffff", "#111111"), key=lambda c: theme._contrast(c, colour))
+                swatch.setStyleSheet(f"QPushButton#power:checked {{ background:{colour}; "
+                                     f"border:1px solid {colour}; color:{on}; }}")
+            else:
+                swatch.setStyleSheet(theme.live_sheet())
+
+        def sync():
+            hue.blockSignals(True)
+            h = QColor(theme.T["live"]).hsvHue()
+            hue.setValue(h if h >= 0 else 0)
+            hue.blockSignals(False)
+            now.setText("Now: your own colour, in every theme."
+                        if theme.live_override else
+                        f"Now: {theme.current_name}'s own colour.")
+            preview()
+
+        def use(colour: str, btn=None, done: str = "") -> bool:
+            settle.stop()
+            changed = self.mw.set_live_color(colour)
+            sync()
+            if btn is not None and done:
+                busy.flash(btn, done)
+            return changed
+
+        def moved(h: int):
+            preview(own(h))
+            if not hue.isSliderDown():
+                settle.start()
+        hue.valueChanged.connect(moved)
+        hue.sliderReleased.connect(lambda: use(own(hue.value())))
+        settle.timeout.connect(lambda: use(own(hue.value())))
+
+        def pick():
+            c = QColorDialog.getColor(QColor(theme.T["live"]), self, "Highlight colour")
+            if c.isValid():
+                use(c.name(), more, "✓ Changed")
+
+        def back():
+            if not theme.live_override:
+                busy.flash(reset, "✓ Already the theme's")
+            else:
+                use("", reset, "✓ Back to the theme's")
+        more.clicked.connect(pick)
+        reset.clicked.connect(back)
+        self._sync_highlight = sync
+        sync()
+        return card
+
     def _pick_theme(self, name: str):
         self.mw.apply_theme(name)
         self._category_icons()
+        self._sync_highlight()   # the theme's own colour, unless you picked one
         for c in self.theme_cards:
             c.setChecked(c.name == name)
             c.update()
@@ -2088,6 +2197,8 @@ class SettingsDialog(QDialog):
         for info, addon in getattr(self.mw, "remote_addons", []):
             card = self._addon_card(info, addon)
             if card is not None:
+                if info.id == pocketaddon.MODULE_ID:
+                    self._pocket_update(card, info)
                 out.append(card)
                 have.add(info.id)
         if pocketaddon.MODULE_ID not in have and pocketaddon.offered():
@@ -2104,6 +2215,101 @@ class SettingsDialog(QDialog):
             log.exception("add-on %s couldn't make its card", info.id)
             info.error = f"its settings failed: {errors.plain(e)}"
             return None
+
+    POCKET_CHECK_S = 3600   # how often Settings → Remote asks GitHub for a newer one
+
+    def _pocket_update(self, card, info):
+        """*Update Onion Pocket to X* on its card (soundboard.pocketaddon), once GitHub
+        says a newer one is out: asked on a thread when Settings → Remote opens, at most
+        once an hour (the answer is kept on the main window). Clicking it downloads the
+        new one, and the main window swaps it in for the running copy, settings and
+        all; then its new card takes this one's place. Optional and quiet: if anything
+        fails, the old copy keeps running and the button just says it didn't work."""
+        from soundboard import net, netlog, pocketaddon, updates
+        mw = self.mw
+        lay = card.layout()
+        if lay is None:
+            return
+
+        class Relay(QObject):
+            found = Signal(object)
+            done = Signal(object)
+
+        btn = QPushButton()
+        btn.setObjectName("primary")
+        btn.hide()
+        row = _button_row()
+        row.addWidget(btn)
+        lay.addLayout(row)
+        found = Relay(card)
+        state = {}
+
+        def show(offer):
+            if offer is None or not qt_valid(btn) or not updates.newer(offer.version,
+                                                                       info.version):
+                return
+            state["offer"] = offer
+            btn.setText(f"Update Onion Pocket to {offer.version}")
+            btn.setToolTip(f"You have {info.version}. Downloads it from GitHub and "
+                           "restarts Onion Pocket: paired phones stay paired.")
+            btn.show()
+
+        def checked(offer):
+            mw.pocket_offer = offer
+            show(offer)
+
+        def finish(new, relay):
+            relay.deleteLater()
+            addon = mw.load_remote_addon(new) if new is not None else None
+            if new is not None:
+                mw.pocket_offer = None      # installed: on disk now, whatever happens
+            if not qt_valid(btn):
+                return                      # Settings was closed: it's loaded anyway
+            if addon is None:
+                state["release"]("Couldn't update it right now")
+                if new is not None:
+                    btn.hide()
+                return
+            box = card.parentWidget().layout() if card.parentWidget() else None
+            fresh = self._addon_card(new, addon)
+            if fresh is not None and box is not None:
+                box.insertWidget(box.indexOf(card), fresh)
+                card.hide()
+                card.deleteLater()
+            else:
+                state["release"]()
+                btn.hide()
+            busy.toast(self, f"✓ Onion Pocket {html.escape(new.version)} is in.", "ok")
+
+        def run():
+            offer = state.get("offer")
+            if offer is None:
+                return
+            state["release"] = busy.hold(btn, "Updating Onion Pocket…")
+            netlog.cause(pocketaddon.FEATURE, "You clicked to update Onion Pocket "
+                                              "(Settings > Remote)")
+            relay = Relay(mw)   # the main window's: it's swapped in even if Settings closes
+            relay.done.connect(lambda new: finish(new, relay))
+            threading.Thread(target=lambda: relay.done.emit(pocketaddon.get(offer=offer)),
+                             daemon=True, name="onion-pocket-update").start()
+
+        btn.clicked.connect(run)
+        found.found.connect(checked)
+        self.pocket_update = btn
+        offer = getattr(mw, "pocket_offer", None)
+        if offer is not None:
+            show(offer)
+        elif (time.time() - getattr(mw, "pocket_checked", 0.0) >= self.POCKET_CHECK_S
+              and (pocketaddon.local_zip() is not None or net.allowed(pocketaddon.FEATURE))):
+            mw.pocket_checked = time.time()
+            netlog.cause(pocketaddon.FEATURE, "Settings > Remote: is a newer Onion Pocket out?")
+            def ask():
+                offer = pocketaddon.check_update(info)
+                try:
+                    found.found.emit(offer)
+                except RuntimeError:        # Settings was closed meanwhile
+                    pass
+            threading.Thread(target=ask, daemon=True, name="onion-pocket-check").start()
 
     def _get_pocket_card(self):
         """*Get Onion Pocket* (soundboard.pocketaddon): downloads, installs and starts

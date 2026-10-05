@@ -326,6 +326,29 @@ def test_aux_source_volume_on_air_and_removal():
     assert not out.any()
 
 
+def test_a_sent_program_gets_its_bass_level_back_like_a_sound():
+    """A mode's low cut takes a bass-heavy song's sub-bass: a pad is given that level
+    back, and a program sent from the Apps tab now is too."""
+    from soundboard import destination
+    e = engine_with("main")
+    e.dest = destination.BUILTIN_BY_KEY["discord"]
+    src = e.add_aux(("app", "music.exe"))
+    t = np.arange(SR * 3) / SR
+    song = (0.4 * np.sin(2 * np.pi * 45 * t) + 0.1 * np.sin(2 * np.pi * 1000 * t))
+    song = np.stack([song, song], 1).astype(np.float32)
+    for i in range(0, len(song), 480):
+        e.feed_aux(src, song[i:i + 480])
+    pad = destination.makeup(destination.cut_shares(song, SR)[e.dest.lowcut])
+    assert pad > 2.0                                       # mostly sub-bass: a big make-up
+    for _ in range(100):                                   # glides there, never steps
+        g = src.gain("main", e.dest.lowcut)
+    assert g == pytest.approx(pad, rel=0.05)
+    assert src.gain("main", 0) < g                         # no mode, no make-up
+    e.dest = None
+    out = np.zeros((480, 2), np.float32)
+    e._main(out, 480)                                      # and none is used without one
+
+
 # ---------------------------------------------------------------- audit fixes
 
 def test_cancelled_test_record_never_finishes():
@@ -442,6 +465,33 @@ def test_reopened_output_resumes_sounds_still_playing_on_the_other(monkeypatch):
     first = e._render("mon", 480)
     assert np.abs(first[:48]).max() < 0.1        # fades in, no click
     assert np.abs(e._render("mon", 480)).max() > 0.4
+
+
+def test_a_device_rescan_keeps_sounds_playing_where_they_were(monkeypatch):
+    """Plugging in headphones rescans the devices, which closes every stream at
+    once: the sounds used to end there."""
+    e = engine_with("main", "mon")
+    v = e.play("a", tone(2.0), 1.0)
+    done = e.play("b", tone(0.01), 1.0)
+    for _ in range(10):
+        e._render("main", 480)
+        e._render("mon", 480)
+    at = v.pos["main"]
+    assert done.finished
+    e.shutdown()                                 # the rescan: everything closed
+    assert v.finished
+    fake_devices(monkeypatch, rate=SR)
+    e.set_main_device("cable")
+    assert "main" not in v.done and v.pos["main"] == at
+    e.set_mon_device("headphones")
+    assert "mon" not in v.done and v.pos["mon"] == at
+    assert done.finished                         # what had ended stays ended
+    e._render("main", 480)
+    assert np.abs(e._render("main", 480)).max() > 0.4
+    e.shutdown()
+    fake_devices(monkeypatch, rate=44100)        # back at another rate: its data is
+    e.set_main_device("cable")                   # useless, so it stays done
+    assert "main" in v.done
 
 
 def test_reopened_output_at_another_rate_leaves_sounds_done(monkeypatch):
@@ -738,3 +788,75 @@ def test_hear_my_voice_alone_leaves_the_sounds_out_of_your_headphones():
 def test_device_delay_is_unknown_until_the_streams_are_open():
     e = Engine()
     assert e.device_delay() is None
+
+
+# ---------------------------------------------------------------- the mic
+
+def test_a_mic_live_on_one_channel_goes_out_on_both():
+    """An audio interface's input 1 (or a headset adapter) is live on the left only:
+    voice chat's mono mix used to halve it, and mic check was one-sided."""
+    e = engine_with("main")
+    e.ring_main.prefill = 0
+    t = np.arange(480) / SR
+    voice = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    block = np.zeros((480, 2), np.float32)
+    block[:, 0] = voice
+    raw = block.copy()
+    for _ in range(30):
+        e._mic(block)
+    assert np.array_equal(block, raw)            # PortAudio's own buffer is left alone
+    out = e.ring_main.read(480)
+    assert np.allclose(out[:, 0], out[:, 1]) and np.abs(out[:, 1]).max() > 0.25
+
+
+def test_a_real_stereo_mic_is_left_as_it_is():
+    e = engine_with("main")
+    e.ring_main.prefill = 0
+    t = np.arange(480) / SR
+    block = np.stack([0.3 * np.sin(2 * np.pi * 220 * t),
+                      0.1 * np.sin(2 * np.pi * 330 * t)], 1).astype(np.float32)
+    for _ in range(30):
+        e._mic(block)
+    assert e._mic_dead is None
+    out = e.ring_main.read(480)
+    assert not np.allclose(out[:, 0], out[:, 1])
+
+
+def test_stopping_mic_check_isnt_taken_for_clock_drift():
+    """Mic check off leaves the headphones' mic ring unfed; running it dry counted as a
+    glitch, and two switched drift tracking (slight stretching) on for no reason."""
+    e = engine_with("main", "mon")
+    block = np.full((480, 1), 0.1, np.float32)
+    out = np.zeros((480, 2), np.float32)
+    for _ in range(3):                           # mic check on, then off, twice
+        e.mic_check = True
+        for _ in range(5):
+            e._mic(block)
+            e._mon(out, 480)
+        e.mic_check = False
+        for _ in range(5):
+            e._mic(block)
+            e._mon(out, 480)
+    assert e.ring_mon.underruns == 0 and not e.ring_mon.track_drift
+
+
+def test_mic_check_hears_the_limiter_too():
+    e = engine_with("main", "mon", send_stage=True)
+    e.mic_check = True
+    e.ring_mon.prefill = 0
+    e.play("s", (tone(1.0) * 32767).astype(np.int16), 1.0)
+    out = np.zeros((480, 2), np.float32)
+    for _ in range(20):
+        e._mon(out, 480)
+    assert ("mon", "Limiter") in e._send
+
+
+def test_the_finished_test_recording_is_joined_off_the_audio_thread():
+    e = engine_with("main")
+    e.start_test_record(0.02)
+    out = np.zeros((480, 2), np.float32)
+    e._main(out, 480)
+    e._main(out, 480)
+    assert isinstance(e._rec_done[0], list)      # the callback only handed it over
+    data, rate = e.rec_done
+    assert data.shape == (960, 2) and rate == e.rates["main"]
