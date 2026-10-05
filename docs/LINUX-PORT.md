@@ -164,7 +164,14 @@ itself now. A third, from 1.6.8: `test_audit_net.py`'s
 `test_a_cut_update_download_says_why_in_plain_words` switched the connection 0.3 s
 after a timer started before the download, so on a slow runner (this repo's Windows
 CI, once) the switch came first, the download went direct and couldn't look up the
-proxy's own `slow.test`; the timer now starts once the download is open.
+proxy's own `slow.test`; the timer now starts once the download is open. A fifth,
+from 1.8.0: `test_clipeditor.py`'s fixture waited for the Apps tab's first look at
+the running programs by watching the lister's `_busy` flag, but the lister clears it
+just before it hands the result over. On a slow runner (this repo's Linux CI, three
+runs in a row, 2-4 different tests each time) that late "nothing running" arrived
+mid-test and stopped the clip editor's capture or dropped the card. The fixture now
+waits for the result itself and stops the tab's 1.5 s re-look (the tests say what's
+running); a 2 ms delay put between the two broke 7-11 of its 16 tests, 0 after.
 
 ## Checking on a real Linux desktop
 

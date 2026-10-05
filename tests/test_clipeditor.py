@@ -50,11 +50,17 @@ def tab(qapp, monkeypatch):
     t.clips = []
     t.running = running
     t.clip_ready.connect(lambda data, name: t.clips.append((data, name)))
+    looked = []
+    t.lister.ready.connect(looked.append)
     t.resize(900, 700)
     t.show()
-    for _ in range(200):   # its first look (nothing running) lands before the test's own
+    t.timer.stop()   # the tests hand it what's running (run()); no re-look mid-test
+    # its first look (nothing running) lands before the test's own. Waiting for _busy
+    # isn't enough: the lister clears it a moment before it hands the result over, and
+    # a late "nothing running" stops the test's capture (flaky on slow CI)
+    for _ in range(500):
         qapp.processEvents()
-        if not t.lister._busy:
+        if looked:
             break
         QTest.qWait(10)
     qapp.processEvents()
