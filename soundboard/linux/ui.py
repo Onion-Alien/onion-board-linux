@@ -20,7 +20,7 @@ import html
 import logging
 import sys
 
-from soundboard.linux import audio, vcable, x11
+from soundboard.linux import audio, portal, vcable, x11
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +29,29 @@ FAILED = ("Couldn't make the virtual cable: Onion Board needs PipeWire or PulseA
           "and their pactl tool (the pulseaudio-utils package). The log has the details.")
 
 
+def describe_action(win, action: str) -> str:
+    """A hotkey action as Settings words it ("Stop everything"), a sound as "Play
+    <its name>", a category's random pick as "Random from <category>"."""
+    from soundboard.settings import HOTKEY_ACTIONS
+    from soundboard.ui.mainwindow import RANDOM
+    for _attr, act, label, _desc in HOTKEY_ACTIONS:
+        if act == action:
+            return label
+    if action.startswith(RANDOM):
+        return f"Random from {action[len(RANDOM):]}"
+    for m in win.cfg.sounds:
+        if m.id == action:
+            return f"Play {m.name}"
+    return action
+
+
 def patch_main_window(cls):
     orig_init = cls.__init__
 
     def __init__(self, *a, **k):
+        # the desktop's "allow these shortcuts?" list (Wayland portal) in words; set
+        # first: the window registers its hotkeys while it's being built
+        portal.describe = lambda action, win=self: describe_action(win, action)
         orig_init(self, *a, **k)
         if getattr(self, "btn_install", None) is not None:
             self.btn_install.setText("Make the virtual cable")
