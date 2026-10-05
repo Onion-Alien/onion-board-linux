@@ -29,12 +29,13 @@ def window(qapp, app_dir, monkeypatch):
         t = np.arange(SR // 10) / SR
         sf.write(p, np.stack([np.sin(2 * np.pi * 440 * t)] * 2, 1) * 0.3, SR)
         sounds.append(SoundMeta(id=f"s{i}", name=name, file=str(p)))
-    Config(sounds=sounds).save()
+    Config(sounds=sounds, mic_first=True).save()   # (on the cable)
     w = main.MainWindow()
     # the loader thread writes the cache and prunes orphans: it must finish while the
     # temp paths are still patched in, never after the fixture is torn down
     w._load_thread.join(15)
     assert not w._load_thread.is_alive()
+    w.load_triggers()   # now, not on its timer in the middle of a test
     yield w
     w.close()
     w._load_thread.join(15)   # a test may have started another load (e.g. Undo) just now

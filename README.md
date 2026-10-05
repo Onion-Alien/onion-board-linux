@@ -12,18 +12,18 @@ Or send it to your stream, or keep it to your own headphones.
 (64-bit PC, any distribution from Ubuntu 22.04 on; see [On Linux](#on-linux))
 
 <!-- release -->
-Version **1.8.0** · Windows 10 / 11 · free, no account, no ads, no tracking ·
-[VirusTotal: 68 of 68 clean](https://www.virustotal.com/gui/file/3fdbbb28e226d326210edd0ac5769d763ae31fd7637dac68b06df852e836be1c) ·
+Version **1.9.1** · Windows 10 / 11 · free, no account, no ads, anonymous usage count you can switch off ·
+[VirusTotal: 66 of 66 clean](https://www.virustotal.com/gui/file/0b2f1eaf0347d802163c05bae3a5e8d535bc90901dea03bb92f584009d95b439) ·
 [what's new](CHANGELOG.md)
 <!-- /release -->
 
-![Onion Board's sound pads](docs/screenshots/sounds.png?v=98627e2c)
+![Onion Board's sound pads](docs/screenshots/sounds.png?v=5ee6a92c)
 
 | | |
 |---|---|
-| ![Voice changer and text-to-speech](docs/screenshots/voice.png?v=96465201) | ![Screen triggers](docs/screenshots/triggers.png?v=7a4f009b) |
+| ![Voice changer and text-to-speech](docs/screenshots/voice.png?v=cfedced0) | ![Screen triggers](docs/screenshots/triggers.png?v=c9243921) |
 | **Voice**: change your voice live, or type and a computer voice says it | **Triggers**: a sound the moment "YOU DIED" shows up in your game |
-| ![Send a program's sound](docs/screenshots/apps.png?v=c3da8321) | ![Setup at a glance](docs/screenshots/setup.png?v=17983aac) |
+| ![Send a program's sound](docs/screenshots/apps.png?v=65ad7857) | ![Setup at a glance](docs/screenshots/setup.png?v=97216a35) |
 | **Apps**: send one program's sound (music, a video) to your friends | **Setup**: one look tells you whether others can hear you |
 
 ## What it does

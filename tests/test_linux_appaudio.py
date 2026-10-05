@@ -126,3 +126,47 @@ def test_a_program_thats_gone_says_so_even_without_pipewire(monkeypatch):
     monkeypatch.setattr(la, "is_running", lambda pid: True)
     cap = appaudio.AppCapture(4_000_000_000 - 1, lambda x: None, name="nobody")
     assert cap.start() is False and "PipeWire" in cap.error
+
+
+def test_running_names_every_process_so_a_quiet_program_isnt_closed():
+    """1.9's Apps tab keeps a quiet program's row when its process still runs
+    (appaudio.running(); upstream's is {} off Windows: every quiet one looked closed)."""
+    from soundboard import appaudio
+    alive = appaudio.running()
+    assert alive.get(os.getpid()) == os.path.basename(os.path.realpath(sys.executable)).lower()
+    assert 9001000 not in alive
+
+
+def test_stop_without_waiting_returns_at_once_and_feeds_nothing_more(monkeypatch):
+    """start(wait=False) / stop(wait=False) (upstream 1.9, so a slow capture can't
+    freeze the window): stop returns while the thread is still busy, and the old thread
+    hands nothing to the sink after it."""
+    import threading
+
+    from soundboard.linux import appaudio as la
+    opening, let_go = threading.Event(), threading.Event()
+
+    class Reader:
+        alive = True
+
+        def take(self, n):
+            return np.zeros((n, 2), np.float32)
+
+        def stop(self):
+            pass
+
+    def slow_sync(self):   # "pw-record taking its time to start"
+        opening.set()
+        let_go.wait(5)
+        self._readers = {"1": Reader()}
+    monkeypatch.setattr(la.AppCapture, "_sync", slow_sync)
+    monkeypatch.setattr(la, "is_running", lambda pid: True)
+    monkeypatch.setattr(la, "supported", lambda: (True, ""))
+    got = []
+    cap = la.AppCapture(4242, got.append, name="slow")
+    assert cap.start(wait=False) and opening.wait(2) and not cap.ready
+    cap.stop(wait=False)
+    assert cap._thread.is_alive()          # returned while the thread still waits
+    let_go.set()
+    cap.join(2)
+    assert not cap._thread.is_alive() and got == [] and cap.frames == 0

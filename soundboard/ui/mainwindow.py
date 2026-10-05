@@ -30,7 +30,7 @@ from soundboard.engine import SR, Engine
 from soundboard.engine import is_virtual as is_virtual_cable
 from soundboard import (appaudio, autostart, backup, destination, library, midi, remote,
                         otherboards, soundfx, thumbs, trash, updates, videos, voicesdk)
-from soundboard import net, netlog, quality, shellicon, tor, watchaddon
+from soundboard import directmic, net, netlog, profiles, quality, shellicon, tor, usage, watchaddon
 from soundboard.replay import InstantReplay
 from soundboard.library import (AUDIO_EXTS, PAD_COLORS, RESOURCE_DIR, Config, SoundMeta,
                                 cache_keep, clean_tags, duplicate, fingerprint,
@@ -91,6 +91,9 @@ CHIPS_ROW_H = 30      # the now-playing row: a chip's 24 px ■ button, its marg
 TICK_MS = 33         # the UI timer while the window is on screen (meters, visualisers)
 TICK_BG_MS = 100     # ...while it's on screen but another program is in front (a game)
 TICK_IDLE_MS = 250   # ...and while it's in the tray or minimised (push-to-talk, watchdog)
+TICK_QUIET_MS = 100  # on screen with nothing moving: no sound, radio, recording or level
+LEVEL_QUIET = 0.003  # a level below this (-50 dB) shows as nothing on the meters
+TRIGGERS_LOAD_MS = 50   # Onion Watch loads this long after the window is built
 GLOW_STEPS = 4       # how many glow levels the taskbar / tray icon has while sound plays
 ICON_GLOW_MS = 120   # ...and how often at most it changes
 ICON_GLOW_BG_MS = 400   # ...while another program (a game) is in front
@@ -108,12 +111,15 @@ LOOSE_EMPTY_LOOKS = 20   # an empty file that long (~30 s) waits for the folder 
 MINI_SIZE = QSize(440, 380)   # below this the window becomes the mini player...
 MINI_PAD_ROWS = 1             # ...which has the pads above it when this many rows fit
 QUEUE_CHIPS = 5          # queued sounds shown by name above the pads (then "+n more")
+SEARCH_WAIT_MS = 100     # typing in the search box filters the pads once it pauses this long
+PAD_SIZE_WAIT_MS = 50    # dragging Pad size re-lays the pads at most this often
 RANDOM = "__random__:"   # hotkey action prefix: a random sound from the category after it
 ALL = "All"          # the category tab that shows every sound
 VOICE_POLL_MS = 3000  # how often the game in front is looked at (soundboard.voicesdk)
 VOICE_POLL_IDLE_S = 15   # ...while nobody sees the hint and nothing switches by itself
 # Setup -> Devices -> Send to others through (Config.route, library.ROUTES)
-ROUTE_CHOICES = (("The virtual cable (Discord, games)", "cable"),
+ROUTE_CHOICES = (("Straight into my mic (no cable)", "mic"),
+                 ("The virtual cable (Discord, games)", "cable"),
                  ("Another device (Voicemeeter, OBS, a mixer…)", "device"),
                  ("Nowhere: only me (and the stream output)", "off"))
 
@@ -172,6 +178,7 @@ class Bridge(QObject):
     update_progress = Signal(int)              # percent of the new version downloaded
     update_ready = Signal(object, str)         # its installer's Path|None, error
     watch_update = Signal(object)              # a newer Onion Watch: watchaddon.Offer
+    counted = Signal()                         # the daily usage count was sent (usage.py)
     imported = Signal(object, object, str)     # meta|None, data|None, error/filename
     preview = Signal(str, object, float, int)  # id, audio with unsaved effects|None, gain, gen
 
@@ -190,8 +197,10 @@ def _listed(name: str, names) -> bool:
 
 class MainWindow(QMainWindow):
     update_done = Signal(object, str)   # an update check finished: Release|None, error
+    mic_attached = Signal(str, str)     # attach_mic finished: the mic, error ("" = done)
     config_saved = Signal(bool)         # the background save finished: ok
     voice_engine = Signal(object)       # the voice engine of the game in front (a mode key|None)
+    default_found = Signal(object)      # Windows' default output, asked on a thread (str|None)
 
     def __init__(self):
         super().__init__()
@@ -235,6 +244,7 @@ class MainWindow(QMainWindow):
         self.bridge.update_progress.connect(self._on_update_progress)
         self.bridge.update_ready.connect(self._on_update_ready)
         self.bridge.watch_update.connect(lambda offer: self.triggers.offer_update(offer))
+        self.bridge.counted.connect(self._save_later)   # stats_sent
         self._removed: list[tuple[SoundMeta, int, np.ndarray | None]] = []   # undo-able
         self._render_gen: dict[str, int] = {}   # sid -> newest effects render (_rerender)
         self.shuffle = ShuffleBag()       # the random-sound hotkeys
@@ -271,6 +281,7 @@ class MainWindow(QMainWindow):
         self._seeking = False
         self._tick_n = 0                  # ticks since start (the watchdog runs ~once a second)
         self._ui_live = True              # the window is on screen (see _set_tick_rate)
+        self._tick_busy = True            # something moves with the tick (see _busy)
         self._sounds_live = False         # the Sounds tab's live dot is shown
         self._icon_step, self._icon_next = -1, 0.0   # the icons' glow step (_glow_icons)
         self._tray_step = -1              # ...and the tray icon's
@@ -324,7 +335,11 @@ class MainWindow(QMainWindow):
         # which voice chat the game you're playing uses: a hint by Who's listening
         self.voice_suggestion: str | None = None
         self.voice_why = ""   # why it's suggested, for the hint ("Discord is listening…")
+        self.voice_hints: list[profiles.Hint] = []   # everything seen, for the simple modes
+        self.mode_why = ""    # why the simple mode picked the shaping it uses
         self.listeners = voicesdk.Listeners() if sys.platform == "win32" else None
+        # who's still set to the cable while sounds go straight into the mic (_cable_tip)
+        self._cable_watch = voicesdk.Listeners() if sys.platform == "win32" else None
         self.voice_watch = voicesdk.Watcher() if sys.platform == "win32" else None
         self._voice_timer = QTimer(self)
         self._voice_timer.timeout.connect(self._voice_tick)
@@ -336,6 +351,8 @@ class MainWindow(QMainWindow):
         self._default_timer.timeout.connect(self._default_tick)
         self._default_timer.timeout.connect(self._recover_devices)
         self._default_at = 0.0   # when Windows' default was last looked at (_default_tick)
+        self._default_asking = False   # ...and a thread is asking it now
+        self.default_found.connect(self._on_default_found)
         self._recover_n, self._recover_at = 0, 0.0   # see _recover_devices
         self._gone_n = 0   # checks in a row that found the failing device unplugged
         if sys.platform == "win32":
@@ -468,7 +485,7 @@ class MainWindow(QMainWindow):
         self.apps.clip_ready.connect(self.on_clip)
         self.tabs.addTab(self.apps, "")
         # the Onion Watch add-on, or Hoot and its download button until it's installed
-        self.triggers = TriggersTab(BoardHost(self))
+        self.triggers = TriggersTab(BoardHost(self), defer=True)   # see load_triggers
         self.tabs.addTab(self.triggers, "")
         self.voice = VoicePanel(self.engine, self.cfg.voice_fx, self.cfg.speech)
         self.voice.fx_changed.connect(lambda spec: self.set_option("voice_fx", spec))
@@ -513,8 +530,7 @@ class MainWindow(QMainWindow):
         self.triggers.active_changed.connect(lambda on: set_tab_live(
             self.tabs, ti, on, "● ON: watching your screen", "triggers"))
         set_tab_live(self.tabs, ti, self.triggers.is_active(), icon="triggers")
-        if self.triggers.needs_nudge():
-            self._nudge_triggers(ti)
+        QTimer.singleShot(TRIGGERS_LOAD_MS, self, self.load_triggers)
         self._radio_live(self.radio.is_active())
         self._search_follow_switch()
         net.on_change(self._follow_switches)
@@ -724,8 +740,14 @@ class MainWindow(QMainWindow):
                                "TikTok, Myinstants…). Or paste a link (YouTube, SoundCloud, "
                                "TikTok, most media sites) to add or play it")
         self.search.setClearButtonEnabled(True)
-        # typing regrids only when the pads shown change (35 ms a key with 600 pads)
-        self.search.textChanged.connect(lambda t: self.apply_filter(t, lazy=True))
+        # typing regrids only when the pads shown change (35 ms a key with 600 pads),
+        # and only once it pauses (_on_search_text); text set by the app filters at once
+        self._search_wait = QTimer(self, singleShot=True, interval=SEARCH_WAIT_MS)
+        self._search_wait.timeout.connect(
+            lambda: self.apply_filter(self.search.text(), lazy=True))
+        self._search_typed = None
+        self.search.textEdited.connect(self._on_search_edited)
+        self.search.textChanged.connect(self._on_search_text)
         self.search.returnPressed.connect(self.on_search_enter)
         self.btn_yt = QPushButton("Search")
         self.btn_yt.setToolTip("Search YouTube, SoundCloud, TikTok sounds, Myinstants… for "
@@ -782,7 +804,11 @@ class MainWindow(QMainWindow):
         size.setValue(c.pad_width)
         size.setFixedWidth(90)
         size.setToolTip("Pad size")
-        size.valueChanged.connect(self.set_pad_width)
+        # a drag re-lays every pad at most every PAD_SIZE_WAIT_MS, not on each step
+        self._pad_size_wait = QTimer(self, singleShot=True, interval=PAD_SIZE_WAIT_MS)
+        self._pad_size_wait.timeout.connect(lambda: self.set_pad_width(size.value()))
+        size.valueChanged.connect(lambda _v: self._pad_size_wait.isActive()
+                                  or self._pad_size_wait.start())
         no_wheel(size)
         # Who's listening, one click away (the full picker is on the Setup tab)
         from soundboard.ui.destpanel import ModeCombo
@@ -1100,9 +1126,27 @@ class MainWindow(QMainWindow):
         cv.addWidget(self.step_lbl)
         self.btn_install = QPushButton("Install the free virtual cable")
         self.btn_install.setObjectName("primary")
-        self.btn_install.clicked.connect(self.install_cable)
+        self.btn_install.clicked.connect(
+            lambda: self.attach_mic() if self.cfg.route == "mic" else self.install_cable())
+        self.btn_attach = QPushButton("Straight into my mic instead (no cable)")
+        self.btn_attach.setToolTip("Onion Board puts your sounds into your real mic, so "
+                                   "Discord and games need no virtual cable and nothing "
+                                   "picked")
+        self.btn_attach.clicked.connect(self.attach_mic)
+        icons.set_icon(self.btn_attach, "mic")
+        self.btn_attach.hide()
+        cv.addWidget(self.btn_attach)
+        self.btn_usecable = QPushButton("Use the virtual cable instead")
+        self.btn_usecable.setToolTip("The other way to reach Discord and games: a free "
+                                     "virtual cable you pick as the mic there")
+        self.btn_usecable.clicked.connect(self.use_cable_instead)
+        icons.set_icon(self.btn_usecable, "cable")
+        self.btn_usecable.hide()
+        self.mic_attached.connect(self._mic_attached)
+        self._attaching = False
         icons.set_icon(self.btn_install, "cable", "on_accent")
         cv.addWidget(self.btn_install)
+        cv.addWidget(self.btn_usecable)   # (under the mic's own button: the second way)
         self.btn_rescan = QPushButton("I've installed it — check again")
         self.btn_rescan.clicked.connect(lambda: self.rescan_with_feedback(self.btn_rescan))
         icons.set_icon(self.btn_rescan, "reload")
@@ -1192,9 +1236,9 @@ class MainWindow(QMainWindow):
         lcol.addWidget(devcard)
 
         # ---- who's listening: shape the sounds for the voice chat on the other end
-        destcard, dv = card("WHO'S LISTENING", "Where people hear you. Your sounds are "
-                                               "shaped to come through that voice chat's "
-                                               "compression clearly.", roomy=True)
+        destcard, dv = card("WHO'S LISTENING", "Where people hear you: a game, a voice "
+                                               "chat app, or a stream. Your sounds are "
+                                               "shaped to come through clearly.", roomy=True)
         from soundboard.ui.destpanel import DestPanel
         self.dest_panel = DestPanel(self)
         dv.addWidget(self.dest_panel)
@@ -1338,6 +1382,7 @@ class MainWindow(QMainWindow):
         e.obs_vol, e.obs_voice = c.obs_vol, c.obs_voice
         e.set_mic_device(c.mic_device)
         e.set_main_device(self._main_name())
+        e.set_tap_device(self._tap_name())
         e.set_mon_device(c.mon_device)
         e.set_obs_device(self._obs_name(c.obs_device))
         self._check_cable_format()
@@ -1390,19 +1435,38 @@ class MainWindow(QMainWindow):
         """The timer's look at Windows' default output (a COM call): only while the
         headphones follow it, as nothing else uses the answer (picking a device by hand
         looks again), and every few seconds rather than constantly while the window is
-        in the tray or minimised."""
-        if not self.cfg.mon_follows_default:
+        in the tray or minimised. Asked on a thread (it took ~5 ms of the UI thread every
+        1.5 s); the answer comes back through default_found."""
+        if not self.cfg.mon_follows_default or self._default_asking:
             return
         now = time.monotonic()
         if not self._ui_live and now - self._default_at < DEFAULT_POLL_IDLE_S:
             return
         self._default_at = now
-        self._follow_default_output()
+        self._default_asking = True
+        threading.Thread(target=self._ask_default, daemon=True, name="default-output").start()
 
-    def _follow_default_output(self):
+    def _ask_default(self):
+        try:
+            name = appaudio.default_output_name()
+        except Exception:  # noqa: BLE001 - never let the poll's thread die loudly
+            log.debug("asking for Windows' default output failed", exc_info=True)
+            name = None
+        try:
+            self.default_found.emit(name)
+        except RuntimeError:   # the window is gone (quitting)
+            pass
+
+    def _on_default_found(self, name):
+        self._default_asking = False
+        if self.cfg.mon_follows_default:   # not picked by hand meanwhile
+            self._follow_default_output(name)
+
+    def _follow_default_output(self, *found: str | None):
         """Windows' default output changed (headphones → speakers): the headphones
-        output moves with it, unless another device was picked for it by hand."""
-        now = appaudio.default_output_name()
+        output moves with it, unless another device was picked for it by hand.
+        `found`: its name, already asked (on a thread); asked now if not given."""
+        now = found[0] if found else appaudio.default_output_name()
         if not now or now == self._default_out:
             return
         self._default_out = now
@@ -1488,6 +1552,8 @@ class MainWindow(QMainWindow):
             self.cfg.mon_follows_default = name is not None and name == self._default_output()
         elif attr == "mic_device":
             self.engine.set_mic_device(name)
+            if self.cfg.route == "mic" and directmic.status(name) == "other":
+                self.attach_mic()   # it follows you to the new mic
         self._apply_send_outputs(force_main=attr == "main_device")
         self._save_now()
         self._update_status()
@@ -1507,6 +1573,10 @@ class MainWindow(QMainWindow):
         c = self.cfg
         if route not in library.ROUTES or (route == c.route and device is None):
             self._show_route()
+            return
+        if route == "mic" and directmic.status(c.mic_device) != "ready":
+            self._show_route()   # not attached yet: the picker stays put until it is
+            self.attach_mic()
             return
         log.info("send to others through: %s -> %s (%s)", c.route, route,
                  device or c.main_device)
@@ -1530,9 +1600,9 @@ class MainWindow(QMainWindow):
         self.cb_route.setCurrentIndex(max(0, self.cb_route.findData(route)))
         self.main_row[1].setText(self.main_label())
         for w in self.main_row:
-            w.setVisible(route != "off")
-        self.how_title.setText("YOUR VIRTUAL MIC" if route == "cable"
-                               else "WHERE YOUR SOUNDS GO")
+            w.setVisible(route not in ("off", "mic"))
+        self.how_title.setText("YOUR VIRTUAL MIC" if route == "cable" else
+                               "YOUR MIC" if route == "mic" else "WHERE YOUR SOUNDS GO")
 
     def main_label(self) -> str:
         """What the "send into" device row is called for the current route."""
@@ -1542,9 +1612,24 @@ class MainWindow(QMainWindow):
         """The device that gets what others hear: none when sending nowhere, and
         never the headphones (you'd hear everything twice, your own voice included)."""
         c = self.cfg
+        if c.route == "mic":
+            if directmic.works(directmic.status()):
+                return directmic.DEVICE
+            # not on the mic yet (or Windows took it off): the cable meanwhile, so
+            # a voice app set to it still hears you
+            cable = self._cable_out()
+            return cable if cable != c.mon_device else None
         if c.route == "off" or not c.main_device or c.main_device == c.mon_device:
             return None
         return c.main_device
+
+    def _cable_out(self) -> str | None:
+        """The virtual cable's input (what plays into it): the one picked, else the
+        first one installed."""
+        c = self.cfg
+        if c.main_device and is_virtual_cable(c.main_device):
+            return c.main_device
+        return next(iter(eng.virtual_outputs()), None)
 
     def _apply_send_outputs(self, force_main: bool = False):
         """(Re)open what others hear and the stream output for the current devices and
@@ -1554,9 +1639,20 @@ class MainWindow(QMainWindow):
         if force_main or e.names["main"] != main:
             e.set_main_device(main)
             self._check_cable_format()
+        tap = self._tap_name()
+        if e.tap_name != tap:
+            e.set_tap_device(tap)
         obs = self._obs_name(self.cfg.obs_device)   # never the cable or headphones too
         if e.names["obs"] != obs:
             e.set_obs_device(obs)
+
+    def _tap_name(self) -> str | None:
+        """Straight into the mic: the cable gets the same (engine.CableTap), for a voice
+        app still set to it. None otherwise, or if the cable is the headphones."""
+        if self._main_name() != directmic.DEVICE:
+            return None
+        tap = self._cable_out()
+        return None if tap == self.cfg.mon_device else tap
 
     def _obs_name(self, name: str | None) -> str | None:
         """The stream output's device, unless it's what others hear (or another end of
@@ -1564,7 +1660,7 @@ class MainWindow(QMainWindow):
         headphones (you'd hear it twice). Sending nowhere frees the cable for it."""
         main = self._main_name()
         if (name in (None, main, self.cfg.mon_device)
-                or eng.same_cable(name, main)):
+                or eng.same_cable(name, main) or eng.same_cable(name, self._tap_name())):
             return None
         return name
 
@@ -1663,7 +1759,58 @@ class MainWindow(QMainWindow):
         route = self.cfg.route
         dev = self._main_name()
         any_cable = bool(eng.virtual_outputs())
-        if route == "off":
+        direct = directmic.status(self.cfg.mic_device) if route == "mic" else ""
+        warn = theme.status("warn")
+        if route == "mic" and self._attaching:
+            state = "missing"
+            out = "Into your mic  <b>setting up…</b>"
+            step = ("Click <b>Yes</b> when Windows asks for permission. Your PC's sound "
+                    "drops out for a second while Windows reloads it.")
+        elif route == "mic" and directmic.needs_repair(direct):
+            state = "missing"
+            out = f"Into your mic  <b style='color:{bad}'>✗ needs a quick repair</b>"
+            step = (f"<b style='color:{warn}'>One click:</b> Windows took Onion Board off "
+                    "your mic (a driver or Windows update does that). Windows asks for "
+                    "permission once, and your sounds are back in your mic."
+                    + self._meanwhile())
+        elif route == "mic" and not directmic.works(direct):
+            state = "missing"
+            out = (f"Into your mic  <b style='color:{warn}'>one click to go</b>"
+                   if direct == "missing" else
+                   f"Into your mic  <b style='color:{warn}'>set up on another mic</b>")
+            step = (f"<b style='color:{warn}'>One click:</b> put your sounds straight into "
+                    "your mic. Windows asks for permission once; after that Discord and "
+                    "games hear them through your normal mic, with nothing to set there."
+                    + self._meanwhile())
+        elif route == "mic" and e.main_stream is not None and self._direct_not_running():
+            state = "unrouted"
+            out = (f"Into your mic  <b style='color:{bad}'>✗ Windows isn't running "
+                   "Onion Board on it</b>")
+            step = ("Another app may have your mic to itself (an <b>exclusive mode</b> "
+                    "setting), or Windows hasn't loaded Onion Board on it. Repair it below, "
+                    "or send through the virtual cable instead.")
+        elif route == "mic" and e.main_stream is not None:
+            state = "ok"
+            name = html.escape(self.cfg.mic_device or "your mic")
+            apps = e.direct_apps()
+            out = (f"<b style='color:{ok}'>{name}</b> — your sounds are in it "
+                   f"<b style='color:{ok}'>✓</b>"
+                   + (f"  <b style='color:{ok}'>(live)</b>" if apps else "")
+                   + ("  <span>· also on the virtual cable</span>"
+                      if e.tap is not None else ""))
+            step = ("<b>Nothing to set.</b> Discord and games keep your normal mic, and "
+                    "your sounds are in it. If sounds get chopped up, switch off the "
+                    "voice app's noise suppression (Discord: <b>Input Profile → Studio</b>)."
+                    + (" A newer version of the mic part is ready: <b>Update</b> below "
+                       "(one Windows prompt) whenever suits you."
+                       if direct == "outdated" else ""))
+        elif route == "mic":
+            state = "unrouted"
+            out = f"Into your mic  <b style='color:{bad}'>✗ can't reach it</b>"
+            err = html.escape(e.errors_snapshot().get("main", ""))
+            step = ((f"{err}. " if err else "Something went wrong sending into your mic. ")
+                    + "Repair it below, or send through the virtual cable instead.")
+        elif route == "off":
             state = "off"
             out = "Sent to others  <b>nowhere (your choice)</b>"
             step = ("<b>Nothing goes out as a mic</b>, so Discord and games don't hear your "
@@ -1725,9 +1872,27 @@ class MainWindow(QMainWindow):
         self.flow_mic.setText(mic)
         self.flow_out.setText(out)
         self.step_lbl.setText(step)
-        self.btn_install.setVisible(state == "missing")
+        update = route == "mic" and state == "ok" and direct == "outdated"
+        self.btn_install.setVisible(state == "missing" or update
+                                    or (route == "mic" and state != "ok"))
+        self.btn_install.setEnabled(not self._attaching)
+        self.btn_install.setText(
+            "Install the free virtual cable" if route != "mic" else
+            "Update the mic part (one click)" if update else
+            "Put my sounds straight into my mic" if direct in ("missing", "other") else
+            "Repair (one click)")
+        icons.set_icon(self.btn_install, "mic" if route == "mic" else "cable", "on_accent")
+        # the mic is the main way: on the cable route the cable's button comes second
+        self._set_primary(self.btn_install, route == "mic" and not update)   # (optional)
+        self._set_primary(self.btn_attach, route == "cable")
+        self.btn_usecable.setVisible(route == "mic" and state != "ok" and not self._attaching)
+        if route == "mic":
+            self._direct_shown = self._direct_health()
         self._cable_follow_switch()
-        self.btn_rescan.setVisible(state == "missing")
+        self.btn_rescan.setVisible(state == "missing" and route != "mic")
+        self.btn_attach.setVisible(route == "cable" and not self._attaching)
+        if route == "mic":
+            self._cable_tip()
         mic_side = state == "ok" and bool(vm)   # Discord / the game picks a mic: help with it
         self.btn_nomic.setVisible(mic_side)
         self.btn_chat.setVisible(mic_side)
@@ -1739,6 +1904,15 @@ class MainWindow(QMainWindow):
         short = self._pill_short
         if state == "off":
             pill = "Only you" if short else "Not sending to others (only you hear sounds)"
+        elif state == "ok" and route == "mic":
+            pill = "Connected" if short else "In your mic — Discord / games hear your sounds"
+        elif route == "mic" and state != "missing":
+            pill = "Not working" if short else "Not reaching your mic — click to fix"
+        elif route == "mic" and directmic.needs_repair(direct):
+            pill = "Repair needed" if short else "One click needed — repair your mic"
+        elif route == "mic":
+            pill = ("One click" if short
+                    else "One click: put your sounds straight into your mic")
         elif state == "ok" and not vm:
             pill = "Connected" if short else f"Sending to:  {dev}"
         elif state == "ok":
@@ -1749,9 +1923,9 @@ class MainWindow(QMainWindow):
         elif route == "device":
             pill = ("Not connected" if short
                     else "Not sending — pick a device on the Setup tab")
-        else:
+        else:   # (the Setup tab offers straight into the mic first)
             pill = ("Not connected" if short
-                    else "Not connected to the virtual cable — click to fix")
+                    else "Not connected — click to fix")
         if self.pill.text() != pill:
             good = state in ("ok", "off")
             self.pill.setText(pill)
@@ -1761,6 +1935,120 @@ class MainWindow(QMainWindow):
             self.pill.setProperty("state", "ok" if good else "warn")
             self.pill.style().unpolish(self.pill)
             self.pill.style().polish(self.pill)
+
+    def attach_mic(self):
+        """Put the mic effect on the mic in use (Windows asks for admin once), then send
+        what others hear into it. The admin step waits, so it runs on a thread."""
+        if self._attaching:
+            return
+        mic = self.cfg.mic_device
+        if not mic:
+            self.toast("Pick your mic first (Setup tab → Devices).", "warn")
+            return
+        self._attaching = True
+        self._update_flow()
+        log.info("attaching the mic effect to %s", mic)
+        threading.Thread(target=lambda: self.mic_attached.emit(mic, directmic.install(mic) or ""),
+                         daemon=True, name="mic-attach").start()
+
+    def _mic_attached(self, mic: str, err: str):
+        self._attaching = False
+        directmic.forget_status()
+        if err:
+            log.warning("not put on the mic: %s", err)
+            # the route stays on the mic: until it's set up, the cable carries the
+            # sounds meanwhile (_main_name), and the one-click stays on offer
+            if self.cfg.route == "mic" and eng.virtual_outputs():
+                err += ("\n\nYour sounds go through the virtual cable meanwhile. Try again "
+                        "any time from the Setup tab.")
+            else:
+                err += "\n\nTry again any time from the Setup tab."
+            QMessageBox.warning(self, "Couldn't put Onion Board on your mic", err)
+        else:
+            log.info("on the mic now: %s", mic)
+            self.cfg.route = "cable"   # so set_route() applies "mic" in full
+            self.set_route("mic")
+            self.toast("Done — Discord and games hear your sounds through your mic now.")
+            if is_hands_free(mic):
+                self.toast("That's a Bluetooth headset's call mic: some of them skip "
+                           "Windows' sound effects. If nobody hears your sounds, use the "
+                           "headset's USB dongle or the virtual cable.", "warn")
+        self._show_route()
+        self._update_status()
+
+    def _meanwhile(self) -> str:
+        """While it isn't on the mic yet: do others still hear you through the cable?"""
+        e = self.engine
+        if e.main_stream is not None and e.names["main"] not in (None, directmic.DEVICE):
+            return (" Meanwhile your sounds still go through the virtual cable, so a "
+                    "voice app set to it still hears you.")
+        return ""
+
+    @staticmethod
+    def _set_primary(btn, on: bool):
+        name = "primary" if on else ""
+        if btn.objectName() != name:
+            btn.setObjectName(name)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _cable_tip(self):
+        """Once: straight into the mic works, and a voice app is still set to the
+        cable's far end. It still hears you (the cable gets the same), but its normal
+        mic is the simpler setting."""
+        c = self.cfg
+        watch = getattr(self, "_cable_watch", None)   # (not made yet while starting up)
+        if c.cable_tip_done or self.engine.tap is None or watch is None:
+            return
+        far = eng.virtual_mic_for(self.engine.tap_name)
+        apps = set(voicesdk.VOICE_APPS.values())
+        heard = [h for h in watch.poll(far) if h in apps]
+        if heard:
+            c.cable_tip_done = True
+            self._save_now()
+            self.toast(f"{heard[0][1]} still uses the virtual cable as its mic. It still "
+                       "hears you, but you can set its input back to your normal mic: "
+                       "your sounds are in it now.")
+
+    def use_cable_instead(self):
+        """Straight into my mic isn't working here: send through the virtual cable (set
+        it up first if it isn't installed)."""
+        if eng.virtual_outputs():
+            self.set_route("cable")
+            self.toast("Sending through the virtual cable — pick it as the mic in Discord "
+                       "and games (Setup tab).")
+        else:
+            self.cfg.route = "cable"
+            self._show_route()
+            self._update_status()
+            self.install_cable()
+
+    _direct_shown = None
+
+    def _direct_health(self):
+        """What the Setup tab shows about straight into my mic, to redraw it when that
+        changes (checked about once a second)."""
+        e = self.engine
+        h = (directmic.status(self.cfg.mic_device), e.main_stream is not None,
+             self._direct_not_running(), bool(e.direct_apps()))
+        return h
+
+    DIRECT_GRACE_S = 4.0   # the board's own mic open this long, and still no sign of it
+
+    def _direct_not_running(self) -> bool:
+        """Set up on the mic, the board's own mic stream open on it for a while, and the
+        effect still never ran: Windows isn't running it (exclusive mode, a driver that
+        skips effects, a failed load)."""
+        e = self.engine
+        if e.mic_stream is None or e.effect_alive():
+            self._direct_dead_since = None
+            return False
+        if directmic.endpoint_for(self.cfg.mic_device) not in directmic.installed_on():
+            return False
+        now = time.monotonic()
+        since = getattr(self, "_direct_dead_since", None) or now
+        self._direct_dead_since = since
+        return now - since > self.DIRECT_GRACE_S
 
     def install_cable(self):
         if not net.allowed("setup_downloads"):   # its download can't go through the app
@@ -1836,40 +2124,78 @@ class MainWindow(QMainWindow):
         d = self.cfg.dest if isinstance(self.cfg.dest, dict) else {}
         now = time.monotonic()
         if (not self._ui_live and not d.get("auto")
+                and not profiles.auto_picks(profiles.current(d))
                 and now - self._voice_at < VOICE_POLL_IDLE_S):
             return
         self._voice_at = now
         self._poll_voice()
 
+    def _heard_device(self):
+        """The recording device(s) whose listeners are the voice chat: the cable's far
+        end, or with straight into my mic, the mic itself (Discord and games record it)
+        and, if there's a cable, its far end too (a voice app still set to the cable)."""
+        if self.cfg.route == "mic":
+            if self.engine.direct_stream() is None:
+                return None
+            cables = [eng.virtual_mic_for(o) for o in eng.virtual_outputs()]
+            return tuple(dict.fromkeys(d for d in (self.cfg.mic_device, *cables) if d))
+        return eng.virtual_mic_for(self._main_name())
+
     def _poll_voice(self):
         """Which Who's listening mode suits: the program recording the cable's far end
-        (voicesdk.Listeners), else the voice engine of the game in front. Switches to it
-        when the picker's *Pick the mode by itself* is ticked."""
+        (voicesdk.Listeners), else the voice engine of the game in front. The simple
+        modes (soundboard.profiles) pick within their family from all of it; in
+        Advanced, *Pick the mode by itself* switches to the one suggested."""
         key = self.voice_watch.poll() if self.voice_watch is not None else None
         why = (f"The game you have open uses {voicesdk.NAMES.get(key, key)} for voice "
                "chat") if key else ""
         heard = ()
         if self.listeners is not None:
-            heard = self.listeners.poll(eng.virtual_mic_for(self._main_name()))
+            heard = self.listeners.poll(self._heard_device())
+        # for the simple modes, in order: voice chat apps on the cable, the game in
+        # front, games on the cable (a per-program list would go first)
+        apps = set(voicesdk.VOICE_APPS.values())
+        where = "your mic" if self.cfg.route == "mic" else "the virtual cable"
+        hints = [profiles.Hint(h[0], f"{h[1]} is listening to {where}",
+                               profiles.VOICE.key) for h in heard if h in apps]
+        if key:
+            hints.append(profiles.Hint(key, why, profiles.GAME.key))
+        hints += [profiles.Hint(h[0], f"{h[1]} is listening to {where}",
+                                profiles.GAME.key) for h in heard if h not in apps]
         if heard:   # the game in front, if it's one of them; else the first
             key, name = next((h for h in heard if h[0] == key), heard[0])
             why = f"{name} is listening to the virtual cable"
-        if key != self.voice_suggestion or why != self.voice_why:
-            self.voice_suggestion, self.voice_why = key, why
+        if (key != self.voice_suggestion or why != self.voice_why
+                or hints != self.voice_hints):
+            self.voice_suggestion, self.voice_why, self.voice_hints = key, why, hints
             self._auto_dest()
             self.voice_engine.emit(key)
 
     def _auto_dest(self):
-        """*Pick the mode by itself*: the suggested mode, as soon as it's suggested.
-        Nothing listening keeps the mode it has."""
+        """Game and Voice chat: the shaping that suits what's seen, as soon as it's
+        seen. Advanced with *Pick the mode by itself*: the suggested mode. Nothing seen
+        keeps the mode it has."""
         d = self.cfg.dest if isinstance(self.cfg.dest, dict) else {}
+        self.cfg.dest = d
+        p = profiles.current(d)
+        if profiles.auto_picks(p):
+            was = destination.resolve(d).key
+            key, self.mode_why = profiles.choose(p, self.voice_hints, was)
+            if key == was:
+                return
+            d["simple"], d["mode"] = p.key, key
+            mode = destination.apply(self.cfg, self.engine)
+            self._save_later()
+            log.info("who's listening: %s mode switched to %s (%s)", p.key, key,
+                     self.mode_why)
+            self.toast(f"{p.label} mode: shaping for {mode.label}. {self.mode_why}.")
+            return
         key = self.voice_suggestion
         if not d.get("auto") or key not in destination.BUILTIN_BY_KEY:
             return
         if destination.resolve(d).key == key:
             return
         d["mode"] = key
-        self.cfg.dest = d
         mode = destination.apply(self.cfg, self.engine)
         self._save_later()
         log.info("who's listening: switched to %s (%s)", key, self.voice_why)
@@ -2004,6 +2330,7 @@ class MainWindow(QMainWindow):
         self.show()
 
     def set_pad_width(self, w):
+        self._pad_size_wait.stop()
         self.cfg.pad_width = w
         self.grid.set_pad_width(w)
         self._save_later()
@@ -2277,6 +2604,7 @@ class MainWindow(QMainWindow):
             self.save_replay()
         elif action == "__pause__":
             self.engine.pause_all()
+            self._wake()
         elif action == "__random__":
             self.play_random()
         elif action.startswith(RANDOM):
@@ -2415,6 +2743,16 @@ class MainWindow(QMainWindow):
         self.apps.stop_all()
         self.triggers.cancel_pending()
 
+    def load_triggers(self):
+        """Put the Onion Watch add-on into the Triggers tab. It took 0.4-1 s on the UI
+        thread, so it waits until the window is up: a 0 ms timer would still run before
+        Windows' first paint message, a TRIGGERS_LOAD_MS one runs after it. Runs once."""
+        if not self.triggers.pending or self._shut_down:
+            return
+        self.triggers.load()
+        if self.triggers.needs_nudge():
+            self._nudge_triggers(self.tabs.indexOf(self.triggers))
+
     def _nudge_triggers(self, index: int):
         """Triggers were being watched before they moved into the Onion Watch add-on,
         which isn't installed: tint the tab and say so once, until the tab is opened."""
@@ -2458,6 +2796,7 @@ class MainWindow(QMainWindow):
         """Enter / the Search button: search the site the results header has
         picked (ytdl.SOURCES) for the search box's text (a pasted link is the
         link bar's instead)."""
+        self.flush_search()
         text = self.search.text()
         if ytdl.as_link(text) or not self.ytresults.available():
             return
@@ -2470,6 +2809,7 @@ class MainWindow(QMainWindow):
         self._cat_row.hide()
 
     def on_search_enter(self):
+        self.flush_search()   # a link pasted a moment ago: the link bar has it now
         if ytdl.as_link(self.search.text()):
             self.linkbar.add()
         else:
@@ -2529,6 +2869,7 @@ class MainWindow(QMainWindow):
                              mode="restart" if m.mode == "queue" else m.mode,
                              fade_in=m.fade_in, fade_out=m.fade_out,
                              only=("main", "obs") if m.only_them else None)
+        self._wake()
         if v is None and not self.engine.active_outputs():
             self.status.setText(f"<span style='color:{theme.status('warn')}'>"
                                 "No audio device is open — pick one "
@@ -2614,12 +2955,14 @@ class MainWindow(QMainWindow):
         st = self.engine.state(sid)
         if st:
             self.engine.set_paused(sid, not st[1])
+            self._wake()
             return
         m, data = self.meta(sid), self.audio.get(sid)
         if m and data is not None:
             frac = 0.0 if self.start_frac >= 0.995 else self.start_frac
             self.engine.play(sid, data, self.gain_for(m), loop=m.loop, mode="restart", start=frac,
                              fade_in=m.fade_in if frac == 0 else 0.0, fade_out=m.fade_out)
+            self._wake()
 
     def space_pad(self, sid: str):
         """Space on a pad: pause or resume it while it's playing (or paused), like a
@@ -2627,6 +2970,7 @@ class MainWindow(QMainWindow):
         if self.engine.state(sid):
             self.select(sid)
             self.engine.set_paused(sid, not self.engine.state(sid)[1])
+            self._wake()
         else:
             self.play(sid)
 
@@ -2751,9 +3095,27 @@ class MainWindow(QMainWindow):
         if query and " ".join(self.search.text().split()) == query:
             self.search.clear()
 
+    def _on_search_edited(self, text: str):
+        # typed: Qt sends this just before textChanged (the box's clear button sends
+        # it just after; that change has filtered at once, and the next one is unequal)
+        self._search_typed = text
+
+    def _on_search_text(self, text: str):
+        typed, self._search_typed = self._search_typed == text, None
+        if typed:
+            self._search_wait.start()   # each key restarts it: filter once typing pauses
+        else:
+            self.apply_filter(text, lazy=True)
+
+    def flush_search(self):
+        """Filter the pads for the search box now, if typing left that waiting."""
+        if self._search_wait.isActive():
+            self.apply_filter(self.search.text(), lazy=True)
+
     def apply_filter(self, text, lazy: bool = False):
         """Show the pads that match the search box (name or category) and are in the
         category picked above the pads. `lazy`: skip the regrid when no pad changed."""
+        self._search_wait.stop()   # this is the filter typing was waiting for
         self.linkbar.set_text(text)
         if getattr(self, "overlay", None) is not None:   # every sounds / category edit ends here
             self.overlay.sounds_changed()
@@ -4148,6 +4510,10 @@ class MainWindow(QMainWindow):
                     self.bridge.watch_update.emit(offer)
         threading.Thread(target=run, daemon=True, name="update-check").start()
 
+    def send_usage(self):
+        """The anonymous daily usage count, if it's due and switched on (usage.py)."""
+        usage.maybe_send(self.cfg, self.bridge.counted.emit)
+
     def _on_update(self, rel, err: str, asked: bool):
         self._save_later()   # update_checked
         busy = self._downloading or self._update_file is not None
@@ -4217,6 +4583,7 @@ class MainWindow(QMainWindow):
             return
         self._downloading = True
         netlog.cause(updates.FEATURE, f"You clicked to download Onion Board {rel.version}")
+        usage.maybe_send(self.cfg, event=usage.update_event(rel.version))
         self._set_update_pill("Downloading update…",
                               f"Downloading Onion Board {rel.version}", enabled=False)
         last = [-1]
@@ -4414,6 +4781,8 @@ class MainWindow(QMainWindow):
                 "Setup → Devices → Send to others through." if route == "off" else
                 "Pick the device to send to first (Setup tab → Devices → Send to)."
                 if route == "device" else
+                "Put Onion Board on your mic first (Setup tab → Put Onion Board on my "
+                "mic), or use the virtual cable." if route == "mic" else
                 "Set up the virtual cable first (Setup tab → Step-by-step guide), or pick "
                 "another device under Send to others through.")
             return
@@ -4421,7 +4790,9 @@ class MainWindow(QMainWindow):
         # what Discord / the game hears (not just our internal mix).
         self._stop_capture()
         self._cap, self._cap_rate = [], None
-        vm = eng.virtual_mic_for(self.cfg.main_device)
+        # straight into my mic: the mic itself, which carries exactly what others get
+        vm = (self.cfg.mic_device if self.cfg.route == "mic"
+              else eng.virtual_mic_for(self.cfg.main_device))
         self._cap_name = vm
         if vm:
             idx = eng.find_device("input", vm)
@@ -4505,11 +4876,32 @@ class MainWindow(QMainWindow):
             self._set_tick_rate()
 
     def _tick_pace(self) -> int:
+        if not self._ui_live and not self.overlay.is_open:
+            return TICK_IDLE_MS
+        if not self._tick_busy:   # nothing moves: 10 ticks a second instead of 30
+            return TICK_QUIET_MS
         if self.overlay.is_open:   # the in-game overlay shows what's playing, over the game
             return TICK_MS
-        if not self._ui_live:
-            return TICK_IDLE_MS
         return TICK_MS if appstate.active() else TICK_BG_MS
+
+    def _wake(self):
+        """A sound started or resumed: full pace now, not after a quiet tick (auto
+        push-to-talk presses its key from the tick)."""
+        if not self._tick_busy:
+            self._tick_busy = True
+            pace = self._tick_pace()
+            if self.timer.interval() != pace:
+                self.timer.start(pace)
+
+    def _busy(self, playing) -> bool:
+        """Something on screen moves with the tick: a sound playing (not paused), the
+        radio, the test recording, a meter or the mic level still showing."""
+        e = self.engine
+        return (any(not paused for _p, paused in playing.values())
+                or self.radio.is_active() or e.recording or e.rec_done is not None
+                or self._rec_playing or bool(self._queue) or bool(e.aux)
+                or max(e.level_play, e.level_main,
+                       e.level_mic if e.mic_stream is not None else 0.0) > LEVEL_QUIET)
 
     def _set_tick_rate(self, *_):
         live = self.isVisible() and not self.isMinimized()
@@ -4534,6 +4926,8 @@ class MainWindow(QMainWindow):
         if self._tick_n % max(1, 1000 // self.timer.interval()) == 0:   # about once a second
             if e.check_streams() or sum(e.xruns.values()) != self._xruns_shown:
                 self._update_status()
+            elif self.cfg.route == "mic" and self._direct_health() != self._direct_shown:
+                self._update_flow()
             self.voice.poll()
         playing = e.playing()
         if self._queue and not any(sid in self._meta for sid in playing):
@@ -4544,6 +4938,7 @@ class MainWindow(QMainWindow):
             self._sounds_live = live
             set_tab_live(self.tabs, self.tabs.indexOf(self.sounds_page), live,
                          "● ON: a sound is playing", "sounds")
+        self._tick_busy = self._busy(playing)
         pace = self._tick_pace()
         if self.timer.interval() != pace:
             self.timer.start(pace)

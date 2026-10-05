@@ -63,6 +63,8 @@ PHRASES: list[tuple[str, str]] = [
     ("Windows' audio system refused", "The sound server refused"),
     ("Windows denied access", "Access was denied"),
     ("Windows reported a problem.", "The system reported a problem."),
+    # the Discord check (ui/chatguide.py) listening to Discord through the Apps capture
+    ("Windows didn't answer in time.", "The sound server didn't answer in time."),
     # Settings → Remote's prompt for an AI helper (copied to the clipboard)
     ("a free Windows soundboard", "a free soundboard"),
     # custom voices (Piper's Linux release: linux/customvoices.py) and Tor's errors
@@ -77,10 +79,15 @@ PHRASES: list[tuple[str, str]] = [
      "Audio Input Capture → its Output end.",
      "A device of its own is ideal: pactl load-module module-null-sink sink_name=obs "
      "makes one (until you log out)."),
-    ("a free add-on that works like an invisible microphone.",
-     "an invisible microphone the app makes for you."),
     ("install the free virtual cable.", "make the virtual cable (one click, nothing to "
      "download)."),
+    # the setup guide's "Where do your sounds go?": straight into the mic isn't on
+    # Linux yet (linux/directmic.py), the cable is the way
+    ("Straight into <b>your mic</b>: one click, and Discord and games hear your sounds "
+     "through the mic they already use. Nothing to install from the internet, nothing to "
+     "pick in Discord. (Or use a free <b>virtual cable</b> instead.)",
+     "Into a <b>virtual cable</b>: an invisible microphone Onion Board makes for you, in "
+     "one click with nothing to download. Discord or your game then uses it as its mic."),
     # the tray isn't "by the clock" on every desktop
     ("The tray icon (by the clock) opens it again", "The tray icon opens it again"),
     ("right-click its icon by the clock → Exit", "right-click its tray icon → Exit Steam"),

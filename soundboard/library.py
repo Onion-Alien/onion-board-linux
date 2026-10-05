@@ -40,6 +40,9 @@ OLD_APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "Soundboard"
 SOUNDS_DIR = APP_DIR / "sounds"
 CACHE_DIR = APP_DIR / "cache"
 CACHE_GRACE_S = 600   # prune_cache leaves a new sound's cache this long (an import in flight)
+# cache files a delete was refused for (still mapped, see _unlink): not new imports, so
+# prune_cache retries them at once instead of after CACHE_GRACE_S
+_refused: set[Path] = set()
 THUMBS_DIR = APP_DIR / "thumbs"   # pad pictures (soundboard.thumbs)
 CONFIG_PATH = APP_DIR / "config.json"
 # privacy.json beside config.json: a copy of the Privacy & security settings: a version
@@ -131,7 +134,10 @@ TOR_BRIDGES = ("", "snowflake", "obfs4")   # soundboard.tor.BRIDGES
 #   device - any output picked by hand (Voicemeeter, a mixer, a second sound card, a
 #            device OBS captures): no cable needed, and none is picked in its place
 #   off    - nowhere: sounds play in your headphones (and the stream output) only
-ROUTES = ("cable", "device", "off")
+#   mic    - straight into your real mic (the mic effect, soundboard.directmic): Discord
+#            and games keep their normal mic, no cable. New users start with it
+#            (Config.first_start); the cable is the fallback.
+ROUTES = ("cable", "device", "off", "mic")
 # settings whose unknown value (a newer version's choice) clean_setting replaces with
 # a safe one: the value as it was is still written back (see _with_raw)
 NEWER_CHOICES = ("route", "net_mode", "tor_bridges")
@@ -260,7 +266,11 @@ class SoundMeta:
 @dataclass
 class Config:
     version: int = CONFIG_VERSION
-    route: str = "cable"      # where main_device's audio goes: ROUTES
+    route: str = "cable"      # where what others hear goes: ROUTES ("mic": see mic_first)
+    # straight into my mic became the main way in 1.9.1: settings on the cable were
+    # moved to it once (from_raw); after that a route picked by hand stays as picked
+    mic_first: bool = False
+    cable_tip_done: bool = False   # told once that a voice app is still on the cable
     main_device: str | None = None
     mon_device: str | None = None
     # the headphones are Windows' default output, and move with it when it changes
@@ -374,6 +384,11 @@ class Config:
     netlog_keep: bool = False
     # "Hide that I'm using Tor": "" (off), "snowflake" or "obfs4" bridges
     tor_bridges: str = ""
+    # the anonymous usage count (soundboard.usage; its switch is "usage_stats" in
+    # net_off): this PC's random ID, made on the first send, and when the last daily
+    # one went. A config without stats_id is from before the count existed.
+    stats_id: str = ""
+    stats_sent: float = 0.0
     sounds: list[SoundMeta] = field(default_factory=list)
 
     # set by load() when the settings weren't read cleanly, for the window to tell the
@@ -399,7 +414,7 @@ class Config:
             except FileNotFoundError as e:
                 if not any(CONFIG_PATH.with_name(f"config.json.{i}").exists()
                            for i in range(1, CONFIG_BACKUPS + 1)):
-                    return cls()   # a first start
+                    return cls.first_start()
                 err, missing = e, True
                 break
             except ValueError as e:
@@ -414,6 +429,8 @@ class Config:
                 cls._keep_newer(raw)
                 if isinstance(raw, dict) and "net_off" not in raw:
                     cfg._restore_privacy()
+                    if "stats_id" not in raw and "usage_stats" not in cfg.net_off:
+                        cfg.net_off.append("usage_stats")   # as from_raw: off for them
                 return cfg
             except (TypeError, ValueError, KeyError, AttributeError) as e:
                 err = e
@@ -454,6 +471,16 @@ class Config:
         cfg.load_note = (f"Your settings file was {what} and no backup could be read, so "
                          "Onion Board started with default settings. Your sound files are "
                          f"still in {SOUNDS_DIR}.{kept}")
+        return cfg
+
+    @classmethod
+    def first_start(cls) -> Config:
+        """A new user's settings: what others hear goes straight into their mic (one
+        click to set up, nothing to pick in Discord). Settings saved by any earlier
+        version keep the route they had (the cable, unless they chose another)."""
+        cfg = cls()
+        cfg.route = "mic"
+        cfg.mic_first = True
         return cfg
 
     def _restore_privacy(self):
@@ -528,6 +555,14 @@ class Config:
             raise ValueError(f"config version {raw.get('version')!r} isn't a number") from e
         for v in range(version, CONFIG_VERSION):
             raw = MIGRATIONS[v](raw)
+        if not raw.get("mic_first"):
+            # once: the cable route moves to straight into my mic, the main way now (the
+            # cable still gets everything until the mic is set up, and alongside it
+            # after). main_device stays the cable, so an older version opening these
+            # settings still sends through it. Another device or nowhere stays put.
+            if raw.get("route", "cable") == "cable":
+                raw["route"] = "mic"
+            raw["mic_first"] = True
         sounds = []
         blank = SoundMeta(id="", name="", file="")
         raw_sounds = raw.pop("sounds", [])
@@ -569,6 +604,16 @@ class Config:
         raw.setdefault("setup_done", bool(raw.get("main_device")))
         # ...and from before What's new: everything in it is new to them
         raw.setdefault("whats_new_seen", "")
+        # ...and from before the usage count: they installed an app that sent nothing,
+        # so it starts switched off for them (new installs: on, unless the installer's
+        # box was unticked)
+        if "stats_id" not in raw:
+            raw["stats_id"] = ""
+            off = raw.get("net_off")
+            if isinstance(off, list) and "usage_stats" not in off:
+                raw["net_off"] = [*off, "usage_stats"]
+            elif "net_off" not in raw:
+                raw["net_off"] = ["usage_stats"]
         known = _typed(raw, cls(), "config")
         extra = {k: v for k, v in raw.items() if k not in cls.__dataclass_fields__}
         kept = {}
@@ -916,15 +961,45 @@ def decode(path: str) -> np.ndarray:
 
 
 def to_int16(data: np.ndarray) -> np.ndarray:
-    """float32 [-1, 1] -> int16 (the in-memory / cached format). int16 passes through."""
+    """float32 [-1, 1] -> int16 (the in-memory / cached format). int16 passes through.
+    Peaks over full scale (loud MP3 / AAC masters decode up to ~+1.5 dB, and resampling
+    adds a little) are turned down by a limiter first: clipped here, the flat tops
+    would be in the cache for good, crackling on every kick and snare."""
     if data.dtype == np.int16:
         return data
+    if len(data) and float(np.max(np.abs(data))) > 1.0:
+        data = _under_full_scale(data)
     # one float copy, rounded and clipped in place: a 15-minute song is ~350 MB of
     # float32, and each temporary would be another
     y = data * I16
     np.rint(y, out=y)
     np.clip(y, -I16 - 1, I16, out=y)
     return np.ascontiguousarray(y.astype(np.int16))
+
+
+def _under_full_scale(data: np.ndarray, chunk: int = SR) -> np.ndarray:
+    """(n, 2) audio through a lookahead limiter just under 0 dBFS (sendfx.Limiter: no
+    distortion, the level elsewhere untouched), a second at a time."""
+    from soundboard.sendfx import Limiter
+    if data.ndim != 2 or data.shape[1] != 2:
+        return data              # (only stereo is stored; anything else just clips)
+    lim = Limiter(SR, ceiling_db=-0.05)
+    n = len(data)
+    out = np.empty((n, 2), np.float32)
+    at, skip = 0, lim.la         # the limiter's first `la` samples are its delay line
+
+    def put(y):
+        nonlocal at, skip
+        d = min(skip, len(y))
+        y, skip = y[d:], skip - d
+        k = min(len(y), n - at)
+        out[at:at + k] = y[:k]
+        at += k
+
+    for i in range(0, n, chunk):
+        put(lim.process(np.asarray(data[i:i + chunk], np.float32)))
+    put(lim.process(np.zeros((lim.la, 2), np.float32)))   # push the delay out
+    return out
 
 
 def to_float32(data: np.ndarray) -> np.ndarray:
@@ -967,6 +1042,7 @@ def store_cached(sid: str, data: np.ndarray, fx_key: str = "") -> np.ndarray:
         tmp = dest.with_suffix(".tmp.npy")
         np.save(tmp, i16)
         tmp.replace(dest)
+        _refused.discard(dest)   # a new file there: in use again, not a leftover
     except OSError:   # e.g. dest is mapped by audio still in use: prune_cache tidies up
         log.warning("couldn't write cache for %s", sid, exc_info=True)
         return i16
@@ -1021,7 +1097,8 @@ def prune_cache(keep: set[str]):
     for p in files:
         if p.stem in keep:
             continue
-        fresh = p.name.split(".")[0] not in ids or p.name.endswith(".tmp.npy")
+        fresh = ((p.name.split(".")[0] not in ids or p.name.endswith(".tmp.npy"))
+                 and p not in _refused)
         try:
             if fresh and time.time() - p.stat().st_mtime < CACHE_GRACE_S:
                 continue
@@ -1033,13 +1110,16 @@ def prune_cache(keep: set[str]):
 def _unlink(p: Path) -> bool:
     """Delete a cache file. False if it can't go yet: Windows refuses while a mapped
     array still points into it (a sound just removed, still on its way out of the
-    engine). It isn't in cache_keep any more, so a later prune_cache takes it."""
+    engine). It isn't in cache_keep any more, so the next prune_cache takes it (at
+    once, not after CACHE_GRACE_S: it's in _refused)."""
     try:
         p.unlink(missing_ok=True)
-        return True
     except OSError:
         log.debug("cache file %s is still in use; left for later", p.name)
+        _refused.add(p)
         return False
+    _refused.discard(p)
+    return True
 
 
 def unlink_cache(sid: str) -> None:

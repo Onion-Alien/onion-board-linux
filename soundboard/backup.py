@@ -64,12 +64,13 @@ STORED = {".mp3", ".ogg", ".opus", ".m4a", ".aac", ".flac", ".wma", ".webm", ".m
 # settings that belong to this PC, or that must only ever be switched on by hand
 # (they make the app go online / run downloaded code): never exported or imported
 LOCAL_SETTINGS = {"version", "sounds", "categories", "category", "main_device", "mon_device",
-                  "mic_device", "obs_device", "route", "setup_done", "tab", "apps",
-                  "apps_paths", "screen",
+                  "mic_device", "obs_device", "route", "mic_first", "cable_tip_done",
+                  "setup_done", "tab", "apps", "apps_paths", "screen",
                   "ytdlp_auto_optin", "update_check", "update_checked", "update_skip",
                   "update_pending", "category_hotkeys", "api_enabled", "api_port",
                   "api_token", "remote_addons", "net_mode", "net_proxy",
-                  "net_off", "net_offline", "tor_bridges", "data"}
+                  "net_off", "net_offline", "tor_bridges", "data", "stats_id",
+                  "stats_sent"}
 # per-sound fields that are written to sound.json (the paths are replaced by names)
 SOUND_FIELDS = ("name", "volume", "hotkey", "mode", "loop", "color", "level_gain",
                 "duration", "fingerprint", "fx", "tags", "fade_in", "fade_out", "hold",

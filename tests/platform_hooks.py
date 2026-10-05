@@ -130,6 +130,31 @@ WINDOWS_ONLY = {
         "RegisterApplicationRestart",
     "tests/test_voicesdk.py::test_is_system_never_touches_the_disk":
         "C:\\Windows paths (the voice engine watcher is off on Linux)",
+    # "Straight into my mic" (1.9.0): Windows' mic effect, its registry notes and admin
+    # step; not on Linux yet, the cable stays the route (tests/test_linux_directmic.py)
+    **{f"tests/test_directmic.py::{name}": why for name, why in (
+        ("test_taking_it_off_puts_the_mic_back_exactly", "the mic's effect slots (registry)"),
+        ("test_a_set_up_cut_off_anywhere_can_be_undone", "the mic's effect slots (registry)"),
+        ("test_repair_after_windows_reset_keeps_the_new_driver_effects",
+         "the mic's effect slots (registry)"),
+        ("test_lost_notes_never_leave_the_effect_behind", "the mic's effect slots (registry)"),
+        ("test_a_mic_that_is_gone_is_just_forgotten", "the mic's effect slots (registry)"),
+        ("test_admin_step_brings_the_audio_back_whatever_happens",
+         "the admin step restarting Windows' audio service"),
+        ("test_a_second_board_backs_off", "another board's process asked with OpenProcess"),
+        ("test_uninstaller_takes_it_off_the_mic", "the uninstaller's admin step"),
+        ("test_new_users_go_straight_into_their_mic_old_settings_keep_the_cable",
+         "the mic route (Linux keeps the cable)"),
+        ("test_window_starts_on_the_mic_with_the_cable_copy",
+         "the mic route (Linux keeps the cable)"))},
+    "tests/test_setupwizard.py::test_new_users_are_offered_their_mic_first":
+        "the mic route (Linux keeps the cable: tests/test_linux_directmic.py)",
+    "tests/test_setupwizard.py::test_a_repair_is_offered_as_one":
+        "the mic effect's repair (Windows)",
+    "tests/test_audit_data.py::test_resetting_devices_drops_a_newer_route":
+        "the default route is the mic (Linux: the cable, tests/test_linux_directmic.py)",
+    "tests/test_appaudio.py::test_stop_without_waiting_returns_at_once_and_feeds_nothing_more":
+        "fakes Windows' capture thread (Linux: tests/test_linux_appaudio.py)",
 }
 
 

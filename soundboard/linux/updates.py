@@ -21,10 +21,13 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ASSET", "appimage", "can_install", "cleanup", "installer_env", "installer_path",
-           "start_install"]
+__all__ = ["ASSET", "UPDATE_ASSET", "appimage", "can_install", "cleanup", "installer_env",
+           "installer_path", "start_install"]
 
 ASSET = "OnionBoard-x86_64.AppImage"
+# *Update now* takes this copy when a release has it (counted apart from downloads
+# off the website, as Windows' OnionBoardSetup-update.exe), else ASSET; never the .exe
+UPDATE_ASSET = "OnionBoard-x86_64-update.AppImage"
 # waits (at most a minute) for the old app's process to be gone, then becomes the new one
 WAIT_THEN_RUN = ('i=0; while kill -0 "$1" 2>/dev/null && [ "$i" -lt 600 ]; do sleep 0.1; '
                  'i=$((i+1)); done; exec "$2"')

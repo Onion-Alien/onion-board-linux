@@ -28,7 +28,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 __all__ = ["supported", "list_apps", "default_output_name", "process_path", "is_running",
-           "root_pid", "PeakWatcher", "AppCapture"]
+           "root_pid", "running", "PeakWatcher", "AppCapture"]
 
 SR = 48000
 RESCAN_S = 1.0
@@ -97,6 +97,22 @@ def _process_table(pids) -> dict[int, tuple[int, str]]:
     return table
 
 
+def running() -> dict[int, str]:
+    """pid -> program name (lower case) of every process this user can look at: the
+    Apps tab tells a program that went quiet from one that closed (upstream: {} off
+    Windows, so every quiet program looked closed)."""
+    out: dict[int, str] = {}
+    try:
+        pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        name = os.path.basename(process_path(pid)).lower()
+        if name:
+            out[pid] = name
+    return out
+
+
 def root_pid(pid: int, table=None) -> int:
     """The top of the process's tree of the same program (a browser's tab processes
     -> the browser), a shared helper going to the program that started it: the
@@ -144,9 +160,10 @@ def stream_nodes(dump: list | None = None) -> list[dict]:
     return out
 
 
-def list_apps() -> list:
+def list_apps(strict: bool = False) -> list:
     """Every program with a playback stream, this process left out, grouped by
-    process tree (App.pid is the tree's root)."""
+    process tree (App.pid is the tree's root). `strict` is upstream's (raise rather
+    than read a failed listing as "nothing plays"): pw-dump failing gives no nodes."""
     App = _a().App
     me = os.getpid()
     apps: dict[int, object] = {}
@@ -263,8 +280,9 @@ class _Reader:
 
 
 class AppCapture:
-    """Same interface as the Windows AppCapture: `start()`, `stop()`, `running`,
-    `error`, `ended`, `frames`, and `sink((n, 2) float32 at 48 kHz)` called from its
+    """Same interface as the Windows AppCapture: `start(wait=)`, `stop(wait=)`,
+    `join()`, `running`, `ready`, `error`, `ended`, `frames`, and
+    `sink((n, 2) float32 at 48 kHz)` called from its
     own thread. include_tree=False captures every program *but* `pid`'s tree (instant
     replay passes its own pid)."""
 
@@ -280,7 +298,9 @@ class AppCapture:
         self._thread = threading.Thread(target=self._run, name=f"appcapture-{pid}",
                                         daemon=True)
 
-    def start(self, timeout: float = 6.0) -> bool:
+    def start(self, timeout: float = 6.0, wait: bool = True) -> bool:
+        """With wait=False it returns once the thread is going: `ready` turns True
+        when the first pw-record readers are up, or `error` says why not."""
         if self.include_tree and not is_running(self.pid):   # whatever the sound server
             self.error = "That program isn't running any more."
             self.ended = True
@@ -290,20 +310,32 @@ class AppCapture:
             self.error = why
             return False
         self._thread.start()
+        if not wait:
+            return True
         if not self._ready.wait(timeout):
             self.error = "PipeWire didn't answer in time. Switch Send on to try again."
             self.stop()
             return False
         return self.error is None
 
-    def stop(self):
+    def stop(self, wait: bool = True):
+        """With wait=False it only asks the thread to end; the sink gets nothing more
+        either way (a new capture of the same program can start at once)."""
         self._stop.set()
+        if wait:
+            self.join(3)
+
+    def join(self, timeout: float = 3.0):
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
-            self._thread.join(3)
+            self._thread.join(timeout)
 
     @property
     def running(self) -> bool:
         return self._thread.is_alive() and self.error is None and not self.ended
+
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set() and self.error is None
 
     def _wanted(self) -> set[str]:
         me = os.getpid()
@@ -356,6 +388,8 @@ class AppCapture:
                 if not parts:
                     continue
                 mix = parts[0] if len(parts) == 1 else np.sum(parts, axis=0)
+                if self._stop.is_set():   # stopped without waiting: not our sink any more
+                    return
                 self.frames += n
                 try:
                     self.sink(mix)

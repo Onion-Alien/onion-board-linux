@@ -15,6 +15,9 @@ _REAL_RESUME = setupwizard.resume_after_restart   # before the autouse fixture s
 
 @pytest.fixture
 def devices(monkeypatch):
+    # these walk the cable path (a first start goes straight into the mic, which the
+    # mic_wizard tests below and tests/test_directmic.py cover)
+    monkeypatch.setattr(Config, "first_start", classmethod(lambda cls: cls()))
     state = {"cable": True, "picked": {}}
 
     def list_devices(kind):
@@ -419,3 +422,76 @@ def _close(qapp, w, wiz):
     wiz.deleteLater()
     w.deleteLater()
     qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_only_the_mic_page_ticks_fast_and_the_folder_is_made_once(wizard, devices,
+                                                                   monkeypatch):
+    """The 40 ms tick is for the mic meter: the other pages tick every 250 ms, and
+    following the cable installer doesn't make its folder again on every tick."""
+    w, wiz = wizard
+    assert wiz.stack.currentIndex() == 0 and wiz.timer.interval() == setupwizard.TICK_MS
+    wiz.go(3)
+    assert wiz.timer.interval() == setupwizard.SLOW_TICK_MS
+    wiz.go(0)
+    assert wiz.timer.interval() == setupwizard.TICK_MS
+    made = []
+    real = type(library.APP_DIR).mkdir
+    monkeypatch.setattr(type(library.APP_DIR), "mkdir",
+                        lambda self, *a, **k: (made.append(self), real(self, *a, **k)))
+    setupwizard.SetupWizard._status_dir = None
+    for _ in range(5):
+        wiz._read_cable_step()
+    assert made == [library.APP_DIR]
+
+
+FIRST_START = Config.__dict__["first_start"]
+
+
+@pytest.fixture
+def mic_wizard(qapp, app_dir, devices, monkeypatch):
+    """A new user's guide: straight into the mic (not set up on it yet)."""
+    monkeypatch.setattr(Config, "first_start", FIRST_START)
+    w = main.MainWindow()
+    wiz = setupwizard.SetupWizard(w)
+    yield w, wiz
+    wiz.done(0)
+    w._load_thread.join(15)
+    w.close()
+    from PySide6.QtCore import QEvent
+    wiz.deleteLater()
+    w.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_new_users_are_offered_their_mic_first(mic_wizard, monkeypatch):
+    from soundboard import directmic
+    w, wiz = mic_wizard
+    assert w.cfg.route == "mic"
+    wiz.go(2)
+    assert not wiz.btn_attach.isHidden() and "straight into my mic" in wiz.btn_attach.text()
+    assert "permission once" in wiz.cable_status.text()
+    assert "instead" in wiz.btn_cable.text()
+    wiz.go(3)   # not on the mic yet: the last page says so
+    assert "isn't on your mic yet" in wiz.discord_text.text()
+    monkeypatch.setattr(directmic, "status", lambda name=None: "ready")
+    wiz.go(3)
+    assert "nothing to pick" in wiz.discord_title.text()
+    assert wiz.btn_copy.isHidden() and not wiz.btn_discord.isHidden()
+
+
+def test_a_repair_is_offered_as_one(mic_wizard, monkeypatch):
+    from soundboard import directmic
+    _, wiz = mic_wizard
+    monkeypatch.setattr(directmic, "status", lambda name=None: "wiped")
+    wiz.go(2)
+    wiz.recheck_cable(rescan=False)
+    assert "Repair" in wiz.btn_attach.text() and "repair" in wiz.cable_status.text()
+
+
+def test_cable_instead_doesnt_reinstall_a_cable_that_is_there(mic_wizard, monkeypatch):
+    w, wiz = mic_wizard
+    monkeypatch.setattr(setupwizard.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("installed the cable again"))
+    wiz.go(2)
+    wiz.install_cable()
+    assert w.cfg.route == "cable" and wiz._proc is None

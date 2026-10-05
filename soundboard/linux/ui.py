@@ -87,10 +87,22 @@ def patch_main_window(cls):
                        f"“{vcable.SOURCE_DESC}” as the input in the system's Sound "
                        "settings.", "warn")
 
+    orig_flow = cls._update_flow
+
+    def _update_flow(self, talking=False):
+        orig_flow(self, talking)
+        self.btn_attach.hide()   # "Straight into my mic instead": not on Linux yet
+
     cls.__init__ = __init__
+    cls._update_flow = _update_flow
+    # "Straight into my mic" isn't on Linux yet (linux/directmic.py): Setup -> Devices
+    # doesn't offer it, and What's new doesn't tell about it
+    mw = sys.modules[cls.__module__]
+    mw.ROUTE_CHOICES = tuple(c for c in mw.ROUTE_CHOICES if c[1] != "mic")
+    from soundboard.ui import whatsnew
+    whatsnew.NOTES = without_direct_mic(whatsnew.NOTES)
     # picking a Bluetooth headset's mic warns about call quality: Linux doesn't name
     # it "Hands-Free", the sound server's name for it says Bluetooth
-    mw = sys.modules[cls.__module__]
     upstream_hands_free = mw.is_hands_free
     mw.is_hands_free = lambda name: upstream_hands_free(name) or audio.bluetooth_mic(name)
     # ...and it never asks for attention (triggers brought over from Windows)
@@ -101,6 +113,21 @@ def patch_main_window(cls):
     patch_speech_panel(SpeechPanel)
     from soundboard.ui.overlay import OverlayWindow
     patch_overlay(OverlayWindow)
+
+
+def without_direct_mic(notes):
+    """What's new without "Straight into my mic": 1.9.1's note is only about it; 1.9.0
+    keeps what Linux has too (the simpler modes, the lag fixes)."""
+    from dataclasses import replace
+    out = []
+    for n in notes:
+        if n.version == "1.9.1":
+            continue
+        if n.version == "1.9.0":
+            n = replace(n, headline="Simpler and smoother",
+                        items=tuple(i for i in n.items if i[0] == "check"))
+        out.append(n)
+    return tuple(out)
 
 
 def patch_overlay(cls):
@@ -170,6 +197,7 @@ def patch_setup_wizard(cls):
 
     def recheck_cable(self, rescan: bool = True):
         orig_recheck(self, rescan)
+        self.btn_attach.hide()   # straight into the mic: not on Linux yet
         # nothing is downloaded: the switch for setup downloads doesn't apply
         self.btn_cable.setEnabled(True)
         self.btn_cable.setToolTip("")

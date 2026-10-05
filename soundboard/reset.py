@@ -47,6 +47,7 @@ PROGRAM_FIELDS = ("apps", "apps_paths", "apps_hidden")
 # categories, triggers, radio favourites) and the app's own bookkeeping
 KEEP = {"version", "sounds", "categories", "category", "category_hotkeys", "screen",
         "setup_done", "ptt_key", "update_checked", "update_pending", "update_skip",
+        "stats_id", "stats_sent", "mic_first",
         *DEVICE_FIELDS, *PROGRAM_FIELDS}
 RADIO_KEEP = ("favorites", "recent")
 
@@ -138,11 +139,14 @@ def reset(parts: list[str]) -> str:
     if SETTINGS in parts:
         fresh = Config()
         radio = {k: cfg.radio[k] for k in RADIO_KEEP if k in cfg.radio}
+        no_count = "usage_stats" in cfg.net_off
         for f in fields(Config):
             if f.name not in KEEP and not f.name.endswith("_hotkey"):
                 setattr(cfg, f.name, getattr(fresh, f.name))
                 _forget_newer(cfg, f.name)
         cfg.radio = radio
+        if no_count:   # a reset never switches the usage count (back) on
+            cfg.net_off.append("usage_stats")
     if HOTKEYS in parts:
         fresh = Config()
         for name in hotkey_fields():
@@ -155,7 +159,7 @@ def reset(parts: list[str]) -> str:
     if PROGRAMS in parts:
         cfg.apps, cfg.apps_paths, cfg.apps_hidden = {}, {}, []
     if DEVICES in parts:
-        fresh = Config()
+        fresh = Config.first_start()   # (what others hear: straight into the mic)
         for name in DEVICE_FIELDS:
             setattr(cfg, name, getattr(fresh, name))
             _forget_newer(cfg, name)

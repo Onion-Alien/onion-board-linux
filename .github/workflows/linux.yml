@@ -86,4 +86,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" OnionBoard-x86_64.AppImage --clobber -R "$GITHUB_REPOSITORY"
+        # and a copy for Update now (soundboard/linux/updates.py UPDATE_ASSET), so the
+        # download counts tell updates apart from new downloads, as on Windows
+        run: |
+          cp OnionBoard-x86_64.AppImage OnionBoard-x86_64-update.AppImage
+          gh release upload "$TAG" OnionBoard-x86_64.AppImage             OnionBoard-x86_64-update.AppImage --clobber -R "$GITHUB_REPOSITORY"

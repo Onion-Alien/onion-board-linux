@@ -77,6 +77,12 @@ one or two files run in a single process. `-n 2` caps the workers (say, while a
 game is running) and `-n 0` turns them off. You don't need to rebuild to see a change: `scripts\run.bat` runs
 from source.
 
+Keeping it fast: Windows takes ~2 s to refuse a connection to a closed port, even
+on 127.0.0.1, and `localhost` tries `::1` first. A test that needs "nothing is
+listening" takes its port from `conftest.closed_port()` (refused at once), and a
+test server on 127.0.0.1 only marks its port with `conftest.ipv4_only()`.
+`--durations=20` shows what's slow.
+
 ### What voice chat does to the sounds (the bench)
 
 `scripts\codec_bench.py` runs sounds through each voice chat's codec, and with
@@ -207,8 +213,10 @@ Get-Process OnionBoard -ErrorAction SilentlyContinue      # is it running?
 ## 7. Commit and release
 
 1. Section 3 passes. The pre-commit hook re-runs the secrets scan.
-2. Commit, then push. CI (`.github/workflows/checks.yml`) runs the secrets scan
-   over the full history, gitleaks, ruff and pytest.
+2. Commit, push, and open a pull request (main takes changes by PR only). CI
+   (`.github/workflows/checks.yml`) runs on the PR and on main after a merge: the
+   secrets scan over the full history, gitleaks, ruff and pytest. A newer push to
+   the PR cancels its unfinished run.
 3. For a release: bump `__version__`, move *Unreleased* in the CHANGELOG under
    the version, build, then upload `dist\OnionBoardSetup.exe` to a GitHub Release
    with its SHA-256 (`certutil -hashfile dist\OnionBoardSetup.exe SHA256`).
@@ -217,7 +225,11 @@ Get-Process OnionBoard -ErrorAction SilentlyContinue      # is it running?
    `releases/latest/download/OnionBoardSetup.exe`, and installed copies update
    themselves from the latest release's `OnionBoardSetup.exe` (`soundboard/updates.py`
    only installs it when GitHub lists its SHA-256, and runs it with `/RELAUNCH=1`,
-   see `installer/OnionBoard.iss`). A release with a broken installer reaches
+   see `installer/OnionBoard.iss`). Upload the same file a second time as
+   `OnionBoardSetup-update.exe` (`gh release upload vX.Y.Z
+   "dist\OnionBoardSetup.exe#OnionBoardSetup-update.exe"` doesn't rename it: copy it
+   to that name first): *Update now* fetches that one when a release has it, so
+   GitHub's download counts tell updates apart from new downloads. A release with a broken installer reaches
    everyone who clicks *Update now*: install the built one over your own copy
    before publishing.
    The notes start with a one-line headline, then a download line, because GitHub
@@ -231,7 +243,8 @@ Get-Process OnionBoard -ErrorAction SilentlyContinue      # is it running?
    Never commit build output. Run `python scripts/check_sensitive.py --history`
    once more before pushing the release.
 4. Linux: publishing the release starts `.github/workflows/linux.yml`, which builds
-   `OnionBoard-x86_64.AppImage` from the release's tag and attaches it (about 15
+   `OnionBoard-x86_64.AppImage` from the release's tag and attaches it, with a copy
+   named `OnionBoard-x86_64-update.AppImage` for *Update now* (about 15
    minutes; keep that name: the Linux self-update and the download links look for
    it). Until it's there, Linux copies only say what's new. The download line can
    name it too:

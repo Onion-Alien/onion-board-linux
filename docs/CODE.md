@@ -4,13 +4,54 @@ For people changing the code. Using the app needs none of this: the
 [README](../README.md) covers that. The edit → check → build → release loop is in
 [DEVELOPING.md](DEVELOPING.md); the rules are in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## Sending sounds to others: the virtual cable, or something else
+## Sending sounds to others: straight into your mic, the virtual cable, or something else
 
 Setup → Devices → *Send to others through* (also Settings → Audio → Devices) picks
 the route (`Config.route`, `library.ROUTES`):
 
-- **The virtual cable** (the default): a free audio driver (VB-Audio Virtual Cable)
-  that acts like a pipe: the app plays into one end and Discord or the game uses the
+- **Straight into my mic** (new users start here, `Config.first_start`): Onion Board
+  puts a small Windows audio effect on the real mic (`native/directmic/obmic.cpp`, an
+  "APO" like Equalizer APO's, built with MinGW by `scripts/build_directmic.py`), so
+  Discord and games hear the sounds through the mic they already use. Soundpad works
+  the same way. One admin prompt sets it up (`main.py --direct-mic install <endpoint>`,
+  `soundboard/directmic.py`'s admin part): the DLL goes to `Program Files\Onion Board
+  Mic`, is registered, and takes the mic's stream-effect slot (SFX; Windows runs only
+  stream effects in front of each app's recording, after the mic's own endpoint
+  effect). An effect the driver had in that slot is saved and run first, inside ours.
+  Every value changed is noted under `HKLM\SOFTWARE\OnionBoard\MicPlugin`, before
+  anything changes and kind for kind, so `--direct-mic uninstall` (and the
+  uninstaller's `--direct-mic remove`) puts the mic back exactly, even after a set-up
+  that was killed half-way. If Windows already took the effect off (a driver update,
+  "Reset sound settings"), what the driver put there stays and only the notes go. The
+  admin step stops Windows' audio for a moment; a helper started first brings it back
+  whenever that process ends, killed or not.
+
+  Board ↔ effect: `%ProgramData%\OnionBoard\MicPlugin\ring2.bin`, a shared file
+  (layout in `directmic.py`'s docstring). The effect publishes the **clean mic**
+  (before anything of the board's) and the board takes its mic from there: the meter,
+  mic check, OBS voice and voice changer never hear its own sounds come back. For each
+  stretch of clean mic the board renders the same stretch of what others hear
+  (`DirectMicStream`, on the mic's clock: no drift), and in *replace* mode (the
+  default) the effect puts that whole send mix, processed voice included, in place of
+  the mic about 20 ms later, so every mic feature works as with the cable. Each app
+  recording the mic runs its own instance with its own slot in the file. Whenever the
+  board is late or gone the mic fades back in over what the board had already sent;
+  after such a hiccup the effect reads a little further behind the board, and closes
+  that gap again in a quiet moment once the board keeps time. A mic at another rate
+  than 48 kHz gets the board's mix through a windowed-sinc resampler (no fold-back of
+  the highs on 44.1 / 16 kHz mics). Only one board writes the file at a time
+  (`board_pid`: a second copy of the app says so instead). Nothing read from the file
+  is trusted (anyone signed in can write it); `test_effect_survives_a_fuzzed_ring`
+  checks that.
+  `directmic.status()` notices a mic Windows took the effect off ('wiped') or one with
+  an older copy of it ('outdated'); the Setup tab offers a one-click repair, or the
+  cable. Tests run the real DLL in `testhost.exe`, which loads it the way Windows does.
+- **The virtual cable** (the fallback). Settings on the cable route moved to the mic
+  route once in 1.9.1 (`Config.mic_first`); a route picked after that stays. While the
+  mic isn't set up yet the mic route sends through the cable, and once it is, the
+  cable still gets the same mix (`engine.CableTap`, drift-tracked onto the cable's
+  clock), so a voice app still set to the cable keeps working. The cable itself is a
+  free audio driver (VB-Audio Virtual Cable) that acts like a pipe: the app plays into one end and Discord or the game uses the
   other end as a microphone. It isn't included in this repo because VB-Audio's
   licence doesn't allow redistributing it. `installer\install-vbcable.ps1` downloads
   the current pack from [vb-audio.com](https://vb-audio.com/Cable/), checks the
@@ -24,7 +65,7 @@ the route (`Config.route`, `library.ROUTES`):
 - **Nowhere**: only you hear the sounds, plus the optional stream output.
 
 The route belongs to this PC: backups don't carry it and resetting the audio devices
-puts it back to the cable. The rest of this page says "the cable" for the output
+puts it back to straight into the mic. The rest of this page says "the cable" for the output
 that others hear, whichever route picked it.
 
 Optional: `winget install Gyan.FFmpeg.Essentials` adds m4a/aac/video support (the
@@ -33,10 +74,6 @@ finds ffmpeg on `PATH` or in winget's `Links` folder.
 
 ## Where things are stored
 
-
-Optional: `winget install Gyan.FFmpeg.Essentials` adds m4a/aac/video support (the
-installer's *Play M4A, AAC and video files* box runs the same command). The app
-finds ffmpeg on `PATH` or in winget's `Links` folder.
 Settings and imported sounds live in `%APPDATA%\OnionBoard\`. Its `cache\` folder
 holds each sound decoded and ready to play (int16 at 48 kHz), so later starts don't
 decode anything; it's safe to delete and is rebuilt as needed. The `icons\` folder
@@ -79,6 +116,7 @@ the launcher the shortcuts and PyInstaller use. The app is the `soundboard` pack
 | `soundboard/feedback.py` | where *Send feedback* and *Report a problem* (Settings → Add-ons & help, and Settings → About) go: a no-account form or a GitHub issue, opened in the browser with the version filled in; the app sends nothing |
 | `soundboard/errors.py` | other libraries' errors (yt-dlp, libsndfile, PortAudio, Windows, network) in plain words, minus their "report this to us" lines and command-line tips; the original stays in the log and in the report. Ones the user can't fix get a *Report it* link/button: a pre-filled issue on this repo, opened in the browser |
 | `soundboard/hangwatch.py` | notes down a frozen window: if the UI thread stops answering for 5 s, its stack goes into the log and a report beside the crash reports (nothing shown or sent) |
+| `soundboard/uigc.py` | Python's garbage collection on the UI thread only: a collection on another thread could free a Qt object with a running timer there and crash the app |
 | `soundboard/ui/icons.py` | the line icons, drawn in code and recoloured with the theme |
 | `soundboard/ui/art.py` | optional pictures from `assets/art` (voice tiles, the computer voice, its languages); emoji / painted icons when missing |
 | `soundboard/ui/responsive.py` | small windows: what hides, in which order, as the window shrinks |
@@ -114,6 +152,8 @@ the launcher the shortcuts and PyInstaller use. The app is the `soundboard` pack
 | `soundboard/ui/triggerstab.py` | the Triggers tab: Hoot (`ui/owl.py`) and *Get Onion Watch* until the add-on is installed, then the add-on's own tab, with a bar when an update is out and a button to remove it |
 | `soundboard/ui/triggershost.py` | Onion Board as the Onion Watch add-on's host: the board's sounds and playing them (a ringing trigger loops in the headphones), `Config.screen`, the trigger pictures' folder, the theme's colours |
 | `soundboard/ui/appspanel.py` | the Apps tab: one card per program (level, **Send**, where it goes once a stream output is set: call, stream or both, volume, *Hear it myself*, and its *Clip editor*); programs you switch on are remembered by .exe and folder (a second program of the same name gets its own card, in `cfg.apps_paths`) and picked up again when they run |
+| `soundboard/directmic.py` | straight into my mic: the shared ring with the mic effect, `DirectMicStream` (the send output on the mic's clock), status / repair checks, and the one-prompt admin install / uninstall |
+| `native/directmic/` | the mic effect (`obmic.cpp`, runs inside Windows' audio engine) and `testhost.cpp`, which loads it like Windows does for the tests |
 | `soundboard/engine.py` | real-time audio: WASAPI streams (mic in, what others hear out (the cable or another device), headphones out, the optional stream output for OBS), mixing (sounds, radio and captured programs), pause/seek, live speed / pitch, limiter, watchdog |
 | `soundboard/eq.py` | 7-band equalizer and presets: matched peak / shelf bands that keep their analog shape up to Nyquist; a change crossfades in (no clicks) |
 | `soundboard/dsp.py` | the app's own filter maths (it no longer imports scipy): `sosfilt` / `lfilter` run as block matrix products with a parallel prefix scan for the state (float64 state, so float32 audio stays accurate), Butterworth design, matched EQ bands, `SmoothSos` (click-free design changes), an O(n) running minimum |
@@ -139,6 +179,7 @@ the launcher the shortcuts and PyInstaller use. The app is the `soundboard` pack
 | `soundboard/ui/crashdialog.py` | the "Onion Board hit a problem" dialog: the report, *Copy report*, *Report on GitHub* (copies it, opens a new issue in the browser), *Open folder* |
 | `soundboard/testcheck.py` | analysis for the Record-6s test (finds your voice in the output by cross-correlation) |
 | `soundboard/destination.py` | destination modes (Setup tab / Settings → *Who's listening*), one per voice chat engine: shapes the sounds bus for the listener's voice codec — sub-bass harmonics, a low cut with each sound's level given back, codec ceiling, gentle compressor (custom modes), mono |
+| `soundboard/profiles.py` | the simple sound modes over *Who's listening*: Game, Voice chat, Clean, Advanced. Each is a family of destination modes and picks one from detector `Hint`s (what voicesdk sees); a later per-program list would be one more detector. Stored as `dest["simple"]` beside `dest["mode"]` |
 | `soundboard/voicesdk.py` | which *Who's listening* mode suits: first the program recording the virtual cable's far end (`Listeners`: Discord, TeamSpeak and Mumble by name, a game by its files), else the voice engine of the game in front, from the voice libraries in its install folder (the exe path is read with the least access Windows has; nothing touches the game). A suggestion, switched to by itself only when the picker's box says so |
 | `soundboard/linux/` | the Linux port: each module replaces the Windows-only parts of the module of the same name (hotkeys over X11, the sound server's devices, the app's own virtual cable, PipeWire per-program capture, eSpeak voices, Trash, XDG autostart…), hooked in at that module's end; see `docs/LINUX-PORT.md` |
 | `soundboard/ui/deleted.py` | the Recently deleted window (Bring back / Delete for good) |
