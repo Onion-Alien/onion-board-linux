@@ -40,7 +40,8 @@ def rescan() -> bool:
 
 
 # ------------------------------------------------------------------ unplugged devices
-GONE_POLL_S = 2.0   # how often the sound server is asked which devices are still there
+GONE_POLL_S = 2.0   # how often the sound server is asked, when nothing tells us of changes
+WATCH_RETRY_S = 30.0   # how often a watcher that ended (sound server restart) is restarted
 _STREAMS = (("main", "main_stream", "output"), ("mon", "mon_stream", "output"),
             ("obs", "obs_stream", "output"), ("mic", "mic_stream", "input"))
 
@@ -63,8 +64,10 @@ def patch_engine(cls):
     """check_streams (the watchdog, about once a second on the UI thread) also closes a
     stream whose device has gone from the sound server, saying so as Windows does
     ("device not found"); the watchdog's retry reopens it there once it's back. The
-    sound server is asked on a thread, at most every GONE_POLL_S. And a stream opened
-    less than START_S ago isn't stalled yet."""
+    sound server is asked on a thread when audio.watch says a device came or went
+    (every GONE_POLL_S without a watcher: asking every time stalled every stream for
+    ~20 ms on PulseAudio). And a stream opened less than START_S ago isn't stalled
+    yet."""
     orig = cls.check_streams
 
     for key, setter in _SETTERS:
@@ -80,8 +83,14 @@ def patch_engine(cls):
                 self._last_cb[key] = max(self._last_cb[key], now)
         touched = orig(self)
         st = self.__dict__.setdefault("_gone_poll", {"next": 0.0, "busy": False,
-                                                     "present": None, "at": 0.0})
+                                                     "present": None, "at": 0.0,
+                                                     "gen": None, "watch_try": 0.0})
         now = time.monotonic()
+        streams_open = any(getattr(self, attr) is not None for _k, attr, _kind in _STREAMS)
+        watch = audio.watch
+        if streams_open and not watch.alive and now >= st["watch_try"]:
+            st["watch_try"] = now + WATCH_RETRY_S
+            watch.start()
         found, st["present"] = st["present"], None
         if found is not None:
             from soundboard import errors
@@ -97,9 +106,10 @@ def patch_engine(cls):
                     self.errors[key] = errors.plain(RuntimeError(f"device not found: {name}"))
                     self._last_try[key] = now
                     touched.append(key)
-        if not st["busy"] and now >= st["next"] and any(
-                getattr(self, attr) is not None for _k, attr, _kind in _STREAMS):
+        due = st["gen"] != watch.generation if watch.alive else now >= st["next"]
+        if not st["busy"] and streams_open and due:
             st["busy"], st["next"], st["at"] = True, now + GONE_POLL_S, now
+            st["gen"] = watch.generation
 
             def ask():
                 try:
@@ -110,6 +120,13 @@ def patch_engine(cls):
         return list(dict.fromkeys(touched))
 
     cls.check_streams = check_streams
+    orig_shutdown = cls.shutdown
+
+    def shutdown(self):
+        orig_shutdown(self)
+        audio.watch.stop()
+
+    cls.shutdown = shutdown
 
 
 patch_engine(sys.modules["soundboard.engine"].Engine)   # this runs at its end

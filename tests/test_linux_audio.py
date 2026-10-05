@@ -290,6 +290,100 @@ def test_an_unplugged_device_is_let_go_and_taken_back_when_it_returns(server, mo
         e.shutdown()
 
 
+
+def test_device_watch_counts_devices_coming_and_going_only(tmp_path, monkeypatch):
+    """`pactl subscribe` reports every stream and volume change too; only a sink or
+    source coming or going counts. When it ends (sound server restart) it's not alive."""
+    import time
+    from soundboard.linux import audio
+    fake = tmp_path / "pactl"
+    fake.write_text("""#!/bin/sh
+echo "Event 'new' on sink-input #41"
+echo "Event 'change' on sink #2"
+echo "Event 'remove' on sink #7"
+echo "Event 'new' on source #9"
+echo "Event 'remove' on source-output #12"
+echo "Event 'change' on server #-1"
+""")
+    fake.chmod(0o755)
+    monkeypatch.setattr(audio, "_watch_cmd", lambda: [str(fake)])
+    w = audio.DeviceWatch()
+    assert w.start() and w.generation == 1   # starting counts: anything may have changed
+    deadline = time.monotonic() + 5
+    while w.alive and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not w.alive and w.generation == 3
+
+
+
+def test_device_watch_ends_pactl_when_the_app_is_gone(tmp_path, monkeypatch):
+    """A crashed app can't stop() it: pactl subscribe would wait forever for an event
+    to write. The shell around it ends it once the app's end of its stdin closes."""
+    import subprocess
+    import time
+    from soundboard.linux import audio
+    fake = tmp_path / "pactl"
+    fake.write_text(f"#!/bin/sh\necho $$ > {tmp_path}/pid\nexec sleep 60\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{__import__('os').environ['PATH']}")
+    p = subprocess.Popen(["sh", "-c", audio._WATCH_SH], stdin=subprocess.PIPE,
+                         stdout=subprocess.DEVNULL)
+    pid_file = tmp_path / "pid"
+    deadline = time.monotonic() + 5
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    pid = int(pid_file.read_text())
+    p.stdin.close()                      # what the kernel does when the app dies
+    p.wait(timeout=5)
+    deadline = time.monotonic() + 5
+    while __import__("os").path.exists(f"/proc/{pid}") and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not __import__("os").path.exists(f"/proc/{pid}")
+
+def test_the_server_is_asked_only_when_a_device_came_or_went(server, monkeypatch):
+    """Asking the sound server for its devices stalled every stream for ~20 ms each
+    time on PulseAudio (WSLg: ALSA underruns at "low" every 2-3 s with the app open).
+    With a watcher it's asked once per device event, not every few seconds."""
+    import time
+    from soundboard import engine
+    from soundboard.linux import audio
+    from soundboard.linux import engine as linux_engine
+
+    class Watch:
+        alive, generation = True, 1
+
+        def start(self):
+            return True
+
+        def stop(self):
+            pass
+    w = Watch()
+    monkeypatch.setattr(audio, "watch", w)
+    monkeypatch.setattr(linux_engine, "GONE_POLL_S", 0)
+    asked = []
+    monkeypatch.setattr(audio, "present",
+                        lambda: asked.append(1) or {d.pulse for d in audio.devices()})
+    e = engine.Engine()
+    try:
+        e.set_main_device("Built-in Audio Analog Stereo")
+        asked.clear()                 # (opening asks too: a gone device is never opened)
+
+        def checks(n):
+            for _ in range(n):
+                e._last_cb.update(dict.fromkeys(e._last_cb, time.monotonic()))
+                e.check_streams()
+                time.sleep(0.01)
+        checks(20)
+        assert len(asked) == 1        # once at the start, not 20 times
+        w.generation += 1             # a headset unplugged
+        checks(20)
+        assert len(asked) == 2
+        w.alive = False               # no watcher: polls as before
+        checks(5)
+        assert len(asked) > 3
+    finally:
+        e.shutdown()
+
 BLUETOOTH = """Source #80
 \tName: bluez_input.AA_BB_CC_DD_EE_FF.0
 \tDescription: WH-1000XM4

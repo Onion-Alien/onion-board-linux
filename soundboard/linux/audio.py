@@ -16,10 +16,13 @@ engine opens up to four streams on devices the user picked. So:
                 aimed the same way with PIPEWIRE_NODE.
   unplugged     the sound server moves a stream whose device goes away onto its
                 default device and the stream plays on there: no error, no stall
-                for the engine's watchdog to see. linux/engine.py asks every few
-                seconds whether each stream's device is still there, and closes the
-                stream if not; the watchdog reopens it once the device is back (a
-                device that isn't there is never opened: present()).
+                for the engine's watchdog to see. DeviceWatch keeps one `pactl
+                subscribe` open and counts the sound server's "a device came / went"
+                events; linux/engine.py then asks whether each stream's device is
+                still there (present()), and closes the stream if not; the watchdog
+                reopens it once the device is back (a device that isn't there is
+                never opened). Asking every few seconds instead stalled every stream
+                for ~20 ms each time on PulseAudio (WSLg's: ALSA underruns at "low").
 
 `sd` (a SoundDevice) stands in for the sounddevice module in engine.py and
 mainwindow.py (their Linux hooks put it there): it takes the stand-in indices;
@@ -145,6 +148,84 @@ def present() -> set[str] | None:
         answered = answered or bool(text)
         names |= {d["name"] for d in parse_list(text)}
     return names if answered else None
+
+
+# `pactl subscribe` lines for a device coming or going (not its streams: those are
+# "sink-input" / "source-output", and "change" is a volume or a port)
+_DEVICE_EVENT = re.compile(r"^Event '(?:new|remove)' on (?:sink|source) #\d+\s*$")
+
+
+# pactl subscribe only notices the app is gone when it next writes, which may be never:
+# a shell holds it and ends it once the app's end of its stdin closes (a crash too)
+_WATCH_SH = 'pactl subscribe </dev/null & p=$!; cat >/dev/null; kill $p 2>/dev/null'
+
+
+def _watch_cmd() -> list[str] | None:
+    sh = shutil.which("sh")
+    return [sh, "-c", _WATCH_SH] if sh and shutil.which("pactl") else None
+
+
+class DeviceWatch:
+    """One `pactl subscribe` for the app's life: `generation` goes up each time a
+    sink or source comes or goes. `alive` is False when there's none (no pactl, the
+    sound server restarted): then the caller polls instead, and start() may try
+    again later."""
+
+    def __init__(self):
+        self.generation = 0
+        self.alive = False
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+
+    def start(self) -> bool:
+        with self._lock:
+            if self.alive:
+                return True
+            cmd = _watch_cmd()
+            if cmd is None:
+                return False
+            env = dict(os.environ)
+            env["LC_ALL"] = "C"
+            try:
+                self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                              stderr=subprocess.DEVNULL,
+                                              stdin=subprocess.PIPE, text=True,
+                                              errors="replace", env=env)
+            except OSError as e:
+                log.warning("pactl subscribe failed: %s", e)
+                return False
+            self.alive = True
+            self.generation += 1   # anything may have changed while nobody watched
+            threading.Thread(target=self._read, args=(self._proc,), daemon=True,
+                             name="audio-watch").start()
+            return True
+
+    def _read(self, proc: subprocess.Popen):
+        try:
+            for line in proc.stdout:
+                if _DEVICE_EVENT.match(line):
+                    self.generation += 1
+        except (OSError, ValueError):
+            pass
+        finally:
+            with self._lock:
+                if self._proc is proc:
+                    self.alive = False
+                    self._proc = None
+                    log.info("pactl subscribe ended: polling for unplugged devices")
+
+    def stop(self):
+        with self._lock:
+            proc, self._proc, self.alive = self._proc, None, False
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.stdin.close()   # the shell ends pactl, then itself
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+
+
+watch = DeviceWatch()
 
 
 def devices() -> list[Device]:

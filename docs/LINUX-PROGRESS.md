@@ -29,7 +29,7 @@ the number move: new work found means the number can go down, and that's fine.
 | hotkeys-other | Wayland with no GlobalShortcuts portal (Sway / wlroots, GNOME before 48): a clear message on what to do, and Hyprland's portal checked | 2 | open |
 | audio-core | Audio devices and streams on PipeWire and PulseAudio (pulse / pipewire device, unplug watchdog) | 6 | done |
 | audio-fedora | Stock Fedora sound (no "pulse" device, 40 ms floor) | 2 | done |
-| dropouts | No drop-outs at "low" with the whole app running | 4 | open |
+| dropouts | No drop-outs at "low" with the whole app running | 4 | half |
 | cable | Virtual cable made by the app (pactl, made at every login) | 3 | done |
 | cable-guide | Setup guide's "Make the virtual cable" clicked through on Fedora | 1 | open |
 | setup-guide | Setup guide and every page checked on a real desktop | 2 | half |
@@ -102,3 +102,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-05 | 68% | merged upstream 1.8.0 (AI voices, clip editor); add-ons need Python 3.12; new row: AI voices on a real desktop |
 | 2026-10-05 | 66% | new row from looking at other Linux soundboards: hotkeys on Wayland desktops with no portal; after-launch ideas listed |
 | 2026-10-05 | 67% | HTTPS fix confirmed with the CI AppImage on Fedora 44 (update check works with no setting) |
+| 2026-10-05 | 69% | drop-outs at low: cause found (the unplug poll's pactl list stalled every stream every 2-3 s), fixed + measured on WSLg (30 -> 4 underruns); Fedora check left |
