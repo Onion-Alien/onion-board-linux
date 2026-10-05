@@ -52,7 +52,7 @@ the number move: new work found means the number can go down, and that's fine.
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
 | ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
-| certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | half |
+| certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | done |
 | self-update | Self-update from an AppImage | 2 | done |
 | real-release | A real release: AppImage attached, link works, update from it | 2 | open |
 | tests | Upstream suite + Linux tests green on Linux, 4 workers | 4 | done |
@@ -101,3 +101,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-05 | 69% | CI AppImage passes on Fedora (cable, hold-to-play); found + fixed HTTPS on Fedora (half until the next CI build is checked) |
 | 2026-10-05 | 68% | merged upstream 1.8.0 (AI voices, clip editor); add-ons need Python 3.12; new row: AI voices on a real desktop |
 | 2026-10-05 | 66% | new row from looking at other Linux soundboards: hotkeys on Wayland desktops with no portal; after-launch ideas listed |
+| 2026-10-05 | 67% | HTTPS fix confirmed with the CI AppImage on Fedora 44 (update check works with no setting) |
