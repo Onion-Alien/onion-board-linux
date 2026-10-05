@@ -27,6 +27,25 @@ class Note:
 
 # newest first; add one per release that has something worth telling
 NOTES = (
+    Note("1.8.0", "AI voices and a clip editor", (
+        ("voice", "Talk as someone else",
+         "Voice tab → Get AI voices: six characters that turn your voice into theirs, "
+         "live, on your own PC. Your words and timing, another person's voice."),
+        ("apps", "Clip any program's sound",
+         "Apps tab → Clip editor under a program's card keeps its last minute. Pick the "
+         "funny bit, then save it as a sound or send it straight to the call."),
+        ("check", "Lighter and smoother",
+         "Long sounds use far less memory, the radio no longer skips as a station "
+         "starts, and clicking the theme that's already on no longer freezes the app."),
+    )),
+    Note("1.7.2", "The radio and the sound on your phone", (
+        ("radio", "Run the radio from your phone",
+         "Onion Pocket 0.2.0 has a Radio tab: your favourite, recent and popular stations "
+         "or a search, play and stop, a random station, go live, and the radio's volume."),
+        ("sliders", "Speed, pitch and effects too",
+         "Its Sound tab changes the speed, pitch, bass and effects of what's playing, and "
+         "who's listening. Stream Deck buttons can do all of it as well (/api/help)."),
+    ), "remote", "Open Remote"),
     Note("1.7.1", "Onion Pocket stays up to date", (
         ("cable", "Update Onion Pocket from Settings",
          "When a newer Onion Pocket is out, Settings → Remote offers it in one click. "

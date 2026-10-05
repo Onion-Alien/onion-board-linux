@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+## 1.8.0 — 2026-10-05
+
+- **AI voices (optional add-on):** talk, and others hear a different person: your
+  words, timing and tone in another voice, live, on your own PC's CPU. Pick one of
+  six characters on the Voice tab (Bear, Max, Brick, Sage, Nova, Pixie); *Match the
+  voice* moves your pitch to where that voice sits, and a slider goes higher or
+  lower. About one CPU core while you talk, nothing while you're quiet, roughly
+  75 ms behind you. It isn't in the app or its installer: *Get AI voices* downloads
+  it (about 40 MB plus a 15 MB runtime, needs Python 3.12+), and *Remove AI voices*
+  takes it all off again. If it ever stops, a built-in voice preset covers you so
+  your real voice isn't heard (or pick your own voice / silence). The voice changer's
+  effects still work on top of it.
+- Live voice-to-speech hands your mic to its helper without polling: no wake-ups at
+  all while nothing is sent.
+- **Much less memory for long sounds:** sounds over about 30 seconds stay on disk
+  until they play instead of all being loaded at start-up (a board of 100 songs
+  held about 3.5 GB). A pressed sound is read in first, so it starts and plays
+  as smoothly as before, even from a slow drive.
+- Lighter on the CPU: Hoot (the Triggers tab's owl) draws 10 frames a second
+  while he only sways, live echo and helmet effects, sped-up sounds and a sent
+  program's level check do less work, the settings backups are rotated at most
+  once an hour, and download progress updates the window 10 times a second
+  instead of hundreds.
+- The flat radio map lets go of its picture (tens of MB) while it's hidden.
+- Switching Tor off in Settings no longer freezes the window for up to 3 seconds.
+- Smaller fixes: a relayed connection whose other end stopped reading is closed
+  after 5 minutes instead of holding on for good; Tor's control connection is
+  closed when its login fails; animations no longer restart in a minimised window.
+- **Clip editor on the Apps tab:** open *Clip editor* under a program's card and it
+  keeps that program's last minute as a live, scrolling waveform. Press on it to
+  freeze, drag across the bit you want, and press Space to hear it in your
+  headphones, Enter to save it as a sound, or **Send** to play it straight back to
+  whoever's listening. Cut, copy and paste (also between programs), delete, keep
+  only the selection, fades, louder / quieter, reverse, silence and undo are in its
+  **Edit** menu and on the usual keys; Ctrl+scroll zooms. It's off until you open
+  it: a closed editor doesn't listen, keep audio or draw anything.
+
+## 1.7.2 — 2026-10-05
+
+- Tab help now uses a crisp, theme-aware information icon in a larger square
+  button, with consistent hover and keyboard-focus styling across tabs.
+
+- **More to control from your phone and Stream Deck:** the control API (and so
+  Onion Pocket) can now change the live speed, pitch and effects (bass, treble,
+  reverb, echo… and the presets), switch who's listening (Discord, Steam voice…),
+  and run the radio: list your favourite, recent and popular stations or search,
+  play / stop, a random station, star one, go live, hear it yourself, and its
+  volume. Changes made this way show on the PC's own sliders and buttons.
+  Onion Pocket 0.2.0 puts it all on your phone: new **Radio** and **Sound**
+  tabs (Settings → Remote offers the update).
+
 ## 1.7.1 — 2026-10-04
 
 - **Onion Pocket updates itself from Settings:** when a newer Onion Pocket is out,

@@ -42,6 +42,7 @@ the number move: new work found means the number can go down, and that's fine.
 | voice-fedora | Voice tab on Fedora (Female voice, Hear my voice, delay label) | 1 | open |
 | custom-voices | Custom voices (Piper for Linux) | 1 | done |
 | addons | Add-ons (live voice environment, notices) | 2 | done |
+| ai-voices | AI voices add-on installed and run on a real Linux desktop | 1 | open |
 | import | Import from other soundboards (Soundux, EXP, Wine prefixes) | 1 | done |
 | overlay-x11 | Overlay screen choice and preview click-through on X11 | 1 | done |
 | overlay-wayland | Overlay preview click-through on native Wayland | 1 | open |
@@ -70,3 +71,4 @@ the number move: new work found means the number can go down, and that's fine.
 | 2026-10-05 | 80% | last gut rating, before this scorecard |
 | 2026-10-05 | 68% | scorecard starts: counts launch, a real release, Discord, GNOME the old rating didn't |
 | 2026-10-05 | 69% | CI AppImage passes on Fedora (cable, hold-to-play); found + fixed HTTPS on Fedora (half until the next CI build is checked) |
+| 2026-10-05 | 68% | merged upstream 1.8.0 (AI voices, clip editor); add-ons need Python 3.12; new row: AI voices on a real desktop |

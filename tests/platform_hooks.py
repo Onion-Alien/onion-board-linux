@@ -81,6 +81,8 @@ WINDOWS_ONLY = {
         "the PowerShell speech process (Linux: eSpeak, tests/test_linux_platform.py)",
     "tests/test_speech.py::test_windows_speech_output_that_isnt_utf8_cant_kill_the_reader":
         "the PowerShell speech process's output pipe",
+    "tests/test_speech.py::test_windows_speech_unused_for_a_while_is_closed_and_comes_back":
+        "Windows' speech helper (SAPI); Linux speaks with eSpeak NG",
     # the VB-Cable installer; Linux makes its own virtual cable (soundboard/linux/vcable.py)
     "tests/test_setupwizard.py::test_restart_marker_counts_only_until_the_pc_restarts":
         "VB-Cable's restart marker",
@@ -120,6 +122,12 @@ WINDOWS_ONLY = {
         "OnionBoardSetup.exe (Linux: tests/test_linux_updates.py)",
     "tests/test_speech.py::test_service_command_uses_the_modules_own_python":
         ".venv\\Scripts\\python.exe (Linux: tests/test_linux_modules.py)",
+    "tests/test_aivoice.py::test_card_lists_the_voices_once_installed":
+        r".venv\Scripts\python.exe (Linux: tests/test_linux_modules.py)",
+    # Windows' Restart Manager (an installer closing the app); the AppImage restarts
+    # itself after an update (linux/updates.py)
+    "tests/test_app_restart.py::test_windows_accepts_the_registration":
+        "RegisterApplicationRestart",
     "tests/test_voicesdk.py::test_is_system_never_touches_the_disk":
         "C:\\Windows paths (the voice engine watcher is off on Linux)",
 }

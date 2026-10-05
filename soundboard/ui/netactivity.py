@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from soundboard import netlog, theme
+from soundboard.ui import fit
+from soundboard.ui.panel import Flow
 
 REFRESH_MS = 1000
 _TOR = ("Tor's own connections to the Tor network aren't listed one by one: with Tor, "
@@ -71,9 +73,11 @@ def _put(t: QTableWidget, r: int, c: int, text: str, tip: str = "", align=None,
         it.setToolTip(tip)
     if align is not None and it.textAlignment() != align:
         it.setTextAlignment(align)
-    if it.data(_TONE) != tone:
+    colour = QColor(theme.status(tone)) if tone else None
+    # the colour is checked too, not just the tone: a theme switch changes it
+    if it.data(_TONE) != tone or (colour is not None and it.foreground().color() != colour):
         it.setData(_TONE, tone)
-        it.setForeground(QColor(theme.status(tone)) if tone else QBrush())
+        it.setForeground(colour if colour is not None else QBrush())
     return it
 
 
@@ -184,22 +188,16 @@ class NetActivity(QWidget):
         row.addStretch(1)
         v.addLayout(row)
 
-        # Copy and Clear beside the summary (it wraps), not after the view buttons: all
-        # four in a row made the Connection page wider than a small Settings window
-        row = QHBoxLayout()
         self.summary = QLabel()
         self.summary.setObjectName("hint")
         self.summary.setWordWrap(True)
-        row.addWidget(self.summary, 1)
+        v.addWidget(self.summary)
         self.copy = QPushButton("Copy")
         self.copy.setToolTip("Copy the detailed list as text. It shows the sites you used: "
                              "read it before sharing it")
         self.clear = QPushButton("Clear")
         self.clear.setToolTip("Forget the list so far (and the saved history, if "
                               "it's kept)")
-        row.addWidget(self.copy)
-        row.addWidget(self.clear)
-        v.addLayout(row)
 
         self.servers = _table(["Server", "Why", "Used for", "Connections", "Data",
                                "Last"], 1)
@@ -224,16 +222,16 @@ class NetActivity(QWidget):
         self.stack.addWidget(detail)
         v.addWidget(self.stack)
 
-        # under the table, on their own row: beside either row above, the page got
-        # wider than a small Settings window
-        row = QHBoxLayout()
+        # all four under the table, on the left like every other card's buttons, wrapping
+        # in a small Settings window (Copy and Clear far right beside the summary looked
+        # out of line with Totals and Open log)
+        row = Flow(gap=8)
         self.totals = QPushButton("Totals…")
         self.totals.setToolTip("How much data went to each site, added up over the whole "
                                "history")
         self.open_log = QPushButton("Open log")
-        row.addWidget(self.totals)
-        row.addWidget(self.open_log)
-        row.addStretch(1)
+        for b in (self.copy, self.clear, self.totals, self.open_log):
+            row.addWidget(b)
         v.addLayout(row)
 
         self.simple.toggled.connect(self._mode)
@@ -246,6 +244,9 @@ class NetActivity(QWidget):
         self._timer.setInterval(REFRESH_MS)
         self._timer.timeout.connect(self.refresh)
         self._entries: list[netlog.Entry] = []
+        self._conn_ns: list[int] = []     # the Detailed rows' entries (Entry.n), top down
+        self._conn_done: set[int] = set()   # ones drawn finished: not looked at again
+        self._conn_theme: tuple = ()
         self.refresh()
 
     # only while it's on screen
@@ -296,7 +297,7 @@ class NetActivity(QWidget):
         if self.simple.isChecked():
             self._fill_servers(servers)
         else:
-            self._fill_conns()
+            self._fill_conns(force)
 
     def _fill_servers(self, servers: list[netlog.Server]):
         t = self.servers
@@ -320,15 +321,41 @@ class NetActivity(QWidget):
                  "Sent / received", right, tone)
             _put(t, r, 5, _when(s.last), tone=tone)
 
-    def _fill_conns(self):
+    def _fill_conns(self, force: bool = False):
+        """New connections go in as rows at the top; only rows still open (and ones
+        not drawn finished yet) are looked at again. Redrawing by position shifted
+        every row down one, so each new connection rewrote every cell."""
         t = self.conns
         picked = self._picked_n()
         t.blockSignals(True)
-        t.setRowCount(len(self._entries))
+        keep = {e.n for e in self._entries}
+        for r in reversed(range(len(self._conn_ns))):   # the oldest fell off, or Clear
+            if self._conn_ns[r] not in keep:
+                t.removeRow(r)
+                del self._conn_ns[r]
+        top = self._conn_ns[0] if self._conn_ns else 0
+        new = [e.n for e in self._entries if e.n > top]   # newest first, like the list
+        for _ in new:
+            t.insertRow(0)
+        self._conn_ns[:0] = new
+        if t.rowCount() != len(self._entries) or self._conn_ns != [e.n for e in self._entries]:
+            t.setRowCount(len(self._entries))   # out of step somehow: redraw it all
+            self._conn_ns = [e.n for e in self._entries]
+            force = True
+        theme_key = (theme.status("warn"), theme.status("error"))
+        if force or theme_key != self._conn_theme:   # a theme switch recolours them all
+            self._conn_theme = theme_key
+            self._conn_done.clear()
         right = Qt.AlignRight | Qt.AlignVCenter
         tone = {netlog.BLOCKED: "warn", netlog.FAILED: "error"}
         t.clearSelection()   # new rows push the others down: pick it again by number
         for r, e in enumerate(self._entries):
+            if e.n in self._conn_done:
+                if e.n == picked:
+                    t.selectRow(r)
+                continue
+            if e.state not in (netlog.CONNECTING, netlog.CONNECTED):
+                self._conn_done.add(e.n)   # finished: it won't change again
             label = netlog.feature_label(e.feature)
             color = tone.get(e.state)
             _put(t, r, 0, _when(e.started), tone=color).setData(Qt.UserRole, e.n)
@@ -404,6 +431,7 @@ class LogDialog(QDialog):
 
     def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(parent)
+        fit.watch(self)   # grows to fit its text (ui/fit.py)
         self.setWindowTitle("Network activity log (this run, not saved)")
         self.resize(820, 520)
         v = QVBoxLayout(self)
@@ -428,6 +456,7 @@ class TotalsDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        fit.watch(self)   # grows to fit its text (ui/fit.py)
         self.setWindowTitle("Network activity totals")
         self.resize(820, 520)
         v = QVBoxLayout(self)

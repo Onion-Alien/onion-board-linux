@@ -30,7 +30,7 @@ from soundboard import library, radio, theme
 from soundboard.engine import SR
 from soundboard.library import MAX_SECONDS, trim_silence
 from soundboard.radio import RadioDirectory, RadioPlayer, Station
-from soundboard.ui import busy, icons
+from soundboard.ui import appstate, busy, icons
 from soundboard.ui.panel import Flow as _Flow
 from soundboard.ui.panel import VolumeControl, bar, icon_label, vsep
 
@@ -391,6 +391,9 @@ class RadioTab(QWidget):
         for s in self.recent + self.favorites:
             self._stations[s.uuid] = s
         self._fav_ids = {s.uuid for s in self.favorites}
+        self.phone_dir: RadioDirectory | None = None   # a phone remote's searches
+        self._phone_query = ""                         # ...the one on its way
+        self._phone_found: dict[str, tuple[list[Station], str]] = {}   # ...and the answers
         self._genre = ""           # "" = all genres
         self._country = ""         # "" = all countries
         self._globe_shown: list[str] = []   # uuids last pinned on the map
@@ -512,6 +515,7 @@ class RadioTab(QWidget):
         self._search_timer.timeout.connect(self._search_now)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)   # runs while shown, or while recording
+        appstate.slow_in_background(self, self.timer, 50)   # behind a game: 4 a second
         # the window being dragged keeps the globe drawing (a few wakes a second, not one
         # per move event): a move to another screen loses a sleeping globe's picture
         self._wake_timer = QTimer(self)
@@ -725,7 +729,7 @@ QFrame#stations QFrame#rule { background:$border; max-height:1px; border:none; }
     # ------------------------------------------------------------------ first open
     def showEvent(self, e):
         super().showEvent(e)
-        self.timer.start(50)
+        self.timer.start(appstate.interval(50))
         self.start()
         self._wake_globe()   # back from another tab: draw the globe under its names
 
@@ -1043,6 +1047,58 @@ QFrame#stations QFrame#rule { background:$border; max-height:1px; border:none; }
                 out.append(s)
         return out
 
+    # ------------------------------------------------------------------ a phone's lists
+    def phone_list(self, which: str, query: str = "") -> tuple[list[Station], bool, str]:
+        """(stations, still loading, error) for a phone remote (soundboard.remote): the
+        popular, favourite or recent stations, or a search. A search answers with the
+        known stations that match at once and asks the directory too; asking again
+        brings the stations found online. It has its own directory, so it never
+        touches the search on this tab."""
+        if which in ("favorites", "favourites"):
+            return list(self.favorites), False, ""
+        if which == "recent":
+            return list(self.recent), False, ""
+        if which != "search":
+            self.start()   # the popular list is fetched on first use
+            return (list(self._globe_list), not self._globe_list and not self._globe_error,
+                    self._globe_error)
+        text = radio.search_text(" ".join(query.split()))
+        if not text:
+            return [], False, ""
+        words = radio.fold(text).split()
+        seen, local = set(), []
+        for s in self.favorites + self.recent + self._globe_list:
+            if s.uuid not in seen and s.matches(words):
+                seen.add(s.uuid)
+                local.append(s)
+        if self.phone_dir is None:
+            self.phone_dir = RadioDirectory(cache_dir=self.dir.cache_dir, bases=self.dir.bases,
+                                            parent=self)
+            self.phone_dir.results.connect(self._on_phone_results)
+            self.phone_dir.failed.connect(
+                lambda kind, msg: kind == "search" and self._on_phone_results(
+                    self._phone_query, None, msg))
+        found = self._phone_found.get(text)
+        if found is None:
+            if text != self._phone_query:
+                self._phone_query = text
+                self.phone_dir.search(text)
+            return local, True, ""
+        stations, err = found
+        known = {s.uuid for s in stations}
+        return (sorted(stations + [s for s in local if s.uuid not in known],
+                       key=lambda s: -s.clicks), False, err)
+
+    def _on_phone_results(self, query: str, stations: list | None, err: str = ""):
+        if stations:
+            self._remember(stations)
+            stations = [self._stations[s.uuid] for s in stations]
+        self._phone_found[query] = (stations or [], err)
+        while len(self._phone_found) > 8:     # the last few searches only
+            self._phone_found.pop(next(iter(self._phone_found)))
+        if query == self._phone_query:
+            self._phone_query = ""            # the same words again: ask again later
+
     def visible_stations(self) -> list[Station]:
         out = self._filtered(self._source())
         key = SORTS[max(0, self.cmb_sort.currentIndex())][1]
@@ -1334,7 +1390,7 @@ QFrame#stations QFrame#rule { background:$border; max-height:1px; border:none; }
     def _on_rec(self, on: bool):
         if on:
             self.recorder.start()
-            self.timer.start(50)   # the length cap is checked on the tick
+            self.timer.start(appstate.interval(50))   # the length cap is checked on the tick
             return
         if not self.isVisible():
             self.timer.stop()

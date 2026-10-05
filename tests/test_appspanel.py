@@ -179,6 +179,16 @@ def test_a_capture_that_errors_says_so_and_stops_sending(tab):
     assert row.sending and "Switch Send on" not in row.sub.text()
 
 
+def test_clearing_an_error_line_takes_the_red_off(qapp):
+    from soundboard.ui.appspanel import AppRow
+    row = AppRow("music.exe", Meter)
+    row.set_app(music())
+    row.set_status("It failed", error=True)
+    assert row.sub.property("tone") == "error"
+    row.set_status("")
+    assert row.sub.property("tone") == "" and row.sub.text() != "It failed"
+
+
 def test_remembered_programs_start_from_the_config_and_auto_send(qapp, monkeypatch):
     monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
     FakeCapture.made, FakeCapture.fail, FakeCapture.slow = [], False, False
@@ -563,3 +573,16 @@ def test_forgetting_and_bringing_back_a_second_program_of_a_name(tab, monkeypatc
     assert "player.exe" not in tab.cfg.apps        # the other one is left as it was
     tab._on_apps([player(100, "Music"), player(200, "Tools")])
     assert tab.rows[key].sending and not tab.rows["player.exe"].sending
+
+
+def test_card_buttons_say_which_program_they_are_for(qapp):
+    """A screen reader hears "Send Music", not three cards' worth of "Send"."""
+    from soundboard.ui.appspanel import AppRow
+    row = AppRow("music.exe", Meter)
+    assert row.btn_send.accessibleName() == "Send Music"
+    row.set_app(music())
+    name = row.name.text()
+    assert row.btn_send.accessibleName() == f"Send {name}"
+    assert row.btn_rec.accessibleName() == f"Record {name}"
+    assert row.btn_forget.accessibleName() == f"Forget {name}"
+    assert row.btn_clip.accessibleName() == f"Clip editor for {name}"

@@ -373,8 +373,24 @@ def _add_live_tokens(t: dict[str, str], colour: str = "") -> None:
     t.setdefault("live_border", _mix(t["live_text"], t["bg"], 0.45))
 
 
+def _add_hover_token(t: dict[str, str]) -> None:
+    """accent_hover: a filled accent button's hover colour, its accent_hi made just dark
+    (or light) enough for its on_accent text to read (4.5:1). White on a lightened
+    accent was 3.2-4.2:1 in ten themes, the default Dark among them. accent_hi itself
+    stays as it is: it's also text and borders on the panels."""
+    if "accent_hover" in t:
+        return
+    # light text: darker; dark text: lighter
+    on = t["on_accent"]
+    away = "#000000" if _contrast(on, "#000000") > _contrast(on, "#ffffff") else "#ffffff"
+    t["accent_hover"] = next(
+        (c for c in (_mix(t["accent_hi"], away, i / 20) for i in range(13))
+         if _contrast(c, t["on_accent"]) >= 4.5), t["accent_hi"])
+
+
 for _t in THEMES.values():
     _add_live_tokens(_t)
+    _add_hover_token(_t)
 
 DEFAULT = "Dark"
 # How the Settings window groups the theme cards. Every theme is in exactly one group.
@@ -472,16 +488,20 @@ QPushButton:checked { background:$accent; border-color:$accent; color:$on_accent
 QPushButton:disabled { color:$muted; }
 QPushButton[busy="true"], QPushButton#primary[busy="true"] { color:$muted; }
 QPushButton#primary { background:$accent; border:none; color:$on_accent; font-weight:600; }
-QPushButton#primary:hover { background:$accent_hi; }
+QPushButton#primary:hover { background:$accent_hover; }
 QPushButton#primary:focus { border:1px solid $text_hi; }
 QPushButton#danger { background:$danger_bg; border:1px solid $danger_border; color:$danger_text; font-weight:600; }
 QPushButton#danger:hover { background:$danger_hover; }
 QPushButton#small { padding:2px 8px; font-size:8pt; }
+QPushButton#tabinfo { padding:0; border-radius:8px; background:transparent; border:1px solid transparent; }
+QPushButton#tabinfo:hover { background:$btn_hover; border-color:$border_hi; }
+QPushButton#tabinfo:pressed { background:$btn_press; border-color:$accent; }
+QPushButton#tabinfo:focus { border-color:$accent; }
 QPushButton#settings { padding:6px 14px; font-weight:600; }
 QFrame#transport, QFrame#deck { background:$panel; border-radius:12px; }
 QFrame#mixer { background:transparent; }
 QFrame#card QPushButton#primary { background:$accent; color:$on_accent; border:none; padding:9px; }
-QFrame#card QPushButton#primary:hover { background:$accent_hi; }
+QFrame#card QPushButton#primary:hover { background:$accent_hover; }
 QFrame#vsep { background:$border; border:none; }
 QLabel#toast { background:$panel; border:1px solid $border_hi;
                border-radius:12px; padding:8px 14px; }
@@ -527,10 +547,10 @@ QDoubleSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:off,
 QSpinBox#stepper::down-arrow:disabled, QSpinBox#stepper::down-arrow:off { image:url("$down_small_off"); }
 QSlider::groove:vertical { width:4px; background:$groove; border-radius:2px; }
 QSlider::add-page:vertical { background:$accent; border-radius:2px; }
-QSlider::handle:vertical { background:white; border:1px solid $border; width:14px; height:14px; margin:0 -5px; border-radius:7px; }
-QPushButton#micbanner { background:#e53935; color:white; font-weight:700; font-size:11pt;
+QSlider::handle:vertical { background:white; border:1px solid $border_hi; width:14px; height:14px; margin:0 -5px; border-radius:7px; }
+QPushButton#micbanner { background:#d32f2f; color:white; font-weight:700; font-size:11pt;
     border:none; border-radius:10px; padding:10px; }
-QPushButton#miccheck:checked { background:#e53935; border:1px solid #ff6b6b; color:white;
+QPushButton#miccheck:checked { background:#d32f2f; border:1px solid #ff6b6b; color:white;
     font-weight:700; }
 QFrame#transport QLabel, QFrame#transport QCheckBox, QFrame#transport QSlider,
 QFrame#deck QLabel, QFrame#deck QCheckBox, QFrame#deck QSlider { background:transparent; }
@@ -550,12 +570,12 @@ QComboBox::down-arrow:disabled { image:url("$down_off"); }
 QComboBox:disabled, QLineEdit:disabled { color:$muted; background:$inset; }
 QFrame#card QComboBox, QFrame#card QPushButton, QFrame#card QLineEdit { background:$card; }
 QFrame#card QPushButton:hover:!checked { background:$btn_hover; border-color:$border_hi; }
-QFrame#card QPushButton#primary:hover { background:$accent_hi; }
+QFrame#card QPushButton#primary:hover { background:$accent_hover; }
 QFrame#card QPushButton:focus { border-color:$accent; }
 QFrame#card QComboBox:disabled, QFrame#card QLineEdit:disabled { background:$inset; }
 QFrame#card QAbstractSpinBox { background:$bg; }
 QFrame#card QPushButton:checked { background:$accent; }
-QFrame#card QPushButton#miccheck:checked { background:#e53935; }
+QFrame#card QPushButton#miccheck:checked { background:#d32f2f; }
 QComboBox QAbstractItemView { background:$card; color:$text; border:1px solid $border_hi;
     padding:4px; outline:0; selection-background-color:$accent; selection-color:$on_accent; }
 QComboBox QAbstractItemView::item { min-height:28px; padding:0 10px; border-radius:6px; }
@@ -567,7 +587,7 @@ QPushButton::menu-indicator { image:url("$down"); width:9px; height:9px;
 QPushButton::menu-indicator:open { image:url("$up"); }
 QSlider::groove:horizontal { height:4px; background:$groove; border-radius:2px; }
 QSlider::sub-page:horizontal { background:$accent; border-radius:2px; }
-QSlider::handle:horizontal { background:white; border:1px solid $border; width:14px; height:14px; margin:-5px 0; border-radius:7px; }
+QSlider::handle:horizontal { background:white; border:1px solid $border_hi; width:14px; height:14px; margin:-5px 0; border-radius:7px; }
 /* room for the whole handle: Qt sizes a slider to its groove, which cut the circle's top
    and bottom off flat */
 QSlider:horizontal { min-height:20px; }
@@ -581,7 +601,7 @@ QComboBox[dim="true"] { color:$muted; }
 QCheckBox::indicator { width:16px; height:16px; border-radius:4px; border:1px solid $off; background:$card; }
 QCheckBox::indicator:checked { background:$accent; border-color:$accent; image:url("$check"); }
 QCheckBox::indicator:hover { border-color:$border_hi; }
-QCheckBox::indicator:checked:hover { background:$accent_hi; border-color:$accent_hi; }
+QCheckBox::indicator:checked:hover { background:$accent_hover; border-color:$accent_hover; }
 QCheckBox::indicator:disabled { background:$inset; border-color:$border; }
 QCheckBox::indicator:checked:disabled { image:url("$check_off"); }
 /* radio circles are whole pictures: a stylesheet border-radius:8px on a 16px box
@@ -657,7 +677,7 @@ QLabel#fxname { font-weight:700; font-size:10pt; color:$text_hi; }
 QLabel#fxdesc { color:$muted; font-size:8.5pt; }
 QLabel#fxparam { color:$text; font-size:9pt; }
 QLabel#fxvalue { color:$accent_hi; font-size:9pt; font-weight:700; }
-QLabel#fxend { color:$faint; font-size:7.5pt; }
+QLabel#fxend { color:$muted; font-size:7.5pt; }   /* faint was 2.6:1 on some */
 QLabel#fxgroup { color:$section; font-size:8pt; font-weight:700; letter-spacing:1px; padding-top:6px; }
 QPushButton#fxreset, QFrame#card QPushButton#fxreset, QFrame#card[roomy="true"] QPushButton#fxreset { background:transparent; border:none; color:$muted; padding:2px 6px; min-height:0; font-size:8pt; }
 QPushButton#fxreset:hover, QFrame#card QPushButton#fxreset:hover, QFrame#card[roomy="true"] QPushButton#fxreset:hover { color:$text; background:transparent; }
@@ -669,8 +689,8 @@ QFrame#card QPushButton#fold, QFrame#card QPushButton#fold:checked { background:
 QPushButton#power { font-weight:700; }
 QPushButton#power:checked, QFrame#card QPushButton#power:checked { background:$live; border:1px solid $live_hi; color:$on_live; }
 QPushButton#power:checked:hover, QFrame#card QPushButton#power:checked:hover { background:$live_hi; }
-QPushButton#live:checked { background:#e53935; border:1px solid #ff6b6b; color:white; }
-QPushButton#rec:checked { background:#e53935; border:1px solid #ff6b6b; color:white; font-weight:700; }
+QPushButton#live:checked { background:#d32f2f; border:1px solid #ff6b6b; color:white; }
+QPushButton#rec:checked { background:#d32f2f; border:1px solid #ff6b6b; color:white; font-weight:700; }
 QFrame#setcard { background:$panel; border-radius:12px; }
 QFrame#setcard QWidget { background:transparent; }
 QFrame#setcard QPushButton { background:$btn; }
@@ -678,7 +698,7 @@ QFrame#setcard QPushButton:hover { background:$btn_hover; border-color:$border_h
 QFrame#setcard QPushButton:checked { background:$accent; color:$on_accent; }
 QFrame#setcard QPushButton#primary { background:$accent; color:$on_accent; border:none; }
 QFrame#setcard QPushButton#power:checked { background:$live; border:1px solid $live_hi; color:$on_live; }
-QFrame#setcard QPushButton#primary:hover { background:$accent_hi; }
+QFrame#setcard QPushButton#primary:hover { background:$accent_hover; }
 QTableView, QFrame#setcard QTableView { background:$card; alternate-background-color:$card_hi;
     color:$text; border:1px solid $border; border-radius:6px;
     selection-background-color:$accent; selection-color:$on_accent; }
@@ -712,6 +732,14 @@ QFrame#card QFrame#chip QPushButton#chipstop:hover { background:$danger_bg; colo
 QFrame#card QComboBox QAbstractItemView, QFrame#setcard QComboBox QAbstractItemView,
 QFrame#card QComboBoxPrivateContainer, QFrame#setcard QComboBoxPrivateContainer,
 QFrame#card QMenu, QFrame#setcard QMenu { background:$card; }
+/* keyboard focus shows on every control in every theme: these come last because a
+   rule with more ids (QFrame#card QPushButton#primary) outranks a plain :focus one */
+QFrame#card QPushButton#primary:focus, QFrame#setcard QPushButton#primary:focus,
+QPushButton:checked:focus, QFrame#card QPushButton:checked:focus,
+QFrame#setcard QPushButton:checked:focus { border:1px solid $text_hi; }
+QCheckBox::indicator:focus { border-color:$accent; }
+QCheckBox::indicator:checked:focus { border-color:$text_hi; }
+QSlider::handle:horizontal:focus, QSlider::handle:vertical:focus { border:2px solid $accent; }
 """)
 
 
@@ -986,6 +1014,10 @@ def apply(app, name: str, live: str | None = None) -> str:
     if live is not None:
         set_live(live)
     name = set_current(name)
+    # cleared first: Qt swapping one app-wide sheet straight for another re-styles every
+    # widget the slow way (0.6-1.3 s with ~1000 widgets); empty and then the new sheet
+    # gives the same look in about a quarter of the time. No paint happens in between.
+    app.setStyleSheet("")
     app.setStyleSheet(stylesheet(name))
     widgets = app.allWidgets()
     _recolour_inline(widgets, old)

@@ -69,12 +69,14 @@ def test_the_appimage_builds_environments_from_a_new_enough_python3(monkeypatch)
     assert modules.base_python() == sys.executable   # from source: the app's own
 
 
-def test_install_sh_makes_the_environment_where_the_app_looks(tmp_path):
+@pytest.mark.parametrize("name, download", [("live-voice", "--download base.en"),
+                                            ("ai-voices", "--download")])
+def test_install_sh_makes_the_environment_where_the_app_looks(tmp_path, name, download):
     """install.sh with a stand-in python3 that records what it was asked to do."""
-    addon = tmp_path / "live-voice"
+    addon = tmp_path / name
     addon.mkdir()
-    for name in ("install.sh", "requirements.txt"):
-        (addon / name).write_bytes((ROOT / "modules" / "live-voice" / name).read_bytes())
+    for f in ("install.sh", "requirements.txt"):
+        (addon / f).write_bytes((ROOT / "modules" / name / f).read_bytes())
     (addon / "install.sh").chmod(0o755)
     calls = tmp_path / "calls.txt"
     fake_bin = tmp_path / "bin"
@@ -100,4 +102,33 @@ exit 0
     lines = calls.read_text().splitlines()
     assert any(" -m venv .venv" in x for x in lines)
     assert any(x.startswith(".venv/bin/python -m pip install") for x in lines)
-    assert any(x.startswith(".venv/bin/python helper.py --download base.en") for x in lines)
+    assert any(x.startswith(f".venv/bin/python helper.py {download}") for x in lines)
+
+
+def test_every_add_on_with_an_install_bat_has_an_install_sh():
+    for bat in (ROOT / "modules").glob("*/install.bat"):
+        sh = bat.with_name("install.sh")
+        assert sh.is_file() and os.access(sh, os.X_OK), sh
+
+
+def test_ai_voices_card_lists_the_voices_once_installed(qapp, tmp_path):
+    """test_aivoice.py's card test with the Linux environment (.venv/bin/python)."""
+    from soundboard.speech.aivoice import AiVoiceController
+    from soundboard.ui.aivoicepanel import AiVoicePanel
+    from soundboard.voicefx import VoiceChain
+    folder = tmp_path / "ai-voices"
+    folder.mkdir()
+    for f in ("module.json", "voices.json"):
+        (folder / f).write_bytes((ROOT / "modules" / "ai-voices" / f).read_bytes())
+    _python(folder / ".venv")
+    (folder / "model").mkdir()
+    for f in ("stream.onnx", "speaker.onnx", "voices.npz"):
+        (folder / "model" / f).write_bytes(b"x")
+    (info,) = modules.discover([tmp_path])
+    p = AiVoicePanel(AiVoiceController(VoiceChain(), lambda e: None), {"voice": "pixie"}, [info])
+    try:
+        assert not p.ready_box.isHidden() and p.b_get.isHidden()
+        assert p.cb_voice.count() >= 3 and p.cb_voice.currentData() == "pixie"
+    finally:
+        p.shutdown()
+        p.deleteLater()

@@ -91,11 +91,11 @@ PHRASES: list[tuple[str, str]] = [
     # add-ons (linux/modules.py): the distribution's python3, the install.sh fallback
     ("Python isn't installed. Get it from python.org (tick \"Add python.exe to PATH\"), "
      "then press Install again.",
-     "Python 3.11 or newer isn't installed. Install it with your distribution's package "
+     "Python 3.12 or newer isn't installed. Install it with your distribution's package "
      "manager (with venv: python3-venv on Debian and Ubuntu), then press Install again."),
     ("install.bat", "install.sh"),
     ("Needs Python 3.12+ from python.org.",
-     "Needs Python 3.11 or newer: your distribution's python3, with venv."),
+     "Needs Python 3.12 or newer: your distribution's python3, with venv."),
     # hotkeys (settings.pretty_key): the Windows key is Super on Linux
     ("Windows+", "Super+"),
 ]

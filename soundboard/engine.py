@@ -38,7 +38,7 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
-from soundboard import destination, livefx
+from soundboard import destination, livefx, mapped
 from soundboard.eq import EQ
 from soundboard.sendfx import Ducker, Limiter, SmartMono
 from soundboard.voicefx.builtin import PitchShift
@@ -51,6 +51,10 @@ CH = 2
 FADE_S = 0.010  # fade when a sound is stopped early (no clicks)
 STALL_S = 1.5   # a stream whose callback hasn't run for this long is dead: reopen it
 RETRY_S = 5.0   # how often to retry a device that failed to open
+# What each Audio buffering choice asks PortAudio for. Windows' shared mode never goes
+# below its own 10 ms period, so 'low' and PortAudio's 'high' (10 ms) both came out as
+# 22 ms with ~10 ms to spare per block; asking for a number buys real room.
+BUFFER = {"low": "low", "high": 0.04}
 I16_SCALE = np.float32(1 / 32767.0)   # int16 sound data -> float
 CACHE_BUDGET = 512 << 20               # bytes of resampled copies kept for non-48 kHz devices
 # the app's own playback: the test recording, cue beeps, the setup wizard's tune. With
@@ -210,15 +214,23 @@ class Ring:
     # Running dry or skipping ahead is a jump in the waveform, heard as a crack. The
     # frames around it are faded over this long instead, so it's a soft dip.
     FADE_S = 0.004
+    # auto_drift's early estimate: the writer's frames against the reader's, fitted
+    # every EST_CHECK_S once there are EST_MIN_S of them. Tracking starts after two fits
+    # in a row say the same side, by at least DRIFT_MIN and well beyond their own noise
+    # (a ring that is on time never starts: no stretching, no pitch wobble).
+    EST_CHECK_S, EST_MIN_S, EST_MAX_S = 1.0, 2.0, 30.0
+    DRIFT_MIN = 0.00005
+    MIC_KP, MIC_KI = 0.004, 0.000005   # the mic rings' drift controller (see _mic_err)
 
     def __init__(self, rate: int = SR, prefill_s: float = 0.015, max_s: float = 0.08,
                  track_drift: bool = False, grow_to_s: float = 0.0, auto_drift: bool = False):
         self.lock = threading.Lock()
         self.prefill_s, self.max_s = prefill_s, max_s
         self.track_drift = track_drift
-        # auto_drift: start without drift tracking, and switch it on once the ring has
-        # had to skip or refill twice (the writer's clock really is off: a wireless
-        # headset's mic against the output clock, say)
+        # auto_drift: start without drift tracking, and switch it on as soon as the
+        # writer's clock is measured to be off (a wireless headset's mic or a USB
+        # interface against the output clock), before the ring ever runs dry or
+        # skips; failing that, once it has had to skip or refill twice
         self.auto_drift = auto_drift
         # grow_to_s: a writer that stalls now and then (the radio) gets a bigger
         # cushion each time the ring runs dry, up to this, so it stops skipping
@@ -242,9 +254,69 @@ class Ring:
             self._acc = 0.0      # fractional frames carried between reads
             self._integ = 0.0    # learned clock offset
             self._last = np.zeros((1, CH), np.float32)   # the frame before the next read
+            self.rate = rate
+            self._est_reset()
+
+    def _est_reset(self):
+        """Start the clock estimate over (a gap, a skip, a restart: the old fit is moot)."""
+        self._wrote = 0          # frames written since the estimate started
+        self._ex = 0             # frames read since then (the reader's clock)
+        self._sums = [0.0] * 6   # n, Σx, Σd, Σxx, Σxd, Σdd with d = written - read
+        self._est_next = int(self.rate * self.EST_MIN_S)
+        self._est_side = 0       # the side the last fit came out on (+1 fast, -1 slow)
+        self.drift_est = 1.0     # the last fit's writer/reader clock ratio
+
+    def _mic_err(self, n: int) -> float:
+        """The drift controller's error for a mic ring, aimed at the fill a read finds
+        right after priming: the cushion plus the read (aimed at the bare cushion, it
+        read the ring dry again and again: the mic's is only 1.5 blocks). The fill a
+        read finds swings by a whole block as the two clocks' blocks slide past each
+        other (every 20 s at 0.05% apart), so the mic's gains are gentler than the
+        radio's: with those it wobbled by up to 1% (now 0.05%, 0.35% at worst). (Averaging
+        the fill instead lags the loop, and it swings.) The integral is slow (MIC_KI):
+        tracking often starts with the fill at the top of that swing, and a faster one
+        took it for drift and wound up to 4x the real offset, reading the ring dry (a
+        0.2% fast mic clicked ~10 s in, in half the runs). The seed and kp carry the
+        start; the integral only trims what's left, over ~30 s."""
+        aim = self.prefill + n
+        return min(max((self.count - aim) / aim, -1.0), 1.0)   # (np.clip: ~5 us a number)
+
+    def _estimate(self, n: int):
+        """After a read of n frames: fit the writer's clock against the reader's and
+        switch drift tracking on, seeded with the fit, once it's clearly off."""
+        self._ex += n
+        x, d = float(self._ex), float(self._wrote - self._ex)
+        sm = self._sums
+        sm[0] += 1
+        sm[1] += x
+        sm[2] += d
+        sm[3] += x * x
+        sm[4] += x * d
+        sm[5] += d * d
+        if self._ex < self._est_next:
+            return
+        self._est_next = self._ex + int(self.rate * self.EST_CHECK_S)
+        k, sx, sd, sxx, sxd, sdd = sm
+        vxx, vxd, vdd = sxx - sx * sx / k, sxd - sx * sd / k, sdd - sd * sd / k
+        if k < 8 or vxx <= 0:
+            return
+        slope = vxd / vxx                                 # writer/reader ratio - 1
+        se = (max(vdd - slope * vxd, 0.0) / (k - 2) / vxx) ** 0.5
+        self.drift_est = 1.0 + slope
+        side = (slope > 0) - (slope < 0)
+        if abs(slope) < max(self.DRIFT_MIN, 6 * se):
+            side = 0
+        if side and side == self._est_side:
+            lim = self.DRIFT_MAX
+            self._integ = min(max(slope, -lim), lim)   # read at the writer's pace
+            self.track_drift = True
+        self._est_side = side
+        if self._ex >= self.rate * self.EST_MAX_S:   # on time so far: start a fresh fit
+            self._est_reset()
 
     def _glitched(self):
         """Count toward switching drift tracking on (auto_drift)."""
+        self._est_reset()
         if self.auto_drift and not self.track_drift and self.underruns + self.overflows >= 2:
             self.track_drift = True
 
@@ -253,6 +325,7 @@ class Ring:
             self.r = self.w = self.count = 0
             self.primed = False
             self._fade_in = True
+            self._est_reset()
 
     def write(self, x: np.ndarray):
         with self.lock:
@@ -270,6 +343,8 @@ class Ring:
                 self.buf[: n - k] = x[k:]
             self.w = end % self.cap
             self.count = min(self.count + n, self.cap)
+            if self.primed:
+                self._wrote += n
             if self.count > self.max_fill:   # (always so once unread frames were overwritten)
                 # keep the newest `prefill` frames: they end at w (r + count only
                 # equals w if nothing unread was overwritten, so count back from w)
@@ -286,14 +361,20 @@ class Ring:
                     return None
                 self.primed = True
                 self._fade_in = True
+                self._est_reset()
             m = n
             if self.track_drift:
                 # PI control: the integral learns the steady clock offset, so the fill
                 # settles back at the full prefill cushion instead of hovering near empty
-                err = float(np.clip((self.count - self.prefill) / max(self.prefill, 1), -1, 1))
                 lim = self.DRIFT_MAX
-                self._integ = float(np.clip(self._integ + err * 0.0002, -lim, lim))
-                want = 1.0 + float(np.clip(err * lim * 0.5 + self._integ, -lim, lim))
+                if self.auto_drift:
+                    err, kp, ki = self._mic_err(n), self.MIC_KP, self.MIC_KI
+                else:
+                    err = min(max((self.count - self.prefill) / max(self.prefill, 1),
+                                  -1.0), 1.0)
+                    kp, ki = lim * 0.5, 0.0002
+                self._integ = min(max(self._integ + err * ki, -lim), lim)
+                want = 1.0 + min(max(err * kp + self._integ, -lim), lim)
                 self.ratio += (want - self.ratio) * 0.05          # glide, no audible warble
                 self._acc += n * self.ratio
                 m = max(1, int(self._acc))
@@ -332,6 +413,8 @@ class Ring:
                 self._fade_in = False
                 k = min(self.fade, n)
                 out[:k] *= np.linspace(0, 1, k, dtype=np.float32)[:, None]
+            if self.auto_drift and not self.track_drift:
+                self._estimate(n)
             return out
 
     def _peek_at(self, k: int) -> np.ndarray:
@@ -496,8 +579,10 @@ class AuxSource:
         if self._since < SR * self.MAKEUP_EVERY_S or self._hist_n < SR:
             return
         self._since = 0
-        recent = np.roll(h, -self._hist_w, axis=0)[len(h) - self._hist_n:]
-        new = destination.cut_shares(recent, SR)
+        # the last _hist_n frames, read from the ring in place (np.roll copied all
+        # 1.5 MB of it every time)
+        new = destination.cut_shares(h, SR, at=(self._hist_w - self._hist_n) % len(h),
+                                     length=self._hist_n)
         if new:   # silence measures nothing: keep what it had
             old = self.cut_share
             self.cut_share = {c: 0.5 * old.get(c, v) + 0.5 * v for c, v in new.items()}
@@ -641,6 +726,7 @@ class Engine:
         self._gate: dict[str, float] = {}   # output -> the mic's current gate gain
         self.limiter_on = True    # hold the send device's peaks at sendfx.CEILING_DB
         self._send: dict[tuple[str, str], object] = {}   # (out, kind) -> its sendfx stage
+        self._quiet: dict[str, int] = {}   # out -> frames of silence on its sounds bus
         self.sound_speed = 1.0        # live playback speed of every sound (0.25..4)
         self.sound_pitch = 0.0        # live pitch of every sound, semitones
         self.sound_keep_pitch = True  # speed changes leave the pitch alone
@@ -713,7 +799,7 @@ class Engine:
         if chans < CH:
             raise RuntimeError("mono output devices aren't supported")
         s = sd.OutputStream(device=idx, samplerate=rate, channels=CH, dtype="float32",
-                            latency=self.latency, callback=callback)
+                            latency=BUFFER.get(self.latency, "low"), callback=callback)
         self._last_cb[key] = time.monotonic()
         try:
             s.start()
@@ -824,7 +910,8 @@ class Engine:
                 rate = self._native_rate(idx)
                 chans = min(2, sd.query_devices(idx)["max_input_channels"])
                 s = sd.InputStream(device=idx, samplerate=rate, channels=chans, dtype="float32",
-                                   latency=self.latency, callback=self._cb_mic)
+                                   latency=BUFFER.get(self.latency, "low"),
+                                   callback=self._cb_mic)
                 # the mic callback resamples with these from its first block, so they're
                 # set before start (cheap: no ring is touched) and undone if it fails
                 if rate != old_rate:
@@ -1030,8 +1117,16 @@ class Engine:
         if hit and hit[0] is data:
             return hit[1]
         if data.dtype == np.int16:   # library audio: resample in float, keep the copy compact
-            out = resample(data.astype(np.float32) * I16_SCALE, src_rate, rate)
-            out = np.clip(np.rint(out * 32767.0), -32768, 32767).astype(np.int16)
+            f = data.astype(np.float32)   # in place from here: a song's float copy is
+            f *= I16_SCALE                # ~70 MB, and each temporary would be another
+            out = resample(f, src_rate, rate)
+            del f
+            if not out.flags.writeable:
+                out = out.copy()
+            out *= 32767.0
+            np.rint(out, out=out)
+            np.clip(out, -32768, 32767, out=out)
+            out = out.astype(np.int16)
         else:
             out = resample(data, src_rate, rate)
         with self._cache_lock:
@@ -1083,10 +1178,19 @@ class Engine:
         return shares
 
     def prepare(self, sid: str, data: np.ndarray):
-        """Pre-resample for the currently open outputs (call off the UI thread)."""
+        """Pre-resample for the currently open outputs (call off the UI thread), as
+        long as the copies fit in CACHE_BUDGET. Past it, each new copy would only push
+        out an earlier one: a big board on a 44.1 kHz headset resampled every song at
+        every start and threw most of them away. Those are made when pressed instead
+        (play reads the source at the device's rate meanwhile)."""
         self.cut_shares(sid, data)
         for o in self.active_outputs():
-            self.data_for(sid, data, self.rates[o])
+            rate = self.rates[o]
+            if self._cached(sid, data, rate, SR) is None:
+                need = data.nbytes * rate / SR
+                if self._cache_bytes + need > CACHE_BUDGET:
+                    continue
+            self.data_for(sid, data, rate)
 
     def forget(self, sid: str):
         self._shares.pop(sid, None)
@@ -1137,6 +1241,8 @@ class Engine:
                 self._resample_soon(sid, data, rates_used[o], src_rate)
                 d, step[o] = data, src_rate / rates_used[o]
             per_out[o] = d
+        for d in {id(d): d for d in per_out.values()}.values():
+            mapped.warm(d, int(start * len(d)))   # a long sound on disk: read it in first
         v = Voice(sid, per_out, gain, loop, preview=preview, rates=rates_used,
                   fade_in=max(0.0, float(fade_in)), fade_out=max(0.0, float(fade_out)),
                   fixed=is_fixed(sid), cut_share=self.cut_shares(sid, data, src_rate),
@@ -1183,10 +1289,13 @@ class Engine:
     def seek(self, sid: str, frac: float) -> bool:
         with self.lock:
             v = self._current(sid)
-            if v is None:
-                return False
+        if v is None:
+            return False
+        for d in {id(d): d for d in v.data.values()}.values():
+            mapped.warm(d, int(frac * len(d)))   # before the audio thread jumps there
+        with self.lock:
             v.seek(frac)
-            return True
+        return True
 
     def state(self, sid: str) -> tuple[float, bool] | None:
         """(progress 0..1, paused) of the newest live voice for sid, or None."""
@@ -1381,7 +1490,15 @@ class Engine:
             i = pos.astype(np.int64)
             h, j, k = np.maximum(i - 1, 0), i + 1, np.minimum(i + 2, n - 1)
         f = (pos - i).astype(np.float32)[:, None]
-        p0, p1, p2, p3 = (data[x].astype(np.float32) for x in (h, i, j, k))
+        if len(i) and 1 <= i[0] <= i[-1] and i[-1] + 2 < n:
+            # no wrap: convert the few frames used once and gather from that (four
+            # gathers straight from a song's int16 cost ~70 us per sound and output)
+            lo = int(i[0]) - 1
+            w = data[lo:int(i[-1]) + 3].astype(np.float32)
+            i0 = i - lo
+            p0, p1, p2, p3 = w[i0 - 1], w[i0], w[i0 + 1], w[i0 + 2]
+        else:
+            p0, p1, p2, p3 = (data[x].astype(np.float32) for x in (h, i, j, k))
         if not loop:   # past either end: continue the line (a ramp stays a ramp)
             first, last = i == 0, i + 2 > n - 1
             p0[first] = 2 * p1[first] - p2[first]
@@ -1589,7 +1706,7 @@ class Engine:
             mix = self._send_bus("mon", mix, m)
             if self.limiter_on:
                 mix = self._stage("mon", Limiter).process(mix)
-        else:
+        elif not self._bus_quiet("mon", mix):
             mix = self._dest("mon", self._eq("mon", "sounds", mix))
         mix *= np.float32(self.mon_vol)
         soft_limit(mix)
@@ -1652,17 +1769,34 @@ class Engine:
         """The sounds bus shaped for voice chat (EQ, destination mode, ducking under
         your voice, phase-aware mono), with the mic block `m` added on top."""
         mic_on = m is not None and self.mic_enabled and not self.mic_muted
-        mix = self._dest(out, self._eq(out, "sounds", mix))
+        quiet = self._bus_quiet(out, mix)
+        if not quiet:
+            mix = self._dest(out, self._eq(out, "sounds", mix))
         if self.duck_db < 0 or (out, "Ducker") in self._send:
             g = self._stage(out, Ducker).process(m if mic_on else None, len(mix), self.duck_db)
             if not isinstance(g, float):
                 mix = mix * g
-        if self.send_mono:
+        # a mode that already made the bus mono (every built-in one) needs no second pass
+        if self.send_mono and not quiet and not (self.dest is not None and self.dest.mono):
             mix = self._stage(out, SmartMono).process(mix)
         if mic_on:
             m = self._gated(out, m)
             mix += self._eq(out, "voice", m * np.float32(self.mic_vol))
         return mix
+
+    QUIET_S = 0.5   # this long with nothing on a sounds bus: its filters have rung out
+
+    def _bus_quiet(self, out: str, mix: np.ndarray) -> bool:
+        """True once the sounds bus of `out` has carried only zeros for QUIET_S. Its EQ,
+        mode shaping and mono downmix would only be filtering silence then (~1 ms of
+        every 10 ms block in a voice chat mode, with nothing playing), so they're
+        skipped; their state has long decayed, and the next sound picks them up."""
+        if mix.any():
+            self._quiet[out] = 0
+            return False
+        n = self._quiet.get(out, 0) + len(mix)
+        self._quiet[out] = n
+        return n > self.QUIET_S * self.rates[out]
 
     GATE_S = 0.04    # how fast the mic fades out / back in around a sound
 

@@ -17,20 +17,22 @@ def node(serial, pid, app, state="running", cls="Stream/Output/Audio"):
                 "application.process.id": pid, "application.process.binary": app.lower()}}}
 
 
-DUMP = [node(10, 1001, "Firefox"), node(11, 1002, "Firefox"),   # two tab processes
-        node(12, 2000, "Spotify", state="idle"),
-        node(13, 3000, "Mic", cls="Stream/Input/Audio"),         # a recording: not a player
+# Made-up pids above the kernel's highest (pid_max is at most 4194304), so none is
+# this test's own: on WSL a worker can really be pid 1001, and the app leaves itself out
+DUMP = [node(10, 9001001, "Firefox"), node(11, 9001002, "Firefox"),   # two tab processes
+        node(12, 9002000, "Spotify", state="idle"),
+        node(13, 9003000, "Mic", cls="Stream/Input/Audio"),         # a recording: not a player
         {"id": 1, "type": "PipeWire:Interface:Client", "info": {"props": {}}}]
 
 
 @pytest.fixture
 def procs(monkeypatch):
-    """A process table: Firefox 1000 with tabs 1001/1002, Spotify 2000, us."""
+    """A process table: Firefox 9001000 with tabs 9001001/9001002, Spotify 9002000, us."""
     from soundboard.linux import appaudio as la
     me = os.getpid()
-    parents = {1001: 1000, 1002: 1000, 1000: 1, 2000: 1, me: 1}
-    exes = {1000: "/usr/lib/firefox/firefox", 1001: "/usr/lib/firefox/firefox",
-            1002: "/usr/lib/firefox/firefox", 2000: "/opt/spotify/spotify"}
+    parents = {9001001: 9001000, 9001002: 9001000, 9001000: 1, 9002000: 1, me: 1}
+    exes = {9001000: "/usr/lib/firefox/firefox", 9001001: "/usr/lib/firefox/firefox",
+            9001002: "/usr/lib/firefox/firefox", 9002000: "/opt/spotify/spotify"}
     monkeypatch.setattr(la, "_ppid", lambda pid: parents.get(pid, 0))
     monkeypatch.setattr(la, "process_path", lambda pid: exes.get(pid, ""))
     monkeypatch.setattr(la, "stream_nodes", lambda dump=None, real=la.stream_nodes:
@@ -42,23 +44,23 @@ def test_stream_nodes_are_players_only():
     from soundboard.linux import appaudio as la
     got = la.stream_nodes(DUMP)
     assert [(n["serial"], n["pid"], n["state"]) for n in got] == [
-        ("10", 1001, "running"), ("11", 1002, "running"), ("12", 2000, "idle")]
+        ("10", 9001001, "running"), ("11", 9001002, "running"), ("12", 9002000, "idle")]
 
 
 def test_list_apps_groups_a_program_and_leaves_us_out(procs, monkeypatch):
     from soundboard import appaudio
     apps = appaudio.list_apps()
-    assert [(a.pid, a.name, a.active) for a in apps] == [(1000, "Firefox", True),
-                                                         (2000, "Spotify", False)]
-    assert apps[0].session_pids == {1001, 1002}
+    assert [(a.pid, a.name, a.active) for a in apps] == [(9001000, "Firefox", True),
+                                                         (9002000, "Spotify", False)]
+    assert apps[0].session_pids == {9001001, 9001002}
 
 
 def test_a_capture_takes_its_programs_streams(procs):
     from soundboard import appaudio
-    assert appaudio.AppCapture(1000, None)._wanted() == {"10", "11"}
-    assert appaudio.AppCapture(2000, None)._wanted() == {"12"}
+    assert appaudio.AppCapture(9001000, None)._wanted() == {"10", "11"}
+    assert appaudio.AppCapture(9002000, None)._wanted() == {"12"}
     # everything but Firefox (instant replay passes its own pid this way)
-    assert appaudio.AppCapture(1000, None, include_tree=False)._wanted() == {"12"}
+    assert appaudio.AppCapture(9001000, None, include_tree=False)._wanted() == {"12"}
     assert appaudio.AppCapture(os.getpid(), None, include_tree=False)._wanted() == \
         {"10", "11", "12"}
 
