@@ -25,7 +25,9 @@ def _si():
 
 
 def lock_path() -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    base = os.environ.get("XDG_RUNTIME_DIR") or ""
+    if not os.path.isdir(base):   # unset, or gone (seen on WSL): else no lock at all
+        base = tempfile.gettempdir()
     uid = os.getuid() if hasattr(os, "getuid") else 0
     return Path(base) / f"{_si().INSTANCE_NAME}.{uid}.lock"
 

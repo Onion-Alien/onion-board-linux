@@ -115,6 +115,21 @@ def test_lock_is_exclusive_and_freed(tmp_path, monkeypatch, qapp):
     os.close(lsi.claim_single_instance.fd)
 
 
+def test_a_runtime_folder_thats_gone_still_gets_a_lock(tmp_path, monkeypatch):
+    # seen on WSL: XDG_RUNTIME_DIR named a folder that had gone, so the lock couldn't be
+    # made and every copy carried on as the only one
+    import tempfile
+
+    from soundboard import singleinstance
+    from soundboard.linux import singleinstance as lsi
+    monkeypatch.setattr(lsi, "_si", lambda: singleinstance)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "gone"))
+    assert lsi.lock_path().parent == tmp_path
+    monkeypatch.delenv("XDG_RUNTIME_DIR")
+    assert lsi.lock_path().parent == tmp_path
+
+
 # ------------------------------------------------------------------ data folder
 def test_appdata_is_the_xdg_data_folder():
     import soundboard.linux  # noqa: F401 - sets it
