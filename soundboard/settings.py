@@ -8,7 +8,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QPainter, QPainterPath,
+from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,
                            QPixmap)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox,
                                QDialog, QFrame,
@@ -155,6 +155,16 @@ class HotkeyDialog(QDialog):
         self.pads_note.setObjectName("hint")
         self.pads_note.setWordWrap(True)
         lay.addWidget(self.pads_note)
+        # a way out on screen too (Esc and the title bar's ✕ were the only ones); it
+        # takes no focus, so the keys pressed here all go to the capture
+        cancel = QPushButton("Cancel")
+        cancel.setFocusPolicy(Qt.NoFocus)
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(cancel)
+        lay.addLayout(row)
         self._warned_vk = None
         self.setMinimumWidth(340)
         hotkeys.pause()   # so pressing an existing hotkey here doesn't trigger it
@@ -339,7 +349,9 @@ class SettingsDialog(QDialog):
         fit.watch(self)   # grows to fit its text (ui/fit.py)
         self.mw = mw
         self.setWindowTitle("Settings")
-        self.setMinimumSize(720, 600)
+        # short enough for a 1366x768 laptop at 125 % (the pages scroll): at 600 the
+        # Done button sat below the screen
+        self.setMinimumSize(720, 420)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         self.tabs = QTabWidget()
@@ -402,11 +414,7 @@ class SettingsDialog(QDialog):
         for i in range(self.categories.count()):
             item = self.categories.item(i)
             name = item.data(Qt.UserRole)
-            icon = QIcon(icons.icon(name))
-            for size in icons.SIZES:
-                icon.addPixmap(icons.pixmap(name, size, theme.T["on_accent"]),
-                               QIcon.Selected, QIcon.Off)
-            item.setIcon(icon)
+            item.setIcon(icons.icon(name, selected="on_accent"))
 
     # ------------------------------------------------------------------ pages
     @staticmethod
@@ -627,8 +635,14 @@ class SettingsDialog(QDialog):
         return card
 
     def _pick_theme(self, name: str):
+        if name == theme.current_name:   # already on: restyling every widget again froze
+            for c in self.theme_cards:   # the app for nothing (a click unticks the card)
+                c.setChecked(c.name == name)
+            return
         self.mw.apply_theme(name)
         self._category_icons()
+        if getattr(self, "net_activity", None) is not None:
+            self.net_activity.refresh(force=True)   # its status colours are per theme
         self._sync_highlight()   # the theme's own colour, unless you picked one
         for c in self.theme_cards:
             c.setChecked(c.name == name)
@@ -676,6 +690,7 @@ class SettingsDialog(QDialog):
                       "All hotkeys work while you're in a game.")
         note.setObjectName("hint")
         note.setWordWrap(True)
+        note.setContentsMargins(14, 0, 14, 0)   # in line with the cards' text
         v.addWidget(note)
         v.addStretch(1)
         self._refresh_hk()
@@ -697,10 +712,14 @@ class SettingsDialog(QDialog):
         b = QPushButton()
         b.setObjectName("hkbtn")
         b.clicked.connect(lambda _=False, a=attr: self._capture(a))
+        # each row's buttons say which hotkey they're for (a screen reader read every
+        # row as "Click to set…" and "Clear")
+        b.setAccessibleName(f"{label} hotkey")
         row.addWidget(b)
         x = QPushButton("✕")
         x.setObjectName("small")
-        x.setToolTip("Clear")
+        x.setToolTip(f"Clear the {label} hotkey")
+        x.setAccessibleName(f"Clear the {label} hotkey")
         x.clicked.connect(lambda _=False, a=attr: self._set_hk(a, ""))
         row.addWidget(x)
         lay.addLayout(row)
@@ -733,13 +752,13 @@ class SettingsDialog(QDialog):
                               "The game keeps your keyboard and mouse, and the overlay's keys "
                               "go back to the game the moment it closes.")
         self._hk_row(cv, "overlay_hotkey", "Overlay hotkey", "")
-        cv.addWidget(self._ov_combo("mode", ovl.MODES, s.mode))
         test = QPushButton("Open overlay")
         test.setToolTip("Opens it now, the same as the hotkey: pick a sound with its keys "
                         "or a click. Esc, this button or the hotkey closes it")
         test.clicked.connect(lambda: self.mw.overlay.open_by_click())
-        row = QHBoxLayout()
-        row.addStretch(1)
+        row = QHBoxLayout()   # beside how the key works: two lines, not three
+        row.setSpacing(8)
+        row.addWidget(self._ov_combo("mode", ovl.MODES, s.mode), 1)
         row.addWidget(test)
         cv.addLayout(row)
         v.addWidget(card)
@@ -789,8 +808,7 @@ class SettingsDialog(QDialog):
         prev.setToolTip("Shows the overlay for a few seconds, to see how it looks; any "
                         "click or key closes it")
         prev.clicked.connect(lambda: self.mw.overlay.preview(6))
-        row = QHBoxLayout()
-        row.addStretch(1)
+        row = _button_row()
         row.addWidget(prev)
         cv.addLayout(row)
         v.addWidget(card)
@@ -802,6 +820,7 @@ class SettingsDialog(QDialog):
                       "switches your weapon, use the numpad.")
         note.setObjectName("hint")
         note.setWordWrap(True)
+        note.setContentsMargins(14, 0, 14, 0)   # in line with the cards' text
         v.addWidget(note)
         v.addStretch(1)
         self._ov_sync()
@@ -1203,7 +1222,6 @@ class SettingsDialog(QDialog):
         card, cv = self._card("Add-ons",
                               "Onion Watch is the free add-on behind the Triggers tab. "
                               "Removing it keeps your triggers for when you get it again.")
-        row = QHBoxLayout()
         self.addon_label = QLabel()
         self.addon_label.setWordWrap(True)
         self.addon_remove = QPushButton("Remove Onion Watch…")
@@ -1221,8 +1239,11 @@ class SettingsDialog(QDialog):
             tab.remove()                    # asks first
             refresh()
         self.addon_remove.clicked.connect(remove)
-        row.addWidget(self.addon_label, 1)
+        # the button under the text, on the left, like every other card's (far right
+        # beside the text, it looked lost)
+        row = _button_row()
         row.addWidget(self.addon_remove)
+        cv.addWidget(self.addon_label)
         cv.addLayout(row)
         refresh()   # in the card first: shown without a parent, it's a window of its own
         return card
@@ -1740,20 +1761,17 @@ class SettingsDialog(QDialog):
                         "the app.")
         go = QPushButton("Remote settings")
         go.clicked.connect(lambda: self.tabs.setCurrentIndex(self._page_keys.index("remote")))
-        row = QHBoxLayout()
-        row.addWidget(remote, 1)
-        row.addWidget(go)
-        cv.addLayout(row)
+        cv.addWidget(remote)
         full = QPushButton("Network details")
         full.setToolTip("Opens the full list (SECURITY.md) on GitHub, in your browser")
         from soundboard.updates import REPO
         full.clicked.connect(lambda: busy.open_url(
             f"https://github.com/{REPO}/blob/main/SECURITY.md#what-the-app-does-on-the-network",
             full, self))
-        row2 = QHBoxLayout()
-        row2.addWidget(full)
-        row2.addStretch(1)
-        cv.addLayout(row2)
+        row = _button_row()   # both under the text, on the left
+        row.addWidget(go)
+        row.addWidget(full)
+        cv.addLayout(row)
         return card
 
     def _connection_card(self):

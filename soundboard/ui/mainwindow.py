@@ -15,13 +15,13 @@ from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-from PySide6.QtCore import (QEvent, QFileSystemWatcher, QObject, QPropertyAnimation, QSize, Qt,
-                            QTimer, QUrl, Signal)
+from PySide6.QtCore import (QAbstractAnimation, QEvent, QFileSystemWatcher, QObject,
+                            QPropertyAnimation, QSize, Qt, QTimer, QUrl, Signal)
 from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSizePolicy, QSlider, QStackedWidget,
+                               QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget,
                                QSystemTrayIcon, QTabBar, QTabWidget, QVBoxLayout, QWidget)
 
 from soundboard import engine as eng
@@ -44,8 +44,8 @@ from soundboard.ui.crashdialog import free_dialog
 from soundboard.ui.dialogs import EditDialog
 from soundboard.ui import a11y, appstate, busy, icons, responsive, splash
 from soundboard.ui.speedpitch import SpeedPitchButton
-from soundboard.ui.panel import (EqPanel, VolumeControl, bar, card, hint_label, icon_label,
-                                 vsep)
+from soundboard.ui.panel import (EqPanel, Flow, VolumeControl, bar, card, hint_label,
+                                 icon_label, vsep)
 from soundboard.ui.linkbar import PLAY_ID as LINK_ID
 from soundboard.ui.linkbar import LinkBar
 from soundboard.ui.livedot import is_tab_live, set_tab_live
@@ -93,11 +93,16 @@ TICK_BG_MS = 100     # ...while it's on screen but another program is in front (
 TICK_IDLE_MS = 250   # ...and while it's in the tray or minimised (push-to-talk, watchdog)
 GLOW_STEPS = 4       # how many glow levels the taskbar / tray icon has while sound plays
 ICON_GLOW_MS = 120   # ...and how often at most it changes
+ICON_GLOW_BG_MS = 400   # ...while another program (a game) is in front
 DEFAULT_POLL_MS = 1500   # how often Windows' default output is checked
+DEFAULT_POLL_IDLE_S = 5  # ...while the window is in the tray or minimised (seconds)
 # a device that won't open while Windows lists it: re-scan, then wait this long
 # (seconds) before the next re-scan, so one that really won't open isn't re-scanned
 # over and over (each re-scan reopens every stream)
 RECOVER_WAIT_S = (20, 40, 80, 160, 300)
+# ...and one Windows doesn't list (unplugged): looked for at the timer's pace for a
+# few checks (a quick re-plug), then only this often (seconds)
+GONE_CHECKS, GONE_WAIT_S = 4, 6
 LOOSE_WAIT_MS = 1500   # a file dragged into the sounds folder is looked at again (ms)
 LOOSE_EMPTY_LOOKS = 20   # an empty file that long (~30 s) waits for the folder to change
 MINI_SIZE = QSize(440, 380)   # below this the window becomes the mini player...
@@ -106,6 +111,7 @@ QUEUE_CHIPS = 5          # queued sounds shown by name above the pads (then "+n 
 RANDOM = "__random__:"   # hotkey action prefix: a random sound from the category after it
 ALL = "All"          # the category tab that shows every sound
 VOICE_POLL_MS = 3000  # how often the game in front is looked at (soundboard.voicesdk)
+VOICE_POLL_IDLE_S = 15   # ...while nobody sees the hint and nothing switches by itself
 # Setup -> Devices -> Send to others through (Config.route, library.ROUTES)
 ROUTE_CHOICES = (("The virtual cable (Discord, games)", "cable"),
                  ("Another device (Voicemeeter, OBS, a mixer…)", "device"),
@@ -135,6 +141,29 @@ class StatusLine(QLabel):
         responsive.touch(self)
 
 
+class BannerButton(QPushButton):
+    """A one-line button that never makes the window wider: in less room it shows
+    `short`, and in less than that its text is cut with "…". A banner as wide as its
+    whole text pushed a ~750 px window into the mini player, banner and all."""
+
+    def __init__(self, text: str, short: str):
+        super().__init__(text)
+        self._full, self._short = text, short
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setToolTip(text)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        room = self.width() - self.iconSize().width() - 48   # icon, padding, gap
+        fm = self.fontMetrics()
+        if fm.horizontalAdvance(self._full) <= room:
+            text = self._full
+        else:
+            text = fm.elidedText(self._short, Qt.ElideRight, max(0, room))
+        if text != self.text():
+            self.setText(text)
+
+
 class Bridge(QObject):
     loaded = Signal(str, object, str)          # id, data|None, error
     exported = Signal(str, int, str)           # file, sounds written, error
@@ -161,6 +190,7 @@ def _listed(name: str, names) -> bool:
 
 class MainWindow(QMainWindow):
     update_done = Signal(object, str)   # an update check finished: Release|None, error
+    config_saved = Signal(bool)         # the background save finished: ok
     voice_engine = Signal(object)       # the voice engine of the game in front (a mode key|None)
 
     def __init__(self):
@@ -243,6 +273,7 @@ class MainWindow(QMainWindow):
         self._ui_live = True              # the window is on screen (see _set_tick_rate)
         self._sounds_live = False         # the Sounds tab's live dot is shown
         self._icon_step, self._icon_next = -1, 0.0   # the icons' glow step (_glow_icons)
+        self._tray_step = -1              # ...and the tray icon's
         self._xruns_shown = 0             # drop-out count last written to the status line
         self._talk_until = 0.0            # "hearing you" indicator holds until this time
         self._talk_shown: bool | None = None
@@ -257,6 +288,9 @@ class MainWindow(QMainWindow):
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_now)
+        # written on a background thread: a slow disk froze the window for seconds
+        self._saver = library.Saver(self.cfg, done=self.config_saved.emit)
+        self.config_saved.connect(self._on_saved)
 
         self.setup_state = ""
         self._pill_short = False          # the header pill's short text (narrow window)
@@ -293,14 +327,17 @@ class MainWindow(QMainWindow):
         self.listeners = voicesdk.Listeners() if sys.platform == "win32" else None
         self.voice_watch = voicesdk.Watcher() if sys.platform == "win32" else None
         self._voice_timer = QTimer(self)
-        self._voice_timer.timeout.connect(self._poll_voice)
+        self._voice_timer.timeout.connect(self._voice_tick)
+        self._voice_at = 0.0   # when _poll_voice last ran (see _voice_tick)
         if self.voice_watch is not None:
             self._voice_timer.start(VOICE_POLL_MS)
         # the headphones follow Windows' default output when it changes
         self._default_timer = QTimer(self)
-        self._default_timer.timeout.connect(self._follow_default_output)
+        self._default_timer.timeout.connect(self._default_tick)
         self._default_timer.timeout.connect(self._recover_devices)
+        self._default_at = 0.0   # when Windows' default was last looked at (_default_tick)
         self._recover_n, self._recover_at = 0, 0.0   # see _recover_devices
+        self._gone_n = 0   # checks in a row that found the failing device unplugged
         if sys.platform == "win32":
             self._default_timer.start(DEFAULT_POLL_MS)
         self._init_fit()
@@ -393,8 +430,9 @@ class MainWindow(QMainWindow):
         rv.addLayout(head)
         self._paint_logo()
 
-        self.mic_banner = QPushButton("YOU'RE HEARING YOUR MIC OUTPUT  —  mic + sounds, "
-                                      "exactly what others hear   ·   click to turn off")
+        self.mic_banner = BannerButton("YOU'RE HEARING YOUR MIC OUTPUT  —  mic + sounds, "
+                                       "exactly what others hear   ·   click to turn off",
+                                       "HEARING YOUR MIC OUTPUT  ·  click to turn off")
         self.mic_banner.setObjectName("micbanner")
         self.mic_banner.setCursor(Qt.PointingHandCursor)
         self.mic_banner.clicked.connect(lambda: self.btn_check.setChecked(False))
@@ -444,8 +482,11 @@ class MainWindow(QMainWindow):
             icons.set_tab_icon(self.tabs, i, text.lower())
         self.tab_info["apps"] = self.apps.info
         # one ⓘ at the end of the tab bar: the tab's explanation, instead of a banner
-        self.btn_info = QPushButton("ⓘ")
-        self.btn_info.setObjectName("small")
+        self.btn_info = QPushButton()
+        self.btn_info.setObjectName("tabinfo")
+        self.btn_info.setFixedSize(32, 32)
+        self.btn_info.setAccessibleName("About this tab")
+        icons.set_icon(self.btn_info, "info", size=20)
         self.btn_info.setCursor(Qt.PointingHandCursor)
         self.btn_info.setToolTip("What's this tab for?")
         self.btn_info.clicked.connect(self._show_tab_info)
@@ -676,12 +717,15 @@ class MainWindow(QMainWindow):
         add.clicked.connect(self.add_dialog)
         icons.set_icon(add, "plus", "on_accent")
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search sounds… Enter searches the web (YouTube, TikTok, "
-                                       "Myinstants…), or paste a link")
-        self.search.setToolTip("Type to filter your sounds, or paste a link (YouTube, "
-                               "SoundCloud, TikTok, most media sites) to add or play it")
+        # short, so it isn't cut to "Search sounds… …" at normal widths; the tooltip
+        # has the rest
+        self.search.setPlaceholderText("Search sounds or paste a link")
+        self.search.setToolTip("Type to filter your sounds; Enter searches the web (YouTube, "
+                               "TikTok, Myinstants…). Or paste a link (YouTube, SoundCloud, "
+                               "TikTok, most media sites) to add or play it")
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self.apply_filter)
+        # typing regrids only when the pads shown change (35 ms a key with 600 pads)
+        self.search.textChanged.connect(lambda t: self.apply_filter(t, lazy=True))
         self.search.returnPressed.connect(self.on_search_enter)
         self.btn_yt = QPushButton("Search")
         self.btn_yt.setToolTip("Search YouTube, SoundCloud, TikTok sounds, Myinstants… for "
@@ -799,9 +843,10 @@ class MainWindow(QMainWindow):
         # them can be stopped (■) or taken into the player (name) without clicking
         # its pad, which would restart it
         self.playing_row = QWidget()
-        self._chips_hl = QHBoxLayout(self.playing_row)
-        self._chips_hl.setContentsMargins(0, 0, 0, 0)
-        self._chips_hl.setSpacing(6)
+        # wraps onto more lines: one line of four overlapping sounds' chips (~900 px)
+        # turned a narrower window into the mini player, and every playing sound must
+        # stay reachable, so none are left out
+        self._chips_hl = Flow(self.playing_row, gap=6)
         self._chips: dict[str, QWidget] = {}
         self._chip_ids: tuple = ()
         self.playing_row.hide()
@@ -860,7 +905,10 @@ class MainWindow(QMainWindow):
         self.seek.valueChanged.connect(self._seek_preview)
         no_wheel(self.seek)
         self.np_time = QLabel("0:00 / 0:00")
-        self.np_time.setFixedWidth(84)
+        # room for a long sound's "75:12 / 112:40" in this font (84 px cut it, and
+        # "12:34 / 45:67" too in the Consolas themes)
+        self.np_time.setFixedWidth(
+            self.np_time.fontMetrics().horizontalAdvance("888:88 / 888:88") + 4)
         self.np_time.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.np_time.setObjectName("muted")
         th.addWidget(self.btn_pp)
@@ -939,8 +987,8 @@ class MainWindow(QMainWindow):
                     ch = QHBoxLayout(chip)
                     ch.setContentsMargins(4, 2, 2, 2)
                     ch.setSpacing(2)
-                    name = QPushButton(chip.fontMetrics().elidedText(
-                        m.name if m else sid, Qt.ElideRight, 150))
+                    name = QPushButton(chip.fontMetrics().elidedText(   # && : "R&B" not "RB"
+                        m.name if m else sid, Qt.ElideRight, 150).replace("&", "&&"))
                     name.setObjectName("chipname")
                     name.setToolTip("Show this sound in the player (keeps playing)")
                     name.clicked.connect(lambda _=False, s=sid: self.select(s))
@@ -954,15 +1002,10 @@ class MainWindow(QMainWindow):
                     ch.addWidget(stop)
                     self._chips_hl.addWidget(chip)
                     self._chips[sid] = chip
-            if queue or len(ids) >= 2:
-                self._chips_hl.addStretch(1)
-            # a steady height: the chips are rebuilt with every overlapping sound, and
-            # a row that shrank and grew back each time resized and repainted the
-            # whole board under it. It only ever grows (a bigger font).
-            self.playing_row.ensurePolished()
-            self.playing_row.setFixedHeight(max(
-                CHIPS_ROW_H, self.playing_row.minimumHeight(),
-                self._chips_hl.sizeHint().height()))
+            # at least a line high, taller when the chips wrap (the Flow's height for
+            # its width); a row that shrank and grew back with every overlapping
+            # sound resized and repainted the whole board under it
+            self.playing_row.setMinimumHeight(CHIPS_ROW_H)
             self.playing_row.setVisible(len(ids) >= 2 or bool(queue))
         for sid, chip in self._chips.items():
             sel = "true" if sid == self.current else "false"
@@ -978,7 +1021,8 @@ class MainWindow(QMainWindow):
         ch = QHBoxLayout(chip)
         ch.setContentsMargins(4, 2, 2, 2)
         ch.setSpacing(2)
-        name = QPushButton(chip.fontMetrics().elidedText(text, Qt.ElideRight, 150))
+        name = QPushButton(chip.fontMetrics().elidedText(text, Qt.ElideRight, 150)
+                           .replace("&", "&&"))   # "R&B", not "RB" with a shortcut
         name.setObjectName("chipname")
         name.setToolTip(tip)
         name.clicked.connect(on_click)
@@ -1112,11 +1156,17 @@ class MainWindow(QMainWindow):
                 ("headphones", "My headphones", self.cb_mon),
                 ("mic", "My real mic", self.cb_mic))):
             row = (icon_label(ic), QLabel(text), cb)
+            row[1].setBuddy(cb)   # a screen reader reads the label as the box's name
             for col, w in enumerate(row):
                 grid.addWidget(w, r, col)
             if cb is self.cb_main:
                 self.main_row = row
             cb.setMinimumWidth(120)
+            # sized for a short name, not the longest device ("Headphones (2- Arctis Nova
+            # Pro Wireless Game)" gave the Setup tab a sideways scroll bar); the list
+            # opens wide enough for whole names
+            cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            cb.setMinimumContentsLength(16)
         grid.setColumnStretch(2, 1)
         av.addLayout(grid)
         self.setup_hint = hint_label("")
@@ -1310,7 +1360,7 @@ class MainWindow(QMainWindow):
                    if e.names.get(k) and getattr(e, f"{k}_stream") is None
                    and k in e.errors_snapshot()]
         if not failing:
-            self._recover_n = 0
+            self._recover_n = self._gone_n = 0
             return
         now = time.monotonic()
         if now < self._recover_at:
@@ -1323,11 +1373,31 @@ class MainWindow(QMainWindow):
             if _listed(name, listed[kind] or ()):
                 break
         else:
-            return   # really gone (unplugged): the engine's retries pick it up again
+            # really gone (unplugged): the engine's retries pick it up again. Asking
+            # Windows for its device list every check while it stays unplugged is
+            # wasted work, so after a few checks look less often
+            self._gone_n += 1
+            if self._gone_n >= GONE_CHECKS:
+                self._recover_at = now + GONE_WAIT_S
+            return
+        self._gone_n = 0
         self._recover_at = now + RECOVER_WAIT_S[min(self._recover_n, len(RECOVER_WAIT_S) - 1)]
         self._recover_n += 1
         log.info("%s device %r is listed by Windows but won't open: re-scanning", key, name)
         self.refresh_devices()
+
+    def _default_tick(self):
+        """The timer's look at Windows' default output (a COM call): only while the
+        headphones follow it, as nothing else uses the answer (picking a device by hand
+        looks again), and every few seconds rather than constantly while the window is
+        in the tray or minimised."""
+        if not self.cfg.mon_follows_default:
+            return
+        now = time.monotonic()
+        if not self._ui_live and now - self._default_at < DEFAULT_POLL_IDLE_S:
+            return
+        self._default_at = now
+        self._follow_default_output()
 
     def _follow_default_output(self):
         """Windows' default output changed (headphones → speakers): the headphones
@@ -1401,6 +1471,7 @@ class MainWindow(QMainWindow):
             cb.addItem(n, n)
         i = cb.findData(current) if current else 0
         cb.setCurrentIndex(i if i >= 0 else 0)
+        cb.view().setMinimumWidth(cb.view().sizeHintForColumn(0) + 32)   # whole names
         cb.blockSignals(False)
 
     def on_device(self, cb, attr):
@@ -1412,6 +1483,8 @@ class MainWindow(QMainWindow):
         if attr == "mon_device":
             self.engine.set_mon_device(name)
             # picking Windows' default keeps following it; anything else stays put
+            if not self.cfg.mon_follows_default:   # not looked at while not following
+                self._default_out = appaudio.default_output_name() or self._default_out
             self.cfg.mon_follows_default = name is not None and name == self._default_output()
         elif attr == "mic_device":
             self.engine.set_mic_device(name)
@@ -1755,6 +1828,19 @@ class MainWindow(QMainWindow):
             setattr(self.engine, attr, v)
         self._save_later()
 
+    def _voice_tick(self):
+        """The timer's _poll_voice: every VOICE_POLL_MS while the window is on screen
+        (the hint shows) or *Pick the mode by itself* is ticked (it switches), else only
+        every VOICE_POLL_IDLE_S: snapshotting the programs and recording sessions is
+        wasted work while nobody sees the answer."""
+        d = self.cfg.dest if isinstance(self.cfg.dest, dict) else {}
+        now = time.monotonic()
+        if (not self._ui_live and not d.get("auto")
+                and now - self._voice_at < VOICE_POLL_IDLE_S):
+            return
+        self._voice_at = now
+        self._poll_voice()
+
     def _poll_voice(self):
         """Which Who's listening mode suits: the program recording the cable's far end
         (voicesdk.Listeners), else the voice engine of the game in front. Switches to it
@@ -1874,9 +1960,15 @@ class MainWindow(QMainWindow):
             self.toast(html.escape(say[1]), say[2])
 
     def _save_now(self):
-        """The debounced save. A failure (disk full, antivirus lock) is logged by
-        Config.save; here it's shown once so the user knows settings aren't sticking."""
-        if self.cfg.save():
+        """The debounced save: the settings are copied now and written on the saver's
+        thread (library.Saver), then _on_saved says how it went."""
+        self._saver.cfg = self.cfg
+        self._saver.save()
+
+    def _on_saved(self, ok: bool):
+        """A failure (disk full, antivirus lock) is logged by the writer; here it's
+        shown once so the user knows settings aren't sticking."""
+        if ok:
             self._save_failed_shown = False
         elif not self._save_failed_shown:
             self._save_failed_shown = True
@@ -2124,17 +2216,31 @@ class MainWindow(QMainWindow):
     def _glow_icons(self, level: float, now: float, force: bool = False):
         """The title bar / taskbar and tray icons glow warm with whatever is playing,
         like the header logo: a few steps of glow, swapped only when the step changes
-        (at most every ICON_GLOW_MS), back to the plain icon when it goes quiet."""
+        (at most every ICON_GLOW_MS, or ICON_GLOW_BG_MS behind a game), back to the plain
+        icon when it goes quiet."""
         step = min(GLOW_STEPS, round(min(1.0, level * 1.4) * GLOW_STEPS))
-        if not force and (step == self._icon_step or now < self._icon_next):
-            return
-        self._icon_step, self._icon_next = step, now + ICON_GLOW_MS / 1000
-        amount = step / GLOW_STEPS
-        icon = glow_icon(theme.T["accent"], theme.T["accent2"], amount)
-        QApplication.setWindowIcon(icon)
+        if not self.isVisible() or self.isMinimized():
+            # nobody sees it, and each swap makes Windows rebuild the taskbar and tray
+            # icons in Explorer, several times a second while a game runs
+            step = 0
         tray = getattr(self, "tray", None)
-        if tray is not None:   # the tray icon follows the theme too
+        tray_due = tray is not None and tray.isVisible() and step != self._tray_step
+        if not force and ((step == self._icon_step and not tray_due) or now < self._icon_next):
+            return
+        wait = ICON_GLOW_MS if appstate.active() else ICON_GLOW_BG_MS
+        self._icon_next = now + wait / 1000
+        icon = glow_icon(theme.T["accent"], theme.T["accent2"], step / GLOW_STEPS)
+        if force:   # a theme change: every window (dialogs too) gets the plain icon
+            QApplication.setWindowIcon(glow_icon(theme.T["accent"], theme.T["accent2"], 0.0))
+        if force or step != self._icon_step:
+            # only this window's own icon: the app-wide one restyles every window,
+            # hidden dialogs included, on each swap
+            self.setWindowIcon(icon)
+            self._icon_step = step
+        # the tray icon follows the theme too; a hidden one is caught up once it shows
+        if tray is not None and (force or tray_due):
             tray.setIcon(icon)
+            self._tray_step = step
 
     def on_hotkey(self, action):
         if action == "__hotkeys__":
@@ -2645,21 +2751,27 @@ class MainWindow(QMainWindow):
         if query and " ".join(self.search.text().split()) == query:
             self.search.clear()
 
-    def apply_filter(self, text):
+    def apply_filter(self, text, lazy: bool = False):
         """Show the pads that match the search box (name or category) and are in the
-        category picked above the pads."""
+        category picked above the pads. `lazy`: skip the regrid when no pad changed."""
         self.linkbar.set_text(text)
+        if getattr(self, "overlay", None) is not None:   # every sounds / category edit ends here
+            self.overlay.sounds_changed()
         # a link filters nothing, and nor does the box in the mini player, which hides
         # it: a web search's words left there showed a blank mini player
         t = "" if self.linkbar.url or self.is_mini() else text.strip().lower()
         cat = self.cfg.category
+        changed = False
         for m in self.cfg.sounds:
             p = self.pads.get(m.id)
             if p:
                 hit = not t or t in m.name.lower() or any(t in g.lower() for g in m.tags)
-                p.setProperty("filtered", not hit or bool(cat and cat not in m.tags))
-        self.grid.relayout(force=True)
-        self.selection.sync()
+                hide = not hit or bool(cat and cat not in m.tags)
+                changed = changed or bool(p.property("filtered")) != hide
+                p.setProperty("filtered", hide)
+        if changed or not lazy:
+            self.grid.relayout(force=True)
+            self.selection.sync()
 
     # ------------------------------------------------------------------ categories
     # A sound can be in any number of categories (SoundMeta.tags); the bar above the
@@ -3391,8 +3503,10 @@ class MainWindow(QMainWindow):
         (soundboard.trash), where they can still be brought back for a while."""
         self._undo_timer.stop()
         self.undo_bar.hide()
-        done, self._removed = self._removed, []
-        for m, i, _d in done:
+        # let go of their audio first: Windows won't delete a mapped cache file
+        # (soundboard.mapped) while an array still points into it
+        done, self._removed = [(m, i) for m, i, _d in self._removed], []
+        for m, i in done:
             trash.put_sound(m, i)
         if done:
             self._label_bin()
@@ -4278,6 +4392,8 @@ class MainWindow(QMainWindow):
         self.mic_banner.setVisible(on)
         if on:
             self._pulse.start()   # impossible to miss, and cheap
+            if not self._ui_live:   # turned on from the tray: pulses once it's shown
+                self._pulse.pause()
         else:
             self._pulse.stop()
             self._banner_fx.setOpacity(1.0)
@@ -4398,6 +4514,11 @@ class MainWindow(QMainWindow):
     def _set_tick_rate(self, *_):
         live = self.isVisible() and not self.isMinimized()
         was, self._ui_live = self._ui_live, live
+        # the mic-check banner's pulse (~60 frames a second) only while it can be seen
+        if not live and self._pulse.state() == QAbstractAnimation.Running:
+            self._pulse.pause()
+        elif live and self._pulse.state() == QAbstractAnimation.Paused:
+            self._pulse.resume()
         pace = self._tick_pace()
         if live == was and self.timer.interval() == pace:
             return
@@ -4476,10 +4597,14 @@ class MainWindow(QMainWindow):
         """The part of tick() that only matters while the window is on screen."""
         e = self.engine
         on_board = self.tabs.currentWidget() is self.sounds_page   # no visualiser off-screen
+        shown = self.isVisible()
         for sid, p in self.pads.items():
             prog, paused = playing.get(sid, (None, False))
             if prog is not None and not paused and on_board and not p.isHidden():
-                p.set_levels(spectrum(self.audio.get(sid), prog, p.n_bands))
+                # scrolled out of view: skip the FFT (the next tick after it scrolls
+                # back in catches up)
+                if not (shown and p.visibleRegion().isEmpty()):
+                    p.set_levels(spectrum(self.audio.get(sid), prog, p.n_bands))
             elif prog is None and p.bands is not None:
                 p.set_levels(None)
             if prog != p.progress or paused != p.paused:
@@ -4630,6 +4755,7 @@ class MainWindow(QMainWindow):
     def _tab_icons_only(self, compact: bool):
         for i, (text, tip) in enumerate(TABS):
             self.tabs.setTabText(i, "" if compact else text)
+            self.tabs.tabBar().setAccessibleTabName(i, text)   # icon-only tabs aren't silent
             base = f"{text}: {tip}" if compact else tip
             old = self.tabs.property(f"_tip{i}")   # set_tab_live's copy of the plain tip
             if old is not None:

@@ -5,6 +5,7 @@ import ctypes
 import gc
 import logging
 import os
+import subprocess
 import sys
 
 # Render the window through the GPU from the start. The Radio tab's globe needs a GPU
@@ -50,6 +51,37 @@ def tune_runtime_for_audio():
     gc.set_threshold(50_000, 20, 20)
 
 
+RESTART_ONLY_FOR_UPDATES = 1 | 2 | 8   # RESTART_NO_CRASH | NO_HANG | NO_REBOOT
+
+
+def restart_cmdline(argv: list[str], frozen: bool) -> str:
+    """What Windows starts the app again with after an installer closed it: the same
+    arguments, minus the one-off ones (as in MainWindow.restart_app), and with the
+    window shown: it was most likely open, and coming back hidden looks like it's gone."""
+    from soundboard.autostart import TRAY_ARG
+    args = list(argv[1:] if frozen else argv)
+    if not frozen and args:   # python main.py: the script by full path, any cwd works
+        args[0] = os.path.abspath(args[0])
+    if "--restart-after" in args:
+        i = args.index("--restart-after")
+        del args[i:i + 2]
+    args = [a for a in args if a not in (TRAY_ARG, "--resume-setup")]
+    return subprocess.list2cmdline(args)
+
+
+def register_restart():
+    """Ask Windows to start the app again when an installer closes it to update it
+    (Inno Setup's CloseApplications restarts the apps that asked: an update or a
+    reinstall run while the app was open used to leave it closed, which looked like a
+    crash). Not after a crash, a hang or a reboot."""
+    try:
+        ctypes.windll.kernel32.RegisterApplicationRestart(
+            ctypes.c_wchar_p(restart_cmdline(sys.argv, getattr(sys, "frozen", False))),
+            RESTART_ONLY_FOR_UPDATES)
+    except Exception:  # noqa: BLE001 - only a nicety
+        log.debug("RegisterApplicationRestart failed", exc_info=True)
+
+
 def wait_for_exit(pid: list[str], seconds: float = 30.0):
     """Wait for the copy that restarted us to finish quitting (it still holds the
     single-instance lock and is saving its settings)."""
@@ -85,6 +117,40 @@ def end_process(code: int):
         except (OSError, AttributeError):
             pass
     os._exit(code)
+
+
+# %TEMP% folders of ours that can be left behind: a download the app was closed (or
+# crashed) in the middle of, and an add-on self-test. Only these exact prefixes.
+TEMP_LEFTOVERS = ("sb-ytdl-", "onionboard-selftest-")
+TEMP_MAX_AGE_S = 24 * 3600
+
+
+def clean_temp_leftovers(now: float | None = None) -> int:
+    """Delete TEMP_LEFTOVERS folders in %TEMP% untouched for a day (a running
+    download's is newer). Returns how many went. Run off the UI thread."""
+    import shutil
+    import tempfile
+    import time
+    from pathlib import Path
+    now = time.time() if now is None else now
+    gone = 0
+    try:
+        for p in Path(tempfile.gettempdir()).iterdir():
+            if not p.name.startswith(TEMP_LEFTOVERS):
+                continue
+            try:
+                if (p.is_symlink() or getattr(p, "is_junction", lambda: False)()
+                        or not p.is_dir() or now - p.stat().st_mtime < TEMP_MAX_AGE_S):
+                    continue
+                shutil.rmtree(p, ignore_errors=True)
+                gone += not p.exists()
+            except OSError:
+                continue
+    except OSError:
+        log.debug("couldn't look through the temp folder", exc_info=True)
+    if gone:
+        log.info("removed %d old temp folder(s)", gone)
+    return gone
 
 
 def start_ytdlp_check(cfg):
@@ -206,15 +272,25 @@ def selftest_addon(path: str) -> int:
     run the Onion Watch add-on (it has no pip, so the add-on may only use what the
     build ships). Installs the zip into a temp folder, loads it the way the Triggers
     tab does, builds its tab on a stand-in board, and lists windows and screens with
-    it. No window, no device, no network. Prints OK and returns 0."""
-    import importlib
+    it. No window, no device, no network. Prints OK and returns 0. The temp folder
+    goes afterwards (a build check runs this often)."""
+    import shutil
     import tempfile
     from pathlib import Path
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     _app = QApplication(sys.argv)   # noqa: F841 - kept while the tab is built
-    from soundboard import modules, theme
     tmp = Path(tempfile.mkdtemp(prefix="onionboard-selftest-"))
-    info = modules.install_zip(Path(path), "onion-watch", "triggers", tmp / "modules")
+    try:
+        return _selftest_addon_in(Path(path), tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _selftest_addon_in(path, tmp) -> int:
+    import importlib
+
+    from soundboard import modules, theme
+    info = modules.install_zip(path, "onion-watch", "triggers", tmp / "modules")
     entry = modules.load_package(info)
 
     class Host:   # the stand-in board: onionwatch.host.Host, nothing played
@@ -277,6 +353,8 @@ def main():
     for msg in MIGRATION_ERRORS:
         log.error("%s", msg)
     tune_runtime_for_audio()
+    import threading
+    threading.Thread(target=clean_temp_leftovers, daemon=True, name="temp-clean").start()
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("OnionBoard.App")
     except Exception:  # noqa: BLE001
@@ -290,6 +368,7 @@ def main():
     if not claim_single_instance():
         log.info("another Onion Board is running; asked it to come to the front")
         sys.exit(0)
+    register_restart()   # only the copy that runs: a second launch just exits
     # listen at once, not after the ~1 s of imports below: a second launch meanwhile
     # would otherwise find nobody answering (the window is looked up when asked)
     holder = {}

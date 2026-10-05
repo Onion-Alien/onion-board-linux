@@ -18,8 +18,8 @@ from pathlib import Path
 
 __all__ = ["base_python", "env_dir", "venv_python"]
 
-MIN_PYTHON = (3, 11)   # live voice's pinned numpy needs it
-CANDIDATES = ("python3.14", "python3.13", "python3.12", "python3.11", "python3", "python")
+MIN_PYTHON = (3, 12)   # the add-ons' pinned numpy (2.5) needs it
+CANDIDATES = ("python3.14", "python3.13", "python3.12", "python3", "python")
 
 
 def env_dir(folder: Path) -> Path:

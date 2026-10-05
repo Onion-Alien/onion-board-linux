@@ -19,7 +19,7 @@ import random
 import threading
 import time
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, QUrl, Qt, Signal
 from PySide6.QtGui import (QColor, QPainter, QPainterPath, QPixmap,
                            QTextLayout)
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
@@ -83,6 +83,9 @@ class _BusyOwl(OwlWidget):
         super().__init__(height, lines=(), joy=(), parent=parent, left=0, right=0)
         self._next_act = math.inf
         self.setToolTip("")
+
+    def busy(self) -> bool:
+        return True   # always scanning: never the slow idle frames
 
     def pose(self) -> dict:
         d = super().pose()
@@ -201,7 +204,6 @@ class Thumb(QWidget):
         super().__init__()
         self._pm: QPixmap | None = None
         self._scaled: QPixmap | None = None   # _pm at this size: not scaled per paint
-        self._icon = icons.icon("wave", "muted").pixmap(QSize(32, 32))
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         policy = self.sizePolicy()
         policy.setHeightForWidth(True)
@@ -236,15 +238,22 @@ class Thumb(QWidget):
         p.setClipPath(path)
         if self._pm is None:
             p.fillPath(path, QColor(128, 128, 128, 40))   # reads on light and dark
-            p.drawPixmap((w - self._icon.width()) // 2, (h - self._icon.height()) // 2,
-                         self._icon)
+            # the theme's colour now (it was fixed when the card was made), centred by
+            # its size on screen, not its pixel count (off-centre on a scaled screen)
+            icons.icon("wave", "muted").paint(p, QRect((w - 32) // 2, (h - 32) // 2, 32, 32))
         else:
+            # scaled to the screen's real pixels, so it isn't stretched (soft) at 125 %
+            dpr = self.devicePixelRatioF()
+            pw, ph = round(w * dpr), round(h * dpr)
             pm = self._scaled
-            if pm is None or not (pm.width() >= w and pm.height() >= h and
-                                  (pm.width() == w or pm.height() == h)):
-                pm = self._scaled = self._pm.scaled(w, h, Qt.KeepAspectRatioByExpanding,
+            if pm is None or pm.devicePixelRatio() != dpr or not (
+                    pm.width() >= pw and pm.height() >= ph and
+                    (pm.width() == pw or pm.height() == ph)):
+                pm = self._scaled = self._pm.scaled(pw, ph, Qt.KeepAspectRatioByExpanding,
                                                     Qt.SmoothTransformation)
-            p.drawPixmap((w - pm.width()) // 2, (h - pm.height()) // 2, pm)
+                pm.setDevicePixelRatio(dpr)
+            size = pm.deviceIndependentSize()
+            p.drawPixmap(QPointF((w - size.width()) / 2, (h - size.height()) / 2), pm)
         p.end()
 
 
@@ -256,6 +265,7 @@ class ClampLabel(QLabel):
     def __init__(self, text: str, lines: int = 2, bold: bool = True):
         super().__init__()
         self.full, self.lines = text, lines
+        self._wrap: tuple = (None, [])   # (key, lines) from _wrapped()
         f = self.font()
         f.setBold(bold)
         self.setFont(f)
@@ -278,10 +288,12 @@ class ClampLabel(QLabel):
         if e.type() in (QEvent.FontChange, QEvent.StyleChange):
             self._fit()
 
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setPen(self.palette().color(self.foregroundRole()))
-        p.setFont(self.font())
+    def _wrapped(self) -> list[tuple[str, float]]:
+        """The lines to draw and their tops. Kept by (text, width, font): a page of
+        cards repaints on every hover and scroll, and wrapping is the slow part."""
+        key = (self.full, self.width(), self.font().key(), self.lines)
+        if self._wrap[0] == key:
+            return self._wrap[1]
         fm = self.fontMetrics()
         layout = QTextLayout(self.full, self.font())
         layout.beginLayout()
@@ -294,11 +306,22 @@ class ClampLabel(QLabel):
             shown.append((line.textStart(), line.textLength(), y))
             y += fm.lineSpacing()
         layout.endLayout()
+        out = []
         for i, (start, length, ly) in enumerate(shown):
             text = self.full[start:start + length].rstrip()
             if i == len(shown) - 1 and start + length < len(self.full):
                 text = fm.elidedText(self.full[start:], Qt.ElideRight, self.width())
-            p.drawText(QPointF(0, ly + fm.ascent()), text)
+            out.append((text, ly))
+        self._wrap = (key, out)
+        return out
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setPen(self.palette().color(self.foregroundRole()))
+        p.setFont(self.font())
+        ascent = self.fontMetrics().ascent()
+        for text, ly in self._wrapped():
+            p.drawText(QPointF(0, ly + ascent), text)
         p.end()
 
 

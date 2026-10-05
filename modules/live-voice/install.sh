@@ -1,6 +1,6 @@
 #!/bin/sh
 # Fallback installer: Onion Board's Voice tab has an Install button that does the same.
-# Needs Python 3.11+ with venv (Debian / Ubuntu: sudo apt install python3-venv).
+# Needs Python 3.12+ with venv (Debian / Ubuntu: sudo apt install python3-venv).
 # About 300 MB with the speech model.
 #   ./install.sh --quiet   no "press Enter" at the end
 cd "$(dirname "$0")" || exit 1
@@ -11,13 +11,13 @@ fail() {
   exit 1
 }
 PY=""
-for p in python3.14 python3.13 python3.12 python3.11 python3; do
+for p in python3.14 python3.13 python3.12 python3; do
   if command -v "$p" >/dev/null 2>&1 &&
-     "$p" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+     "$p" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then
     PY="$p"; break
   fi
 done
-[ -n "$PY" ] || { echo "Python 3.11 or newer wasn't found."; fail "$1"; }
+[ -n "$PY" ] || { echo "Python 3.12 or newer wasn't found."; fail "$1"; }
 # its own environment: .venv here, or in Onion Board's data folder when this folder
 # can't be written (inside the AppImage), where the app looks for it too
 ENV=.venv

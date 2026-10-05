@@ -266,6 +266,33 @@ def test_changing_bridges_restarts_a_running_tor(fake_tor, tmp_path, monkeypatch
     assert "Bridge snowflake" in (tmp_path / "tor" / "torrc").read_text()
 
 
+def test_turning_tor_off_doesnt_wait_for_it_to_exit(fake_tor):
+    t = fake_tor()
+    t.configure(True)
+    t.gate(10)
+    proc = t._proc
+    pid = proc.pid
+    proc.wait = lambda timeout=None: time.sleep(timeout or 0)   # slow to go: 3 s
+    t0 = time.monotonic()
+    t.configure(False)                             # the Settings window's thread
+    assert time.monotonic() - t0 < 1.0 and t.state == tor.OFF
+    assert _gone(pid)
+
+
+def test_a_refused_control_login_closes_the_socket(fake_tor, monkeypatch):
+    closed = []
+    real_close = tor.ControlClient.close
+    monkeypatch.setattr(tor.ControlClient, "authenticate",
+                        lambda self, cookie: (_ for _ in ()).throw(OSError("515 refused")))
+    monkeypatch.setattr(tor.ControlClient, "close",
+                        lambda self: closed.append(1) or real_close(self))
+    t = fake_tor()
+    t.configure(True)
+    with pytest.raises(net.ProxyError):
+        t.gate(10)
+    assert t.state == tor.FAILED and closed
+
+
 def test_a_tor_that_dies_reports_why(fake_tor):
     t = fake_tor("die")
     t.configure(True)
@@ -297,6 +324,10 @@ def test_a_request_waits_on_while_tor_is_still_getting_somewhere(tmp_path, monke
 def test_a_stuck_bootstrap_fails_closed(fake_tor, monkeypatch):
     t = fake_tor("stall")
     t.configure(True)
+    # the fake is a Python process that can take seconds to boot on a busy PC: let it
+    # reach its stuck 45% first, or the request below times out still at 0%
+    t.start()
+    assert _wait(lambda: t.progress == 45)
     with pytest.raises(net.ProxyError, match=r"still connecting \(45%\)"):
         t.gate(1.0)                                  # waits, then fails: never direct
     assert t.state == tor.STARTING and t.progress == 45

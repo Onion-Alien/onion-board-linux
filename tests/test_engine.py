@@ -402,7 +402,7 @@ def fake_devices(monkeypatch, rate=44100, start_fails=False):
 
     class Stream:
         def __init__(self, **kw):
-            self.closed = False
+            self.closed, self.kw = False, kw
             made.append(self)
 
         def start(self):
@@ -422,6 +422,19 @@ def fake_devices(monkeypatch, rate=44100, start_fails=False):
     monkeypatch.setattr(eng.sd, "OutputStream", Stream)
     monkeypatch.setattr(eng.sd, "InputStream", Stream)
     return made
+
+
+def test_safer_buffering_asks_for_a_real_buffer(monkeypatch):
+    # Windows rounds "high" (10 ms) up to the same buffer as "low": Safer must ask for
+    # a number of seconds, on the outputs and the mic alike
+    made = fake_devices(monkeypatch)
+    e = Engine()
+    e.set_main_device("cable")
+    e.latency = "high"
+    e.set_mon_device("headphones")
+    e.set_mic_device("mic")
+    assert made[0].kw["latency"] == "low"
+    assert made[1].kw["latency"] == made[2].kw["latency"] == eng.BUFFER["high"] >= 0.03
 
 
 def test_failed_start_closes_the_stream_and_keeps_the_rate(monkeypatch):
@@ -860,3 +873,28 @@ def test_the_finished_test_recording_is_joined_off_the_audio_thread():
     assert isinstance(e._rec_done[0], list)      # the callback only handed it over
     data, rate = e.rec_done
     assert data.shape == (960, 2) and rate == e.rates["main"]
+
+
+def test_quiet_sounds_bus_skips_its_filters_then_wakes_for_a_sound(monkeypatch):
+    """With nothing playing, the send stage stops filtering silence after QUIET_S (a
+    voice chat mode cost ~1 ms of every 10 ms block on zeros); a sound brings it back
+    at once, shaped as before."""
+    from soundboard import destination
+    e = engine_with("main")
+    e.dest = destination.BUILTIN_BY_KEY["discord"]
+    calls = []
+    real = destination.Processor.process
+
+    def counted(self, x, d):
+        calls.append(len(x))
+        return real(self, x, d)
+    monkeypatch.setattr(destination.Processor, "process", counted)
+    out = np.zeros((480, 2), np.float32)
+    for _ in range(int(e.QUIET_S * SR / 480) + 5):
+        e._main(out, 480)
+    n = len(calls)
+    e._main(out, 480)
+    assert len(calls) == n and np.all(out == 0)    # skipped: only silence
+    e.play("a", tone(0.05), 1.0)
+    e._main(out, 480)
+    assert len(calls) == n + 1 and np.abs(out).max() > 0.01
