@@ -43,7 +43,7 @@ the number move: new work found means the number can go down, and that's fine.
 | voice-fedora | Voice tab on Fedora (Female voice, Hear my voice, delay label) | 1 | done |
 | custom-voices | Custom voices (Piper for Linux) | 1 | done |
 | addons | Add-ons (live voice environment, notices) | 2 | done |
-| ai-voices | AI voices add-on installed and run on a real Linux desktop | 1 | open |
+| ai-voices | AI voices add-on installed and run on a real Linux desktop | 1 | done |
 | import | Import from other soundboards (Soundux, EXP, Wine prefixes) | 1 | done |
 | overlay-x11 | Overlay screen choice and preview click-through on X11 | 1 | done |
 | overlay-wayland | Overlay preview click-through on native Wayland | 1 | open |
@@ -123,3 +123,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 77% | setup guide clicked through on Fedora (CI AppImage): found + fixed its last page telling Linux users their old mic needs nothing (apps pinned to it don't hear the sounds) and Voicemeeter in 14 texts |
 | 2026-10-06 | 78% | Voice tab on Fedora (CI AppImage): Female voice shifts a 300 Hz tone to 408 Hz in what others hear, Hear my voice, the delay label (166 ms) |
 | 2026-10-06 | 76% | CI AppImage with the C++ runtime fix draws its window on Fedora; new open row: drop-outs with the window drawing (the VM's ~2/min idle; earlier zero counts had no visible window) |
+| 2026-10-06 | 78% | AI voices on Fedora from the CI AppImage: Get, install (python3.14) and a voice heard through Onion Board Mic; found + fixed on the way: the bundle's LD_LIBRARY_PATH broke the system python3's venv, and the build shipped the add-on without its model |
