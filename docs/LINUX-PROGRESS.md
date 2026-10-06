@@ -31,7 +31,7 @@ the number move: new work found means the number can go down, and that's fine.
 | audio-fedora | Stock Fedora sound (no "pulse" device, 40 ms floor) | 2 | done |
 | dropouts | No drop-outs at "low" with the whole app running | 4 | done |
 | cable | Virtual cable made by the app (pactl, made at every login) | 3 | done |
-| cable-guide | Setup guide's "Make the virtual cable" clicked through on Fedora | 1 | open |
+| cable-guide | Setup guide's "Make the virtual cable" clicked through on Fedora (CI AppImage 62a2b4e, fresh profile: *Use the virtual cable instead* made it in one click, the sink + source + drop-in there, a pad clicked reached the cable's far end at peak 0.71, the cable kept after a restart) | 1 | done |
 | setup-guide | Setup guide and every page checked on a real desktop | 2 | done |
 | apps-tab | Apps tab and instant replay (PipeWire) | 2 | done |
 | midi | MIDI pads (ALSA raw MIDI) | 1 | done |
@@ -46,7 +46,7 @@ the number move: new work found means the number can go down, and that's fine.
 | ai-voices | AI voices add-on installed and run on a real Linux desktop | 1 | done |
 | import | Import from other soundboards (Soundux, EXP, Wine prefixes) | 1 | done |
 | overlay-x11 | Overlay screen choice and preview click-through on X11 | 1 | done |
-| overlay-wayland | Overlay preview click-through on native Wayland | 1 | open |
+| overlay-wayland | Overlay preview click-through on native Wayland (Fedora 44 Plasma, CI AppImage 62a2b4e: a click on the preview opened the dropdown under it) | 1 | done |
 | voice-suggest | Voice engine suggestion from the window in front | 1 | done |
 | listeners | Who's listening: the program recording the cable (PipeWire) | 2 | open |
 | wording | No Windows wording on screen (table + test) | 2 | done |
@@ -126,3 +126,5 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 76% | CI AppImage with the C++ runtime fix draws its window on Fedora; new open row: drop-outs with the window drawing (the VM's ~2/min idle; earlier zero counts had no visible window) |
 | 2026-10-06 | 78% | AI voices on Fedora from the CI AppImage: Get, install (python3.14) and a voice heard through Onion Board Mic; found + fixed on the way: the bundle's LD_LIBRARY_PATH broke the system python3's venv, and the build shipped the add-on without its model |
 | 2026-10-06 | 79% | voice gaps on the mic route found + fixed: not the window; PipeWire's 21 ms quanta vs Windows' 15 ms mic cushion (Fedora: 41 gaps in 110 s -> 0); drop-outs with the window down to start-up + ~1 in 2 min clicking |
+| 2026-10-06 | 80% | overlay preview click-through checked on native Wayland (Fedora 44 Plasma, CI AppImage) |
+| 2026-10-06 | 81% | setup guide virtual cable path clicked through on Fedora (CI AppImage): cable made in one click, a pad reaches its far end |

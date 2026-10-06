@@ -87,7 +87,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 | Control API after a restart | upstream turns SO_REUSEADDR off (on Windows it lets two programs share the port); on Linux it only lets a new listener bind while the old connections wait out TIME_WAIT, so a board restarted within a minute of answering a request couldn't listen (Onion Pocket, Stream Deck dead until the next start; found by the Fedora mic test). On here; two boards still can't share the port | `linux/remote.py` |
 | Usage count (1.9.0) | as upstream (only a built copy sends, once a day, the version and a random ID; switched off in Settings → Privacy & security), told apart from Windows: the daily count goes to `/app/linux/<version>` (titled "… (Linux)") and events end in `/linux` (`first-start/linux`, `update-now/A-to-B/linux`), so GoatCounter shows Linux under /app/linux/. The Windows installer's "Count me in" box has no AppImage twin, so a Linux copy is counted from its first start unless switched off | `linux/usage.py` wraps `hits()` (hook at `usage.py`'s end); `tests/test_linux_usage.py` |
 | Triggers tab | hidden (not removed: everything that looks it up still finds it), and it never nudges. Onion Watch (its own repo) captures the screen with DXGI / GDI; 0.6.5's module zip does install and load here without errors, but only says it works on Windows. Porting it (X11 capture: XShm, XComposite for one window; a portal on Wayland) is its own project, in that repo; then this tab comes back | `linux/ui.py` |
-| Overlay | "The one the game is on" follows the X11 window in front (its middle picks the monitor; `overlay.pick_screen` matches it as on Windows). Upstream only asks on Windows, so `linux/ui.py` patches the overlay's screen choice. A Wayland window in front: its chosen screen. *Show preview* lets clicks through while it's up (upstream: a Windows window style; here Qt's `WindowTransparentForInput`, an empty X11 input shape, checked on Xvfb) | `linux/keys.py`, `linux/voicesdk.py`, `linux/ui.py` |
+| Overlay | "The one the game is on" follows the X11 window in front (its middle picks the monitor; `overlay.pick_screen` matches it as on Windows). Upstream only asks on Windows, so `linux/ui.py` patches the overlay's screen choice. A Wayland window in front: its chosen screen. *Show preview* lets clicks through while it's up (upstream: a Windows window style; here Qt's `WindowTransparentForInput`, an empty X11 input shape, checked on Xvfb; on native Wayland an empty input region: on Fedora 44 Plasma the CI AppImage's preview let a click through to the dropdown under it. It shows mid-screen there, not at *Position*: Wayland apps can't place their windows) | `linux/keys.py`, `linux/voicesdk.py`, `linux/ui.py` |
 | Voice engine suggestion | *Who's listening* suggests the game in front's voice engine: the X11 active window (`_NET_ACTIVE_WINDOW`, so games under XWayland too) → `_NET_WM_PID` → a Proton / Wine game's .exe from its command line (`Z:\` is `/`, another drive in its `WINEPREFIX`), a native program's `/proc/<pid>/exe`; the scan is upstream's. Desktop and Wine programs (`/usr`, `C:\windows`) don't count. A native libvivoxsdk.so isn't looked for; Wayland windows give nothing | `linux/voicesdk.py`, `linux/x11.py`, `linux/ui.py` |
 | "✓ done" labels | a label wider than the one it replaced now gets its room (showed with Linux fonts) | `ui/busy.py` |
 | Tests | `tests/test_linux_*.py`; `tests/platform_hooks.py` skips tests of Windows itself (each with its reason) and guards real MIDI / autostart / sound server. Upstream's suite runs on 4 workers (pytest-xdist); each test's Xvfb picks a free display itself (`-displayfd`) and each dbus-daemon has its own address, so workers never share one. The tests never see the desktop's own `DISPLAY` / `WAYLAND_DISPLAY` (`tests/platform_hooks.py`): run from a desktop, the apps tests made grabbed hotkeys on the real X server and their leftover hotkey threads segfaulted later tests | |
@@ -109,11 +109,15 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    leftovers (VB-Cable's "CABLE Output", "by the clock", "install the free virtual
    cable", the Onion Watch card) are reworded or hidden, and
    `tests/test_linux_wording.py` now also catches VB-Cable / "CABLE …" text and only
-   skips the guide's installer strings, not the whole guide. Left: clicking through
-   it on a real desktop with a real Discord.
-3. **Wayland without XWayland on GNOME 48+** (done on KDE Plasma, see *Done*), and
-   whether the overlay's *Show preview* lets clicks through on native Wayland (the
-   overlay is X11 / XWayland only).
+   skips the guide's installer strings, not the whole guide. Clicked through on
+   Fedora 44 Plasma with the CI AppImage, both routes: *Put my sounds straight into
+   my mic* and *Use the virtual cable instead* (fresh profile: one click made the
+   cable, `onionboard_cable` + `onionboard_cable_out` + the `pipewire.conf.d` drop-in;
+   a pad clicked in the window reached `pw-record --target onionboard_cable_out` at
+   peak 0.71). Left: a real Discord. Small: the last page's "Steam games (CS2, Dota 2,
+   Deadlock…)" button cuts its text off with Linux fonts.
+3. **Wayland without XWayland on GNOME 48+** (done on KDE Plasma, see *Done*; the
+   overlay preview's click-through on native Wayland is done too, see *Overlay*).
 3a. **Drop-outs with the whole app at "low"**: done. Found and fixed on WSLg (not the
    GIL: the unplug check's `pactl list` every 2-3 s stalled every stream at once; see
    *Audio devices*). Fedora 44 with the CI build (a4ecac5), 45 s at "low" with three
