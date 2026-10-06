@@ -204,8 +204,9 @@ def _linux_never_touches_the_real_desktop(request, monkeypatch, tmp_path):
         return
     # upstream's tests check upstream's text; the Linux wording has its own tests
     if not request.node.module.__name__.rsplit(".", 1)[-1].startswith("test_linux_"):
-        from soundboard.linux import wording
+        from soundboard.linux import usage, wording
         monkeypatch.setattr(wording, "active", False)
+        monkeypatch.setattr(usage, "active", False)   # (tests/test_linux_usage.py)
     # XDG autostart, the PipeWire / PulseAudio drop-ins and the Trash live under these
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "guard" / "xdg-config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "guard" / "xdg-data"))

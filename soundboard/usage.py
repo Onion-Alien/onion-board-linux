@@ -99,3 +99,7 @@ def maybe_send(cfg, saved=None, event: str = "") -> None:
             if saved is not None:
                 saved()
     threading.Thread(target=run, daemon=True, name="usage-count").start()
+
+
+if sys.platform != "win32":   # Linux: counted apart (/app/linux/<version>)
+    from soundboard.linux.usage import *  # noqa: E402,F403
