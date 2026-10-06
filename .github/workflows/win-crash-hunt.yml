@@ -21,6 +21,9 @@ on:
       minutes:
         description: "each job's time limit"
         default: "30"
+      faulthandler:
+        description: "off, or on (its SIGABRT ignored so the abort still leaves a dump: .github/hunt/abort_dumps.py)"
+        default: "off"
 
 permissions:
   contents: read
@@ -63,10 +66,16 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           TESTS: ${{ inputs.tests }}
           LOOPS: ${{ inputs.loops }}
+          FAULTHANDLER: ${{ inputs.faulthandler }}
         run: |
+          $fh = @("-p", "no:faulthandler")
+          if ($env:FAULTHANDLER -eq "on") {
+            $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\.github\hunt"
+            $fh = @("-p", "abort_dumps")
+          }
           $bad = 0
           for ($i = 1; $i -le [int]$env:LOOPS; $i++) {
-            $out = .venv\Scripts\python -m pytest -q --tb=short -p no:faulthandler -p no:cacheprovider ($env:TESTS -split ' ')
+            $out = .venv\Scripts\python -m pytest -q --tb=short @fh -p no:cacheprovider ($env:TESTS -split ' ')
             if ($LASTEXITCODE -ne 0) {
               $bad++; Write-Host "::warning::loop $i failed"
               $out | Where-Object { $_ -notmatch '^[.sx]+\s*\[' } | Select-Object -Last 120
