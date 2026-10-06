@@ -76,6 +76,7 @@ class Server:
 def pa(monkeypatch):
     s = Server()
     monkeypatch.setattr(ldm, "_pactl", s)
+    monkeypatch.setattr(ldm, "_have_pactl", lambda: True)   # (CI runners have no pactl)
     monkeypatch.setattr(ldm, "_holder", None)
     held = []
     monkeypatch.setattr(ldm, "_hold", lambda mods: held.append(list(mods)))

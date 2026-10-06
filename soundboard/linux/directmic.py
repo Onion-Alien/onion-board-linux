@@ -77,6 +77,10 @@ def _env() -> dict[str, str]:
     return env
 
 
+def _have_pactl() -> bool:
+    return shutil.which("pactl") is not None
+
+
 def _pactl(*args: str) -> subprocess.CompletedProcess | None:
     exe = shutil.which("pactl")
     if exe is None:
@@ -287,7 +291,7 @@ def _status(mic_name: str | None) -> str:
 
 def install(mic_name: str | None) -> str | None:
     """The one click: make the mic and make it the default. None when done."""
-    if shutil.which("pactl") is None:
+    if not _have_pactl():
         return ("Onion Board needs PipeWire or PulseAudio and their pactl tool (the "
                 "pulseaudio-utils package) to make its mic.")
     if not ensure():
