@@ -40,7 +40,7 @@ the number move: new work found means the number can go down, and that's fine.
 | data-trash | Data folder and removed sounds to the Trash | 1 | done |
 | net-tor | Proxy relay and Tor | 2 | done |
 | tts | Text-to-speech (eSpeak NG) and the Voice tab's languages | 2 | done |
-| voice-fedora | Voice tab on Fedora (Female voice, Hear my voice, delay label) | 1 | open |
+| voice-fedora | Voice tab on Fedora (Female voice, Hear my voice, delay label) | 1 | done |
 | custom-voices | Custom voices (Piper for Linux) | 1 | done |
 | addons | Add-ons (live voice environment, notices) | 2 | done |
 | ai-voices | AI voices add-on installed and run on a real Linux desktop | 1 | open |
@@ -120,3 +120,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 76% | direct mic checked in the CI AppImage on Fedora (kill -9 safe, 0 drop-outs headless and with the window on the mic route; the from-source drop-outs were the source run's) |
 | 2026-10-06 | 76% | found + fixed: the AppImage window never drew on Fedora (bundled libstdc++ kept Mesa from loading); half until the next CI AppImage is checked |
 | 2026-10-06 | 77% | setup guide clicked through on Fedora (CI AppImage): found + fixed its last page telling Linux users their old mic needs nothing (apps pinned to it don't hear the sounds) and Voicemeeter in 14 texts |
+| 2026-10-06 | 78% | Voice tab on Fedora (CI AppImage): Female voice shifts a 300 Hz tone to 408 Hz in what others hear, Hear my voice, the delay label (166 ms) |
