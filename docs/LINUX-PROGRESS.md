@@ -51,7 +51,8 @@ the number move: new work found means the number can go down, and that's fine.
 | listeners | Who's listening: the program recording the cable (PipeWire) | 2 | open |
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
-| appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | half |
+| appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | done |
+| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: ~2 a minute idle, dozens while clicking; earlier zero counts had no visible window) | 2 | open |
 | ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
 | certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | done |
 | self-update | Self-update from an AppImage | 2 | done |
@@ -121,3 +122,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 76% | found + fixed: the AppImage window never drew on Fedora (bundled libstdc++ kept Mesa from loading); half until the next CI AppImage is checked |
 | 2026-10-06 | 77% | setup guide clicked through on Fedora (CI AppImage): found + fixed its last page telling Linux users their old mic needs nothing (apps pinned to it don't hear the sounds) and Voicemeeter in 14 texts |
 | 2026-10-06 | 78% | Voice tab on Fedora (CI AppImage): Female voice shifts a 300 Hz tone to 408 Hz in what others hear, Hear my voice, the delay label (166 ms) |
+| 2026-10-06 | 76% | CI AppImage with the C++ runtime fix draws its window on Fedora; new open row: drop-outs with the window drawing (the VM's ~2/min idle; earlier zero counts had no visible window) |
