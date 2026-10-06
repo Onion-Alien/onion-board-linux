@@ -52,7 +52,7 @@ the number move: new work found means the number can go down, and that's fine.
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
 | appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | done |
-| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: after the voice-gaps fix the CI AppImage had 6-8 in 3 min while clicking through every tab every 3 s, ~1 in 2 min from source; the 1-5 at every start came from the window's first show holding Python's lock: the outputs now open 0.8 s after the window, 0 in 4 starts from source (was 1-2 each); a real PC still to check) | 2 | half |
+| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: after the voice-gaps fix the CI AppImage had 6-8 in 3 min while clicking through every tab every 3 s, ~1 in 2 min from source; the 1-5 at every start came from the window's first show holding Python's lock: the outputs now open 0.8 s after the window, 0 in 4 starts from source (was 1-2 each); 3 min clicking every tab every 3 s from source after it: main 3 / mon 1, none at start, 3 of them in one 280 ms stall with no thread holding the lock (the VM); a real PC still to check) | 2 | half |
 | voice-gaps | The voice reaches what others hear without gaps on PipeWire (the mic's cushion covers the sound server's quantum; was ~10-40 gaps a minute, window or not) | 1 | done |
 | ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
 | certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | done |

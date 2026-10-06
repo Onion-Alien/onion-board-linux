@@ -153,8 +153,12 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    back while the app's window is built (only when its splash is up, so tests' windows
    are as upstream) and does them 0.8 s after: 0 drop-outs in 4 starts from source,
    1-2 in each of 4 without. The mic opens at once; an output set in between (the
-   guide, Settings) is kept. The rest while clicking tabs is the same kind of Qt work
-   (a tab's first show, the globe) and needs a real PC to judge.
+   guide, Settings) is kept. Then 3 minutes from source, clicking every tab every 3 s
+   (55 clicks): drop-outs main 3 / mon 1 (the CI AppImage before: 6-8 / 2-6), none at
+   start; 3 of the 4 came in one 280 ms stall while no Python thread held the lock (the
+   VM pausing, most likely). What's left is the same kind of Qt work (a tab's first
+   show) and needs a real PC to judge. Not yet checked in a built AppImage: CI no longer
+   runs on every push (the private repo's paid minutes ran out, 28cd6fd).
 4. **Who's listening: the program recording the cable.** 1.7.0 names the program
    that records the cable's far end and can switch the mode by itself
    (`voicesdk.Listeners`, `appaudio.recording_apps`); upstream only starts it on
