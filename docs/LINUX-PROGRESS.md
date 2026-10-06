@@ -51,6 +51,7 @@ the number move: new work found means the number can go down, and that's fine.
 | listeners | Who's listening: the program recording the cable (PipeWire) | 2 | open |
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
+| appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | half |
 | ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
 | certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | done |
 | self-update | Self-update from an AppImage | 2 | done |
@@ -117,3 +118,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 75% | Straight into my mic on Linux built: Onion Board Mic as the default input, fed the send mix, the board recording the real mic; holder shell for crashes; checked on Fedora (voice + pads on Default, kill -9 / SIGTERM safe, no slower than the cable) and WSLg PulseAudio; found + fixed: the control API couldn't listen after a quick restart |
 | 2026-10-06 | 76% | merged upstream 1.9.2 (README On Linux tells the mic route); Linux mic tests fixed for CI (no pactl there); usage count tells Linux apart (/app/linux/<version>, events end in /linux); Windows crash hunt workflow for the CI abort |
 | 2026-10-06 | 76% | direct mic checked in the CI AppImage on Fedora (kill -9 safe, 0 drop-outs headless and with the window on the mic route; the from-source drop-outs were the source run's) |
+| 2026-10-06 | 76% | found + fixed: the AppImage window never drew on Fedora (bundled libstdc++ kept Mesa from loading); half until the next CI AppImage is checked |

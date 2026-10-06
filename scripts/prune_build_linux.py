@@ -49,8 +49,13 @@ DROP_PLUGINS = ("platforminputcontexts/libqtvirtualkeyboardplugin.so", "imagefor
 # /usr/lib/x86_64-linux-gnu/alsa-lib on the Ubuntu that builds the app but
 # /usr/lib64/alsa-lib on Fedora and /usr/lib/alsa-lib on Arch. libgbm: Mesa's
 # graphics driver, which must match it (and it needs libwayland-server, which the
-# build didn't carry: the app didn't start without it). Every desktop has both.
-HOST_LIBS = ("libasound.so", "libgbm.so")
+# build didn't carry: the app didn't start without it). libstdc++ and libgcc_s:
+# the user's graphics driver (Mesa) is built against the user's C++ runtime, newer
+# than the build machine's (Ubuntu 22.04): with the build's one loaded first, Fedora
+# 44's Mesa couldn't load (GLIBCXX_3.4.32 not found), Qt got no OpenGL and the
+# window never drew. Every desktop has all four, and every one the app runs on
+# (glibc 2.35 or newer) has a C++ runtime at least as new as the build's.
+HOST_LIBS = ("libasound.so", "libgbm.so", "libstdc++.so", "libgcc_s.so")
 # what the app may take from the user's system: the C library, the graphics stack
 # (drivers' own libraries), the display server's client libraries and HOST_LIBS.
 # A kept file needing anything else that isn't in the build is a problem: the

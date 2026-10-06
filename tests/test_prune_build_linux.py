@@ -125,6 +125,20 @@ def test_alsa_and_mesa_are_the_users_own(tmp_path):
     assert {internal / "libasound.so.2", internal / "libgbm.so.1"} <= set(drop)
 
 
+def test_the_cpp_runtime_is_the_users_own(tmp_path):
+    """The build's libstdc++ (Ubuntu 22.04's) loaded first kept Fedora 44's Mesa from
+    loading (GLIBCXX_3.4.32 not found): no OpenGL, and the window never drew."""
+    app = make_tree(tmp_path)
+    internal = app / "_internal"
+    for name in ("libstdc++.so.6", "libgcc_s.so.1"):
+        (internal / name).write_bytes(b"x")
+    needs = dict(NEEDED, **{"libQt6Core.so.6": ["libicuuc.so.73", "libc.so.6",
+                                                "libstdc++.so.6", "libgcc_s.so.1"]})
+    drop, problems = pbl.plan(app, needed_of=lambda p: needs.get(p.name, []))
+    assert problems == []
+    assert {internal / "libstdc++.so.6", internal / "libgcc_s.so.1"} <= set(drop)
+
+
 def test_plan_reports_a_library_neither_built_in_nor_the_systems(tmp_path):
     """A library PyInstaller left out on purpose: the app would start only where
     the user happens to have it."""
