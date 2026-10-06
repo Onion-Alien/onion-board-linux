@@ -15,6 +15,12 @@ on:
       loops:
         description: "times each job runs them"
         default: "15"
+      jobs:
+        description: "how many jobs side by side (a JSON list)"
+        default: "[1, 2, 3]"
+      minutes:
+        description: "each job's time limit"
+        default: "30"
 
 permissions:
   contents: read
@@ -22,11 +28,11 @@ permissions:
 jobs:
   hunt:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ fromJSON(inputs.minutes) }}
     strategy:
       fail-fast: false
       matrix:
-        job: [1, 2, 3]
+        job: ${{ fromJSON(inputs.jobs) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
