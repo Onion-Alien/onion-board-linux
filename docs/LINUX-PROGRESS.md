@@ -71,6 +71,7 @@ the number move: new work found means the number can go down, and that's fine.
 | direct-mic | Straight into my mic on Linux: Onion Board Mic as the default input, fed the send mix | 5 | done |
 | direct-mic-safe | The user's own mic back as the default on quit, route change, crash, kill -9 | 2 | done |
 | direct-mic-fedora | Direct mic on Fedora: Default hears pads + mic, the meter never the pads, kill -9 safe | 2 | done |
+| direct-mic-appimage | Direct mic in the CI AppImage on Fedora: frozen pactl + holder, kill -9 safe, 0 drop-outs on the mic route with the window | 1 | done |
 
 ## After launch (not counted)
 
@@ -115,3 +116,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 65% | Straight into my mic on Linux designed (docs/LINUX-PORT.md): a virtual default mic fed the send mix, a holder shell for crashes; checked on Fedora that PipeWire moves recordings back when it goes |
 | 2026-10-06 | 75% | Straight into my mic on Linux built: Onion Board Mic as the default input, fed the send mix, the board recording the real mic; holder shell for crashes; checked on Fedora (voice + pads on Default, kill -9 / SIGTERM safe, no slower than the cable) and WSLg PulseAudio; found + fixed: the control API couldn't listen after a quick restart |
 | 2026-10-06 | 76% | merged upstream 1.9.2 (README On Linux tells the mic route); Linux mic tests fixed for CI (no pactl there); usage count tells Linux apart (/app/linux/<version>, events end in /linux); Windows crash hunt workflow for the CI abort |
+| 2026-10-06 | 76% | direct mic checked in the CI AppImage on Fedora (kill -9 safe, 0 drop-outs headless and with the window on the mic route; the from-source drop-outs were the source run's) |
