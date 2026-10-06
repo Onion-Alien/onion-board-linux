@@ -70,10 +70,14 @@ QT_QPA_PLATFORM=offscreen QTWEBENGINE_DISABLE_SANDBOX="${QTWEBENGINE_DISABLE_SAN
     dist/OnionBoard/OnionBoard --selftest
 
 # add-ons ship with the app, as source (an add-on's environment is made on the user's
-# PC by its Install button; inside the AppImage it goes to the data folder)
+# PC by its Install button; inside the AppImage it goes to the data folder). AI voices
+# don't, as on Windows (build.ps1): they're an optional download with their voice
+# model in it (soundboard/aiaddon.py); shipped without the model, the Voice tab
+# offered Install instead of Get, and the install stopped at the model download.
 rm -rf dist/OnionBoard/modules
 for m in modules/*/; do
   name="$(basename "$m")"
+  if [ "$name" = ai-voices ]; then continue; fi
   mkdir -p "dist/OnionBoard/modules/$name"
   (cd "$m" && find . \( -name .venv -o -name __pycache__ \) -prune -o -type f ! -name '*.pyc' ! -name '*.bat' \
      -exec cp --parents {} "../../dist/OnionBoard/modules/$name/" \;)
