@@ -268,3 +268,87 @@ def test_the_triggers_timer_firing_mid_build_is_no_crash(qapp, app_dir, server, 
         w.close()
         w.deleteLater()
         qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def _starting_window(qapp, monkeypatch, calls):
+    """The main window built as the app starts (its splash up), every engine device
+    call recorded with the time it came."""
+    import time
+
+    from soundboard.ui import mainwindow, splash
+    monkeypatch.setattr(splash, "_splash", object())   # (only looked at, never shown)
+    for name in ("set_main_device", "set_mon_device", "set_mic_device",
+                 "set_obs_device", "set_tap_device"):
+        def record(self, n, _name=name):
+            calls.append((_name, n, time.monotonic()))
+            if _name in ("set_main_device", "set_mon_device"):
+                self.names[_name[4:7]] = n
+        monkeypatch.setattr(engine.Engine, name, record)
+    w = mainwindow.MainWindow()
+    monkeypatch.setattr(splash, "_splash", None)
+    return w
+
+
+def _wait(qapp, secs):
+    import time
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.02)
+
+
+def _close(qapp, w):
+    from PySide6.QtCore import QEvent
+    w._load_thread.join(15)
+    w.close()
+    w.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_the_outputs_open_after_the_window_is_up_at_start(qapp, app_dir, server,
+                                                          monkeypatch):
+    """The window's first show holds Python's lock for ~100 ms on a slow PC: the
+    outputs (not the mic) open a moment later, so their callbacks aren't starved."""
+    import time
+
+    from soundboard.linux import ui
+    calls = []
+    w = _starting_window(qapp, monkeypatch, calls)
+    built = time.monotonic()
+    try:
+        assert [c[0] for c in calls] == ["set_mic_device"]
+        _wait(qapp, ui.OUTPUTS_AFTER_MS / 1000 + 0.5)
+        opened = {c[0]: c for c in calls}
+        assert {"set_main_device", "set_mon_device", "set_tap_device",
+                "set_obs_device"} <= set(opened)
+        assert opened["set_mon_device"][1] == "Built-in Audio Analog Stereo"
+        assert opened["set_main_device"][2] - built >= ui.OUTPUTS_AFTER_MS / 1000 - 0.05
+        assert ui._held is None
+    finally:
+        _close(qapp, w)
+
+
+def test_an_output_picked_while_held_back_stays(qapp, app_dir, server, monkeypatch):
+    from soundboard.linux import ui
+    calls = []
+    w = _starting_window(qapp, monkeypatch, calls)
+    try:
+        w.engine.set_mon_device("USB Headset")   # the user, before the outputs opened
+        _wait(qapp, ui.OUTPUTS_AFTER_MS / 1000 + 0.5)
+        # (the watchdog may retry it: these stand-ins open nothing)
+        assert {c[1] for c in calls if c[0] == "set_mon_device"} == {"USB Headset"}
+        assert any(c[0] == "set_main_device" for c in calls)
+    finally:
+        _close(qapp, w)
+
+
+def test_a_tests_window_opens_its_outputs_at_once(qapp, app_dir, server, monkeypatch):
+    from soundboard.ui import mainwindow
+    calls = []
+    monkeypatch.setattr(engine.Engine, "set_mon_device",
+                        lambda self, n: calls.append(n))
+    w = mainwindow.MainWindow()
+    try:
+        assert calls == ["Built-in Audio Analog Stereo"]
+    finally:
+        _close(qapp, w)

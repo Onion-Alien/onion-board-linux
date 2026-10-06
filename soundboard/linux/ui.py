@@ -27,6 +27,24 @@ log = logging.getLogger(__name__)
 MAKE = "✚  Make it now (free, no download)"
 FAILED = ("Couldn't make the virtual cable: Onion Board needs PipeWire or PulseAudio, "
           "and their pactl tool (the pulseaudio-utils package). The log has the details.")
+OUTPUTS_AFTER_MS = 800   # at start-up, the outputs open this long after the window is built
+# the engine's output setters held back at start-up, and the name each one sets
+_OUTPUT_SETTERS = ("set_main_device", "set_tap_device", "set_mon_device", "set_obs_device")
+_KEYS = {"set_main_device": "main", "set_mon_device": "mon", "set_obs_device": "obs"}
+_held: list | None = None   # (setter, device name) while the app's window is being built
+
+
+def _open_held(win, held):
+    """The outputs held back while the window was built, opened now; one the user has
+    set since (the setup guide, Settings) is theirs and stays."""
+    if win._shut_down:
+        return
+    e = win.engine
+    for n, name in held:
+        key = _KEYS.get(n)
+        if (e.names.get(key) if key else getattr(e, "tap_name", None)) is None:
+            getattr(e, n)(name)
+    win._update_status()
 
 
 def describe_action(win, action: str) -> str:
@@ -47,12 +65,24 @@ def describe_action(win, action: str) -> str:
 
 def patch_main_window(cls):
     orig_init = cls.__init__
+    orig_init_devices = cls._init_devices
 
     def __init__(self, *a, **k):
+        global _held
         # the desktop's "allow these shortcuts?" list (Wayland portal) in words; set
         # first: the window registers its hotkeys while it's being built
         portal.describe = lambda action, win=self: describe_action(win, action)
-        orig_init(self, *a, **k)
+        from soundboard.ui import splash
+        # the app starting (its splash is up; not a test's window): the outputs open
+        # once the window is up, see _init_devices
+        _held = [] if splash._splash is not None else None
+        try:
+            orig_init(self, *a, **k)
+        finally:
+            held, _held = _held, None
+        if held:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(OUTPUTS_AFTER_MS, self, lambda: _open_held(self, held))
         if getattr(self, "btn_install", None) is not None:
             self.btn_install.setText("Make the virtual cable")
         # no Triggers tab until Onion Watch, the add-on it holds, runs on Linux (it
@@ -114,7 +144,27 @@ def patch_main_window(cls):
         from soundboard.linux import directmic
         directmic.release()
 
+    def _init_devices(self):
+        """At start-up the outputs (what others hear, the headphones, the stream output,
+        the cable beside the mic) open a moment after the window is up, not while it's
+        built: the window's first show and paint are Qt work that holds Python's lock
+        for up to ~100 ms at a time on a slow PC (software OpenGL), and an output
+        stream's callback can't run until it's let go: 2-5 drop-outs at every start on
+        the Fedora VM, the status line telling a new user to pick safer buffering. The
+        mic opens at once (it fills its own cushion first)."""
+        if _held is None:
+            return orig_init_devices(self)
+        e = self.engine
+        for n in _OUTPUT_SETTERS:   # this engine's calls only; the class's stay
+            setattr(e, n, lambda name, _n=n: _held.append((_n, name)))
+        try:
+            orig_init_devices(self)
+        finally:
+            for n in _OUTPUT_SETTERS:
+                e.__dict__.pop(n, None)
+
     cls.__init__ = __init__
+    cls._init_devices = _init_devices
     cls.set_route = set_route
     cls.shutdown = shutdown
     mw = sys.modules[cls.__module__]

@@ -143,6 +143,18 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    mic into cable gaps 4 / skips 6 (the build before: 111 / 21 and 115 / 19), drop-outs
    main 6 / mon 2 (before: 10-16 / 3; most come while the Radio tab's globe starts on
    the VM's software OpenGL).
+3c. **Drop-outs at start-up**: the window's first `show()` and paint are Qt work on the
+   UI thread that holds Python's lock (GIL) 40-130 ms at a time on the Fedora VM; the
+   outputs were already open (upstream opens them while the window is built), so their
+   callbacks waited and the 50 ms cushion ran dry: 1-5 drop-outs at every start, and
+   the status line told a new user to pick safer buffering. Measured with a probe
+   timing every callback plus a sleeper thread (late = the lock was held) and one in
+   another process (never late: not the CPU). `linux/ui.py` now holds the output opens
+   back while the app's window is built (only when its splash is up, so tests' windows
+   are as upstream) and does them 0.8 s after: 0 drop-outs in 4 starts from source,
+   1-2 in each of 4 without. The mic opens at once; an output set in between (the
+   guide, Settings) is kept. The rest while clicking tabs is the same kind of Qt work
+   (a tab's first show, the globe) and needs a real PC to judge.
 4. **Who's listening: the program recording the cable.** 1.7.0 names the program
    that records the cable's far end and can switch the mode by itself
    (`voicesdk.Listeners`, `appaudio.recording_apps`); upstream only starts it on

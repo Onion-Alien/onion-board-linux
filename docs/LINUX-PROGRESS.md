@@ -52,7 +52,7 @@ the number move: new work found means the number can go down, and that's fine.
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
 | appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | done |
-| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: after the voice-gaps fix the CI AppImage had 6-8 in 3 min while clicking through every tab every 3 s, ~1 in 2 min from source; a real PC still to check) | 2 | half |
+| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: after the voice-gaps fix the CI AppImage had 6-8 in 3 min while clicking through every tab every 3 s, ~1 in 2 min from source; the 1-5 at every start came from the window's first show holding Python's lock: the outputs now open 0.8 s after the window, 0 in 4 starts from source (was 1-2 each); a real PC still to check) | 2 | half |
 | voice-gaps | The voice reaches what others hear without gaps on PipeWire (the mic's cushion covers the sound server's quantum; was ~10-40 gaps a minute, window or not) | 1 | done |
 | ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
 | certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | done |
@@ -128,3 +128,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 79% | voice gaps on the mic route found + fixed: not the window; PipeWire's 21 ms quanta vs Windows' 15 ms mic cushion (Fedora: 41 gaps in 110 s -> 0); drop-outs with the window down to start-up + ~1 in 2 min clicking |
 | 2026-10-06 | 80% | overlay preview click-through checked on native Wayland (Fedora 44 Plasma, CI AppImage) |
 | 2026-10-06 | 81% | setup guide virtual cable path clicked through on Fedora (CI AppImage): cable made in one click, a pad reaches its far end |
+| 2026-10-06 | 81% | start-up drop-outs: the outputs open 0.8 s after the window is up (window's first show held the GIL; 0 in 4 starts from source, was 1-2 each) |
