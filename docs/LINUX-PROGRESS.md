@@ -25,7 +25,8 @@ the number move: new work found means the number can go down, and that's fine.
 |---|---|---|---|
 | hotkeys-x11 | Global hotkeys on X11 / XWayland (grabs, key-up, hold-to-play) | 4 | done |
 | hotkeys-kde | Wayland hotkeys via the portal on KDE Plasma | 3 | done |
-| hotkeys-gnome | Wayland hotkeys via the portal on GNOME 48+ | 2 | open |
+| hotkeys-gnome | Wayland hotkeys via the portal on GNOME 48+ (Fedora 44 Workstation, GNOME 50, from source: the app id GNOME takes, its dialog, F9 held / let go with the app, a terminal and an X11 window in front) | 2 | done |
+| hotkeys-xwayland | Hotkeys on a normal Wayland login (DISPLAY set too): the portal, not X11 grabs that see no keys there (GNOME 50: F9 never reached them); Wayland with no portal falls back to X11 grabs and says they only work with an X11 window in front | 2 | done |
 | hotkeys-other | Wayland with no GlobalShortcuts portal (Sway / wlroots, GNOME before 48): a clear message on what to do, and Hyprland's portal checked | 2 | open |
 | audio-core | Audio devices and streams on PipeWire and PulseAudio (pulse / pipewire device, unplug watchdog) | 6 | done |
 | audio-fedora | Stock Fedora sound (no "pulse" device, 40 ms floor) | 2 | done |
@@ -130,3 +131,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 81% | setup guide virtual cable path clicked through on Fedora (CI AppImage): cable made in one click, a pad reaches its far end |
 | 2026-10-06 | 81% | start-up drop-outs: the outputs open 0.8 s after the window is up (window's first show held the GIL; 0 in 4 starts from source, was 1-2 each) |
 | 2026-10-06 | 83% | Who's listening on Linux: PipeWire's links name the program recording the cable / Onion Board Mic; checked on Fedora with stand-ins on both routes |
+| 2026-10-07 | 85% | GNOME 50 hotkeys: found + fixed the app id GNOME threw away and X11 grabs on a normal Wayland login (no keys at all); portal checked with the app, a terminal and an X11 window in front; Wayland with no portal says why |

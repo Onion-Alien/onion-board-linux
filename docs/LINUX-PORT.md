@@ -60,7 +60,7 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
 
 | Area | Linux | Files |
 |---|---|---|
-| Global hotkeys | X11 key grabs (also games under XWayland), real key-up for hold-to-play, the keyboard grab dropped at once so the game keeps its keys; survives the X server going away. Wayland with no X display: the desktop's GlobalShortcuts portal (KDE Plasma, GNOME 48+) over D-Bus (jeepney): the desktop asks the user once, binds what it allows (the rest show as failed), Activated / Deactivated give press and release. The portal only takes an app id it finds a `.desktop` file for, which an AppImage doesn't install: the app writes a hidden one (`NoDisplay`) to `~/.local/share/applications/onionboard.desktop` before it registers, and names each shortcut in words ("Play Airhorn", "Stop everything"). Checked on Fedora 44 KDE Plasma (Wayland, no X display): the desktop's dialog, hold-to-play (down / up), a changed set of hotkeys asking again for the new one only | `linux/keys.py`, `linux/x11.py`, `linux/portal.py` |
+| Global hotkeys | X11 key grabs (also games under XWayland), real key-up for hold-to-play, the keyboard grab dropped at once so the game keeps its keys; survives the X server going away. On a Wayland desktop with a GlobalShortcuts portal (KDE Plasma, GNOME 48+) the portal is used even though XWayland is there too (`DISPLAY` is set on every normal login): X11 grabs there see no keys unless an X11 window is in front (GNOME 50: F9 never reached them, with the app or a terminal in front). Wayland with no portal (Sway, older GNOME) falls back to X11 grabs (games under XWayland) and the status line says they only work with an X11 window in front and points at the remote control; a dialog the user said no to, or no X either, get their own words too. The portal over D-Bus (jeepney): the desktop asks the user once, binds what it allows (the rest show as failed), Activated / Deactivated give press and release. The portal only takes an app id it finds a `.desktop` file for, which an AppImage doesn't install: the app writes a hidden one (`NoDisplay`) to `~/.local/share/applications/io.github.Onion_Alien.OnionBoard.desktop` before it registers (and removes the `onionboard.desktop` earlier builds wrote: GNOME throws a bind away for an id with no dots, "invalid app_id", where Plasma took it), and names each shortcut in words ("Play Airhorn", "Stop everything"). Checked on Fedora 44 KDE Plasma (Wayland, no X display): the desktop's dialog, hold-to-play (down / up), a changed set of hotkeys asking again for the new one only. Checked on Fedora 44 Workstation (GNOME 50, a normal login with XWayland): GNOME's dialog, F9 held and let go with the app, a terminal and an X11 window in front | `linux/keys.py`, `linux/x11.py`, `linux/portal.py` |
 | Key presses (auto push-to-talk) | XTest | `linux/keys.py` |
 | Hotkey capture dialog | `winkeys.event_vk()` turns Qt's X keysym into the Windows key code configs store | `winkeys.py`, `settings.py` (one line) |
 | MIDI pads | ALSA raw MIDI, busy = EBUSY, unplug detected | `linux/midi.py` |
@@ -116,8 +116,10 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    a pad clicked in the window reached `pw-record --target onionboard_cable_out` at
    peak 0.71). Left: a real Discord. Small: the last page's "Steam games (CS2, Dota 2,
    Deadlock…)" button cuts its text off with Linux fonts.
-3. **Wayland without XWayland on GNOME 48+** (done on KDE Plasma, see *Done*; the
-   overlay preview's click-through on native Wayland is done too, see *Overlay*).
+3. **Wayland hotkeys on GNOME 48+**: done (see *Done*): the bare app id was thrown
+   away by GNOME, and on a normal login (XWayland there too) the app used X11 grabs
+   that see no keys; both fixed and checked on GNOME 50. The overlay preview's
+   click-through on native Wayland is done too, see *Overlay*.
 3a. **Drop-outs with the whole app at "low"**: done. Found and fixed on WSLg (not the
    GIL: the unplug check's `pactl list` every 2-3 s stalled every stream at once; see
    *Audio devices*). Fedora 44 with the CI build (a4ecac5), 45 s at "low" with three

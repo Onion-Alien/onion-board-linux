@@ -65,23 +65,42 @@ class Hotkeys(QObject):
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._portal = None
-        if x11.available():
-            self._thread = threading.Thread(target=self._loop, daemon=True, name="hotkeys")
-            self._thread.start()
-            if not self._ready.wait(2):
-                log.error("hotkey thread didn't start; global hotkeys won't work this session")
-        elif portal.wayland():
-            # Wayland with no XWayland: the desktop's GlobalShortcuts portal
+        wayland = portal.wayland()
+        # a Wayland desktop: its GlobalShortcuts portal, even with XWayland there (X11
+        # grabs only see keys while an X11 window is in front); X11 grabs on X11, or
+        # on a Wayland desktop with no portal (Sway, older GNOME: games under XWayland)
+        if wayland and (not x11.available() or portal.available()):
             self._portal = portal.Shortcuts(self.fired.emit, self.released.emit,
                                             self._portal_failed)
             if not self._portal.wait_ready(2):
                 log.error("portal hotkey thread didn't start")
+        elif x11.available():
+            if wayland:
+                log.warning("no GlobalShortcuts portal: hotkeys only reach the app while "
+                            "an X11 window is in front")
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="hotkeys")
+            self._thread.start()
+            if not self._ready.wait(2):
+                log.error("hotkey thread didn't start; global hotkeys won't work this session")
         else:
             log.warning("no X display: keyboard hotkeys are off this session (MIDI pads work)")
+        self._wayland = wayland
 
     @property
     def alive(self) -> bool:
         return self._portal.alive if self._portal is not None else self._alive
+
+    @property
+    def why(self) -> str:
+        """Why keyboard hotkeys don't work everywhere, for linux/ui.py's words: "" (they
+        do, or a key is another program's), "x11-only" (a Wayland desktop with no
+        portal: only while an X11 window is in front), "no-portal" (nothing at all),
+        "declined" (the user said no to the desktop's dialog), "failed"."""
+        if self._portal is not None:
+            return self._portal.why if self._portal.alive else (self._portal.why or "no-portal")
+        if self._wayland:
+            return "x11-only" if self._alive else "no-portal"
+        return ""
 
     def _portal_failed(self, combos: list):
         self.failed = list(combos)

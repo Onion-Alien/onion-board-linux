@@ -1,4 +1,4 @@
-"""Global hotkeys on Wayland without XWayland: the desktop's GlobalShortcuts portal
+"""Global hotkeys on Wayland: the desktop's GlobalShortcuts portal
 (org.freedesktop.portal.GlobalShortcuts, over D-Bus with jeepney).
 
 A Wayland app can't grab keys itself. It hands the desktop a list of shortcuts (an
@@ -8,6 +8,11 @@ hold-to-play works as with X11. The desktop may bind other keys than the ones as
 for, or none: what it bound comes back, and anything it didn't is reported as
 failed, like a combo another program holds on X11. KDE Plasma and GNOME (48 and
 newer) have the portal; elsewhere keyboard hotkeys stay off (MIDI pads still work).
+
+A Wayland desktop's portal is used even when XWayland is there too (DISPLAY set, as
+on every normal GNOME / Plasma login): X11 grabs there only see keys while an X11
+window is in front (GNOME 50: nothing reached them with the app's own window or a
+terminal in front).
 
 Shortcuts belong to a session; a changed set of hotkeys closes the session and
 binds the new set in a fresh one.
@@ -26,7 +31,11 @@ log = logging.getLogger(__name__)
 BUS_NAME = "org.freedesktop.portal.Desktop"
 PATH = "/org/freedesktop/portal/desktop"
 IFACE = "org.freedesktop.portal.GlobalShortcuts"
-APP_ID = "onionboard"   # the AppImage's .desktop file (scripts/make_appdir.py)
+# The id the portal knows the app by. It must be a valid GApplication id (reverse
+# DNS, with dots): GNOME's shortcuts provider throws the bind away otherwise
+# ("invalid app_id >onionboard<", GNOME 50) where Plasma took the bare name.
+APP_ID = "io.github.Onion_Alien.OnionBoard"
+OLD_APP_IDS = ("onionboard",)   # hidden .desktop files earlier versions wrote
 TIMEOUT_S = 5.0         # a portal call's reply (not the user's answer to the dialog)
 ANSWER_S = 300.0        # the user answering the desktop's "allow these shortcuts?" dialog
 POLL_S = 0.25           # how often the thread looks for a changed set of hotkeys
@@ -69,7 +78,12 @@ def write_desktop_entry() -> bool:
     its Exec pointing at wherever the app runs from. True if it's there."""
     from soundboard.linux import autostart
     p = desktop_entry()
-    text = ("[Desktop Entry]\nType=Application\nName=Onion Board\n"
+    for old in OLD_APP_IDS:
+        try:
+            (p.parent / f"{old}.desktop").unlink(missing_ok=True)
+        except OSError:
+            pass
+    text =("[Desktop Entry]\nType=Application\nName=Onion Board\n"
             f"Exec={autostart.command(False)}\nIcon={APP_ID}\nTerminal=false\n"
             "NoDisplay=true\n")
     try:
@@ -161,6 +175,9 @@ class Shortcuts:
         self._quit = threading.Event()
         self._ready = threading.Event()
         self.alive = False
+        # why the last set wasn't bound, for the window's words: "" (it was, or only some
+        # keys weren't), "no-portal", "declined" (the user said no) or "failed"
+        self.why = ""
         self._thread = threading.Thread(target=self._run, daemon=True, name="portal-hotkeys")
         self._thread.start()
 
@@ -187,6 +204,7 @@ class Shortcuts:
             return
         try:
             if _version(conn) <= 0:
+                self.why = "no-portal"
                 log.warning("the desktop has no GlobalShortcuts portal: keyboard hotkeys "
                             "are off this session (MIDI pads work)")
                 return
@@ -337,11 +355,13 @@ class Shortcuts:
                                 token, ANSWER_S)
         except PortalError as e:
             log.warning("portal hotkeys: %s", e)
+            self.why = "declined" if str(e).endswith("declined") else "failed"
             self.on_failed(sorted(mapping))
             return "", {}
         bound = {sid for sid, _opts in res.get("shortcuts", [])}
         failed = sorted(c for sid, (c, _a) in ids.items() if sid not in bound)
         log.info("portal bound %d of %d hotkeys", len(bound & set(ids)), len(ids))
+        self.why = ""
         self.on_failed(failed)
         return session, {sid: a for sid, (_c, a) in ids.items() if sid in bound}
 

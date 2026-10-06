@@ -32,6 +32,21 @@ OUTPUTS_AFTER_MS = 800   # at start-up, the outputs open this long after the win
 _OUTPUT_SETTERS = ("set_main_device", "set_tap_device", "set_mon_device", "set_obs_device")
 _KEYS = {"set_main_device": "main", "set_mon_device": "mon", "set_obs_device": "obs"}
 _held: list | None = None   # (setter, device name) while the app's window is being built
+# why keyboard hotkeys don't work everywhere (linux/keys.Hotkeys.why), in words, for
+# the status line instead of upstream's "another program is already using"
+_REMOTE = ("your desktop's own keyboard shortcuts can run Onion Board's remote control "
+           "(Settings → Remote)")
+HOTKEY_WORDS = {
+    "no-portal": "Keyboard hotkeys can't work on this desktop: it doesn't let apps have "
+                 "shortcuts. Pads and MIDI still work, and " + _REMOTE + ".",
+    "x11-only": "Hotkeys only work while a game or another X11 app is in front: this "
+                "desktop doesn't let apps have shortcuts everywhere. To use them anywhere, "
+                + _REMOTE + ".",
+    "declined": "Hotkeys are off: they weren't allowed when your desktop asked. Allow "
+                "Onion Board's shortcuts in your desktop's keyboard settings.",
+    "failed": "Your desktop didn't take Onion Board's hotkeys. Pads and MIDI still work, "
+              "and " + _REMOTE + ".",
+}
 
 
 def _open_held(win, held):
@@ -207,6 +222,25 @@ def patch_main_window(cls):
             for n in _OUTPUT_SETTERS:
                 e.__dict__.pop(n, None)
 
+    orig_hotkeys_failed = cls.on_hotkeys_failed
+
+    def on_hotkeys_failed(self, failed: list[str]):
+        """Upstream says a failed key is another program's; on Linux the desktop may
+        not let apps have hotkeys at all, or only while an X11 window is in front:
+        say that instead (the X11-only note once a session)."""
+        why = getattr(self.hotkeys, "why", "")
+        words = HOTKEY_WORDS.get(why)
+        if words is None or (why == "x11-only" and getattr(self, "_x11_only_told", False)):
+            return orig_hotkeys_failed(self, failed)
+        if why != "x11-only" and not failed:
+            return
+        self._x11_only_told = True
+        from soundboard import theme
+        log.warning("keyboard hotkeys (%s): %s", why, failed)
+        self.status.setText(f"<span style='color:{theme.status('warn')}'>"
+                            f"{html.escape(words)}</span>")
+
+    cls.on_hotkeys_failed = on_hotkeys_failed
     cls.__init__ = __init__
     cls._init_devices = _init_devices
     cls._heard_device = _heard_device

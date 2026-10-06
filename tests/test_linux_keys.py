@@ -23,6 +23,9 @@ def xserver():
     proc, n = start_xvfb("-screen", "0", "640x480x24")
     old = os.environ.get("DISPLAY")
     os.environ["DISPLAY"] = f":{n}"
+    # an X11 session: a Wayland one around the tests (WSLg) would take the portal path
+    wayland = {k: os.environ.pop(k) for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE")
+               if k in os.environ}
     # the socket appears before Xvfb answers (it's still loading its keymap on a slow
     # CI runner): wait until a connection really opens
     from soundboard.linux import x11
@@ -53,6 +56,7 @@ def xserver():
         os.environ.pop("DISPLAY", None)
     else:
         os.environ["DISPLAY"] = old
+    os.environ.update(wayland)
     proc.terminate()
     proc.wait(5)
 
@@ -139,6 +143,20 @@ def test_combo_another_program_holds_is_reported(qapp, xserver):
     assert f1[-1] == [] and f2[-1] == ["ctrl+shift+f5"]
     first.stop()
     second.stop()
+
+
+def test_wayland_with_no_portal_grabs_x11_keys_and_says_so(qapp, xserver, monkeypatch,
+                                                           tmp_path):
+    # Sway / older GNOME: XWayland but no GlobalShortcuts portal; the X11 grabs only
+    # see keys while an X11 window (a game under XWayland) is in front
+    from soundboard import winkeys
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-test")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={tmp_path}/no-bus")
+    hk = winkeys.Hotkeys(_NoMidi())
+    try:
+        assert hk._portal is None and hk.alive and hk.why == "x11-only"
+    finally:
+        hk.stop(wait=2)
 
 
 def test_no_display_means_keys_fail_but_midi_works(qapp, monkeypatch):

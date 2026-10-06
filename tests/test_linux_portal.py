@@ -37,10 +37,14 @@ def bus(monkeypatch, tmp_path):
 class FakePortal:
     """org.freedesktop.portal.Desktop's GlobalShortcuts, as KDE / GNOME answer it."""
 
-    def __init__(self, refuse=(), version=1):
+    def __init__(self, refuse=(), version=1, gnome=False, answer=0):
+        """gnome: the bind fails for an app id GLib calls invalid, as GNOME 50's
+        shortcuts provider does; answer: the dialog's response code (1 = the user
+        said no)."""
         from jeepney import DBusAddress, message_bus
         from jeepney.io.blocking import open_dbus_connection
         self.refuse, self.version = set(refuse), version
+        self.gnome, self.answer = gnome, answer
         self.conn = open_dbus_connection(bus="SESSION")
         self.conn.send_and_get_reply(message_bus.RequestName(portal.BUS_NAME))
         self.bound: list = []          # what each BindShortcuts asked for
@@ -63,11 +67,11 @@ class FakePortal:
         self.conn.send(new_signal(self._emitter, "Activated" if down else "Deactivated",
                                   "osta{sv}", (session, sid, 0, {})))
 
-    def _respond(self, sender, token, results):
+    def _respond(self, sender, token, results, code=0):
         from jeepney import DBusAddress, HeaderFields, new_signal
         path = f"{portal.PATH}/request/{sender.lstrip(':').replace('.', '_')}/{token}"
         msg = new_signal(DBusAddress(path, interface="org.freedesktop.portal.Request"),
-                         "Response", "ua{sv}", (0, results))
+                         "Response", "ua{sv}", (code, results))
         msg.header.fields[HeaderFields.destination] = sender   # for its caller only
         self.conn.send(msg)
         return path
@@ -113,14 +117,26 @@ class FakePortal:
                 kept = [(sid, {"description": o["description"],
                                "trigger_description": ("s", "whatever the user set")})
                         for sid, o in shortcuts if sid not in self.refuse]
+                code = self.answer
+                if self.gnome and not all(valid_app_id(a) for a in self.registered[-1:]):
+                    code = 2   # "Discarded shortcut bind request ... invalid app_id"
                 self.conn.send(new_method_return(msg, "o", (f"{portal.PATH}/request/x/b",)))
                 self._respond(sender, opts["handle_token"][1],
-                              {"shortcuts": ("a(sa{sv})", kept)})
+                              {"shortcuts": ("a(sa{sv})", kept)}, code)
             elif member == "Close" and iface == "org.freedesktop.portal.Session":
                 self.closed.append(msg.header.fields.get(F.path))
                 self.conn.send(new_method_return(msg))
             else:
                 self.conn.send(new_error(msg, "org.freedesktop.DBus.Error.UnknownMethod"))
+
+
+def valid_app_id(app: str) -> bool:
+    """GLib's g_application_id_is_valid: 2+ dot-separated elements of [A-Za-z0-9_-],
+    none empty or starting with a digit, at most 255 characters."""
+    parts = app.split(".")
+    return (len(app) <= 255 and len(parts) >= 2 and all(
+        p and not p[0].isdigit() and all(c.isascii() and (c.isalnum() or c in "_-")
+                                         for c in p) for p in parts))
 
 
 def _until(cond, timeout=5.0):
@@ -176,14 +192,18 @@ def test_the_app_writes_the_desktop_file_the_portal_needs_and_names_its_shortcut
         bus, monkeypatch):
     # Plasma 6.6's portal refused "onionboard" ("App info not found"): an AppImage
     # installs no .desktop file, and then CreateSession said "An app id is required"
-    fake = FakePortal()
+    fake = FakePortal(gnome=True)
     monkeypatch.setattr(portal, "describe", {"play:boom": "Play Boom"}.get)
+    old = portal.desktop_entry().with_name("onionboard.desktop")   # an earlier version's
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("[Desktop Entry]\n", encoding="utf-8")
     s = portal.Shortcuts(lambda a: None, lambda a: None, lambda f: None)
     try:
         assert s.wait_ready(5) and s.alive
         assert fake.registered == [portal.APP_ID] and fake.refused == []
         text = portal.desktop_entry().read_text(encoding="utf-8")
         assert "NoDisplay=true" in text and "Exec=" in text   # no new menu entry
+        assert not old.exists()
         s.register({"ctrl+f1": "play:boom", "ctrl+f2": "stop"})
         assert _until(lambda: fake.bound)
         words = sorted(o["description"][1] for _sid, o in fake.bound[0])
@@ -201,7 +221,7 @@ def test_a_refused_app_id_is_tried_again_then_logged(bus, monkeypatch, caplog):
     try:
         assert s.wait_ready(5)
         assert fake.refused == [portal.APP_ID] * portal.REGISTER_TRIES
-        assert "didn't take the app id 'onionboard': App info not found" in caplog.text
+        assert f"didn't take the app id {portal.APP_ID!r}: App info not found" in caplog.text
     finally:
         s.stop(5)
         fake.close()
@@ -249,3 +269,75 @@ def test_linux_hotkeys_use_the_portal_on_wayland_without_x(bus, qapp):
         hk.stop(5)
         fake.close()
     assert os.environ.get("DISPLAY") is None
+
+
+def test_the_app_id_is_one_gnome_takes(bus):
+    # GNOME 50 threw the bind of "onionboard" away ("invalid app_id"), Plasma took it
+    assert valid_app_id(portal.APP_ID)
+    assert not valid_app_id("onionboard")
+    fake = FakePortal(gnome=True)
+    failed = []
+    s = portal.Shortcuts(lambda a: None, lambda a: None, failed.append)
+    try:
+        assert s.wait_ready(5) and s.alive
+        s.register({"ctrl+f1": "play:boom"})
+        assert _until(lambda: failed) and failed == [[]] and s.why == ""
+    finally:
+        s.stop(5)
+        fake.close()
+
+
+def test_a_no_in_the_desktops_dialog_is_told_apart(bus):
+    fake = FakePortal(answer=1)
+    failed = []
+    s = portal.Shortcuts(lambda a: None, lambda a: None, failed.append)
+    try:
+        assert s.wait_ready(5)
+        s.register({"ctrl+f1": "play:boom"})
+        assert _until(lambda: failed) and failed == [["ctrl+f1"]]
+        assert s.why == "declined"
+    finally:
+        s.stop(5)
+        fake.close()
+
+
+def test_wayland_uses_the_portal_even_with_xwayland_there(bus, qapp, monkeypatch):
+    # a normal GNOME / Plasma login has DISPLAY set too; X11 grabs there only see
+    # keys while an X11 window is in front (GNOME 50: none at all reached them)
+    from soundboard.linux import keys, x11
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(x11, "available", lambda: True)
+    fake = FakePortal()
+    hk = keys.Hotkeys()
+    try:
+        assert hk._portal is not None and hk._thread is None and hk.alive
+        assert hk.why == ""
+    finally:
+        hk.stop(5)
+        fake.close()
+
+
+def test_the_window_says_why_hotkeys_dont_work(qapp):
+    import html
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QLabel
+
+    from soundboard.linux import ui
+    from soundboard.ui.mainwindow import MainWindow
+    for why in ("no-portal", "declined", "failed"):
+        win = SimpleNamespace(hotkeys=SimpleNamespace(why=why), status=QLabel())
+        MainWindow.on_hotkeys_failed(win, ["f9"])
+        assert html.escape(ui.HOTKEY_WORDS[why]) in win.status.text()
+        assert "Another program" not in win.status.text()
+    # only once a session, and before any key fails: X11 grabs on Wayland with no portal
+    win = SimpleNamespace(hotkeys=SimpleNamespace(why="x11-only"), status=QLabel())
+    MainWindow.on_hotkeys_failed(win, [])
+    assert "X11 app is in front" in win.status.text()
+    win.status.setText("")
+    MainWindow.on_hotkeys_failed(win, [])
+    assert win.status.text() == ""
+    # nothing to say: upstream's words for a key another program holds
+    win = SimpleNamespace(hotkeys=SimpleNamespace(why=""), status=QLabel())
+    MainWindow.on_hotkeys_failed(win, ["f9"])
+    assert "Another program is already using" in win.status.text()
