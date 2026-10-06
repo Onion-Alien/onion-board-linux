@@ -13,7 +13,6 @@ so PeakWatcher reports none and the rows show their playing / quiet state instea
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -27,8 +26,8 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-__all__ = ["supported", "list_apps", "default_output_name", "process_path", "is_running",
-           "root_pid", "running", "PeakWatcher", "AppCapture"]
+__all__ = ["supported", "list_apps", "recording_apps", "default_output_name", "process_path",
+           "is_running", "root_pid", "running", "PeakWatcher", "AppCapture"]
 
 SR = 48000
 RESCAN_S = 1.0
@@ -131,15 +130,26 @@ def _in_tree(pid: int, root: int) -> bool:
 
 
 # ------------------------------------------------------------------ PipeWire
+def pw_dump() -> list:
+    """PipeWire's objects (pw-dump), [] if it can't be asked. Decoded an object at a
+    time (radio.loads_gently): one json.loads of the few hundred kB is a single C call
+    that holds Python's lock, and the audio callbacks wait for it."""
+    try:
+        p = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=TIMEOUT_S)
+        if p.returncode != 0 or not p.stdout.strip():
+            return []
+        from soundboard.radio import loads_gently
+        dump = loads_gently(p.stdout)
+        return dump if isinstance(dump, list) else []
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        log.debug("pw-dump failed", exc_info=True)
+        return []
+
+
 def stream_nodes(dump: list | None = None) -> list[dict]:
     """Playback streams: [{serial, pid, app, binary, state, sink}]."""
     if dump is None:
-        try:
-            p = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=TIMEOUT_S)
-            dump = json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else []
-        except (OSError, subprocess.TimeoutExpired, ValueError):
-            log.debug("pw-dump failed", exc_info=True)
-            dump = []
+        dump = pw_dump()
     out = []
     for o in dump:
         if o.get("type") != "PipeWire:Interface:Node":
@@ -180,6 +190,71 @@ def list_apps(strict: bool = False) -> list:
         app.session_pids.add(n["pid"])
         app.active = app.active or n["state"] == "running"
     return sorted(apps.values(), key=lambda a: (not a.active, a.name.lower()))
+
+
+def recording_apps(device: str, dump: list | None = None) -> list:
+    """The programs recording the recording device named `device` (its description,
+    as the device lists show it: "Onion Board Cable Output", "Onion Board Mic"), this
+    process left out: who hears what the board sends (Discord, a game, a browser).
+    PipeWire links each recording stream ("Stream/Input/Audio") to the source it
+    records, whatever the program asked for ("Default" too). A Wine / Proton
+    program is named by its Windows .exe, so Listeners can look in the game's folder
+    for its voice library; the desktop's own programs get no path (nothing to scan).
+    Safe from any thread."""
+    if not device:
+        return []
+    if dump is None:
+        dump = pw_dump()
+    props: dict[int, dict] = {}
+    clients: dict[int, dict] = {}
+    links = []
+    for o in dump:
+        kind = o.get("type")
+        info = o.get("info") or {}
+        if kind == "PipeWire:Interface:Node":
+            props[o.get("id")] = info.get("props") or {}
+        elif kind == "PipeWire:Interface:Client":
+            clients[o.get("id")] = info.get("props") or {}
+        elif kind == "PipeWire:Interface:Link":
+            links.append((info.get("output-node-id"), info.get("input-node-id")))
+    sources = {i for i, p in props.items()
+               if str(p.get("media.class", "")).startswith("Audio/Source")
+               and device in (p.get("node.description"), p.get("node.name"))}
+    streams = {b for a, b in links if a in sources
+               and props.get(b, {}).get("media.class") == "Stream/Input/Audio"}
+    me = os.getpid()
+    found = []
+    for n in sorted(streams):
+        # a program on the PulseAudio API (Discord, browsers) has its process on the
+        # stream; a native PipeWire one (pw-record, OBS) on its client, where
+        # pipewire.sec.pid is the sound server's own word for it
+        p = props[n]
+        c = clients.get(p.get("client.id"), {})
+        try:
+            pid = int(p.get("application.process.id") or c.get("pipewire.sec.pid")
+                      or c.get("application.process.id") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        p = {**c, **p}
+        if pid and pid != me and not _in_tree(pid, me):
+            found.append((pid, p))
+    from soundboard.linux.voicesdk import _is_system, exe_of
+    App = _a().App
+    table = _process_table(pid for pid, _p in found)
+    apps: dict[int, object] = {}
+    for pid, p in found:
+        root = root_pid(pid, table)
+        app = apps.get(root)
+        if app is None:
+            path = exe_of(pid) or process_path(root)
+            exe = os.path.basename(path.replace("\\", "/")) or str(
+                p.get("application.process.binary") or p.get("application.name")
+                or f"pid {root}")
+            app = apps[root] = App(pid=root, exe=exe, path="" if _is_system(path) else path,
+                                   title=str(p.get("application.name") or ""), active=True,
+                                   devices=[device])
+        app.session_pids.add(pid)
+    return list(apps.values())
 
 
 def default_output_name() -> str | None:

@@ -159,12 +159,27 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    VM pausing, most likely). What's left is the same kind of Qt work (a tab's first
    show) and needs a real PC to judge. Not yet checked in a built AppImage: CI no longer
    runs on every push (the private repo's paid minutes ran out, 28cd6fd).
-4. **Who's listening: the program recording the cable.** 1.7.0 names the program
-   that records the cable's far end and can switch the mode by itself
-   (`voicesdk.Listeners`, `appaudio.recording_apps`); upstream only starts it on
-   Windows (`MainWindow.listeners` is None elsewhere). On Linux it would read
-   PipeWire's `Stream/Input/Audio` nodes aimed at "Onion Board Cable Output", with the
-   Linux names of the voice apps (`Discord`, `teamspeak3`, `mumble`, browsers).
+4. **Who's listening: the program recording the cable**: done. Upstream (1.7.0) names
+   the program that records what the board sends and can switch the mode by itself
+   (`voicesdk.Listeners`, `appaudio.recording_apps`), only on Windows.
+   `linux/appaudio.recording_apps` reads PipeWire's graph (`pw-dump`, decoded an
+   object at a time: one `json.loads` holds the GIL): the source with the device's
+   name, its links to recording streams (`Stream/Input/Audio`, whatever the program
+   asked for, Default too), each stream's process (on the stream for PulseAudio-API
+   programs like Discord and browsers, on its client for native PipeWire ones), grouped
+   by process tree. A Wine / Proton program is named by its .exe, so the game's folder
+   is scanned for Vivox / Photon / Dissonance as on Windows; the desktop's own programs
+   aren't scanned. `linux/voicesdk.py` adds the Linux names to `VOICE_APPS` (discord,
+   vesktop, webcord, legcord, the browsers, zoom, teams-for-linux, mumble, TeamSpeak).
+   `linux/ui.py` turns it on when PipeWire's tools are there, starts the poll timer on
+   Wayland too (upstream ties it to the game watcher, X11 only here), and on the mic
+   route watches Onion Board Mic and the cable, not the user's own mic (an app pinned
+   to it hears the voice alone); the "still uses the cable" tip points at Default.
+   Fedora 44 (from source, a copy of `pw-record` named as the app): Voice chat switched
+   to the browser shaping ~5 s after a stand-in Firefox started recording the cable,
+   then to Discord's when a stand-in Discord replaced it; the same on Onion Board Mic;
+   a recorder on the raw mic switched nothing. `tests/test_linux_listeners.py` uses a
+   real, trimmed pw-dump from that VM. Not yet: the real Discord app (Phase 5).
 5. **Release**: ready for the first one after launch. Publishing a release runs
    `linux.yml`, which builds the AppImage from the tag and attaches it as
    `OnionBoard-x86_64.AppImage` (job `release`); the README and the website link

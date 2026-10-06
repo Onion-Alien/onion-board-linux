@@ -31,6 +31,27 @@ SYSTEM_DIRS = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/snap/", "/nix/s
 
 _dpy: x11.Display | None = None   # the UI thread's own connection, kept open
 
+# Who's listening (Listeners): the voice chat programs' Linux names, beside upstream's
+# .exe ones (a Windows one under Wine / Proton is still named by its .exe). Discord's
+# own clients and the ones built on it (Vesktop, WebCord, Legcord) are Discord.
+_DISCORD, _BROWSER = ("discord", "Discord"), ("webrtc", "Your browser")
+LINUX_VOICE_APPS = {
+    **dict.fromkeys(("discord", "discordptb", "discordcanary", "vesktop", "webcord",
+                     "legcord", "armcord", "equibop"), _DISCORD),
+    **dict.fromkeys(("firefox", "firefox-bin", "firefox-esr", "librewolf", "floorp",
+                     "waterfox", "zen", "zen-bin", "chrome", "google-chrome", "chromium",
+                     "chromium-browser", "brave", "brave-browser", "opera", "vivaldi-bin",
+                     "msedge", "microsoft-edge"), _BROWSER),
+    "zoom": ("webrtc", "Zoom"),
+    "teams-for-linux": ("webrtc", "Microsoft Teams"),
+    **dict.fromkeys(("ts3client_linux_amd64", "ts3client_linux_x86", "teamspeak",
+                     "teamspeak3", "teamspeak-client"), ("game", "TeamSpeak")),
+    "mumble": ("game", "Mumble"),
+}
+_up = __import__("sys").modules.get("soundboard.voicesdk")   # this runs at its end
+if _up is not None:
+    _up.VOICE_APPS.update(LINUX_VOICE_APPS)
+
 
 def _display() -> x11.Display | None:
     global _dpy

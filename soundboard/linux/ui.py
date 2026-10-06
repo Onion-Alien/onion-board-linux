@@ -66,6 +66,7 @@ def describe_action(win, action: str) -> str:
 def patch_main_window(cls):
     orig_init = cls.__init__
     orig_init_devices = cls._init_devices
+    orig_heard_device = cls._heard_device
 
     def __init__(self, *a, **k):
         global _held
@@ -92,12 +93,55 @@ def patch_main_window(cls):
         self.tabs.setTabVisible(ti, False)
         if self.tabs.currentIndex() == ti:   # the last tab used, on Windows
             self.tabs.setCurrentIndex(0)
+        from soundboard import appaudio, voicesdk
+        from soundboard.ui import mainwindow
         # the game in front's voice engine (linux/voicesdk.py): needs X11 / XWayland
         if getattr(self, "voice_watch", 0) is None and x11.available():
-            from soundboard import voicesdk
-            from soundboard.ui import mainwindow
             self.voice_watch = voicesdk.Watcher()
             self._voice_timer.start(mainwindow.VOICE_POLL_MS)
+        # Who's listening: the program recording what the board sends, from PipeWire's
+        # links (linux/appaudio.recording_apps); upstream only on Windows
+        if getattr(self, "listeners", 0) is None and appaudio.supported()[0]:
+            self.listeners = voicesdk.Listeners()
+            self._cable_watch = voicesdk.Listeners()
+            if not self._voice_timer.isActive():   # (a Wayland desktop: no game watcher)
+                self._voice_timer.start(mainwindow.VOICE_POLL_MS)
+
+    def _heard_device(self):
+        """Straight into my mic: who records Onion Board's mic (Discord, games and
+        browsers on Default do), and the cable's far end if there is one; upstream
+        looks at the user's own mic, which carries the sounds only on Windows (here an
+        app pinned to it hears the voice alone)."""
+        if self.cfg.route != "mic":
+            return orig_heard_device(self)
+        from soundboard import directmic as dm
+        from soundboard import engine as eng
+        from soundboard.linux import directmic
+        e = self.engine
+        if e.main_stream is None or e.names.get("main") != dm.DEVICE:
+            return None
+        cables = [eng.virtual_mic_for(o) for o in eng.virtual_outputs()]
+        return tuple(dict.fromkeys(d for d in (directmic.SOURCE_DESC, *cables) if d))
+
+    def _cable_tip(self):
+        """Upstream's tip, for Linux: the sounds are in Onion Board's mic (Default),
+        not in the user's own mic, so that's where to point the app."""
+        from soundboard import engine as eng
+        from soundboard import voicesdk
+        from soundboard.linux import directmic
+        c = self.cfg
+        watch = getattr(self, "_cable_watch", None)
+        if c.cable_tip_done or self.engine.tap is None or watch is None:
+            return
+        apps = set(voicesdk.VOICE_APPS.values())
+        heard = [h for h in watch.poll(eng.virtual_mic_for(self.engine.tap_name))
+                 if h in apps]
+        if heard:
+            c.cable_tip_done = True
+            self._save_now()
+            self.toast(f"{heard[0][1]} still uses the virtual cable as its mic. It still "
+                       "hears you, but you can set its input back to Default (or "
+                       f"“{directmic.SOURCE_DESC}”): your sounds are in it now.")
 
     def install_cable(self):
         if vcable.install():
@@ -165,6 +209,8 @@ def patch_main_window(cls):
 
     cls.__init__ = __init__
     cls._init_devices = _init_devices
+    cls._heard_device = _heard_device
+    cls._cable_tip = _cable_tip
     cls.set_route = set_route
     cls.shutdown = shutdown
     mw = sys.modules[cls.__module__]

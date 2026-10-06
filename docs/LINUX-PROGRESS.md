@@ -48,7 +48,7 @@ the number move: new work found means the number can go down, and that's fine.
 | overlay-x11 | Overlay screen choice and preview click-through on X11 | 1 | done |
 | overlay-wayland | Overlay preview click-through on native Wayland (Fedora 44 Plasma, CI AppImage 62a2b4e: a click on the preview opened the dropdown under it) | 1 | done |
 | voice-suggest | Voice engine suggestion from the window in front | 1 | done |
-| listeners | Who's listening: the program recording the cable (PipeWire) | 2 | open |
+| listeners | Who's listening: the program recording the cable / Onion Board Mic (PipeWire's links; Fedora: stand-in Firefox then Discord switched Voice chat to the browser then Discord shaping, on both routes; a recorder on the raw mic doesn't count) | 2 | done |
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
 | appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | done |
@@ -129,3 +129,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 80% | overlay preview click-through checked on native Wayland (Fedora 44 Plasma, CI AppImage) |
 | 2026-10-06 | 81% | setup guide virtual cable path clicked through on Fedora (CI AppImage): cable made in one click, a pad reaches its far end |
 | 2026-10-06 | 81% | start-up drop-outs: the outputs open 0.8 s after the window is up (window's first show held the GIL; 0 in 4 starts from source, was 1-2 each) |
+| 2026-10-06 | 83% | Who's listening on Linux: PipeWire's links name the program recording the cable / Onion Board Mic; checked on Fedora with stand-ins on both routes |

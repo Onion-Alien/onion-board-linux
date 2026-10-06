@@ -147,7 +147,10 @@ WINDOWS_ONLY = {
         ("test_engine_runs_on_the_clean_mic", "the effect's ring (Linux plays into its mic)"),
         ("test_engine_add_mode_leaves_the_voice_to_the_effect",
          "the effect's add mode (Linux: the whole send mix, replace mode)"),
-        ("test_engine_reports_a_missing_effect", "the effect's ring file"))},
+        ("test_engine_reports_a_missing_effect", "the effect's ring file"),
+        ("test_who_is_listening_looks_at_the_mic_itself",
+         "the user's mic carries the sounds only on Windows (Linux watches Onion Board "
+         "Mic: tests/test_linux_listeners.py)"))},
     "tests/test_appaudio.py::test_stop_without_waiting_returns_at_once_and_feeds_nothing_more":
         "fakes Windows' capture thread (Linux: tests/test_linux_appaudio.py)",
 }
