@@ -1,10 +1,9 @@
 name: checks
 
 on:
-  # main takes changes by pull request only, so a branch is checked once, as its
-  # PR (push + pull_request ran every PR twice); main is checked after each merge.
-  push:
-    branches: [main]
+  # Private repo: Actions minutes are paid, and they ran out (2026-10-06), so every
+  # push to main failed and mailed a "run failed" notification. Checks now run on
+  # pull requests and by hand (Actions tab -> Run workflow), not on every push.
   pull_request:
   workflow_dispatch:
 

@@ -1,8 +1,9 @@
 name: linux
 
 on:
-  push:
+  # Not on every push: see checks.yml (private repo, paid minutes ran out).
   pull_request:
+  workflow_dispatch:
   release:
     types: [published]   # builds the release's AppImage and attaches it (job "release")
 
