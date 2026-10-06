@@ -71,18 +71,8 @@ def installer_env(env: dict[str, str] | None = None,
     bookkeeping, Qt paths into this bundle), plus the library path PyInstaller's
     loader set for this copy put back as it was, and the AppImage runtime's
     variables dropped."""
-    env = _upstream_installer_env(env, bundle)
-    bundle = bundle if bundle is not None else getattr(sys, "_MEIPASS", None)
-    if "LD_LIBRARY_PATH_ORIG" in env:
-        env["LD_LIBRARY_PATH"] = env.pop("LD_LIBRARY_PATH_ORIG")
-    elif "LD_LIBRARY_PATH" in env and bundle:
-        root = os.path.abspath(bundle)
-        keep = [p for p in env["LD_LIBRARY_PATH"].split(os.pathsep)
-                if p and not os.path.abspath(p).startswith(root)]
-        if keep:
-            env["LD_LIBRARY_PATH"] = os.pathsep.join(keep)
-        else:
-            del env["LD_LIBRARY_PATH"]
+    from soundboard.linux import host_env
+    env = host_env(_upstream_installer_env(env, bundle), bundle)
     for k in APPIMAGE_VARS:
         env.pop(k, None)
     return env

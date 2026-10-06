@@ -70,6 +70,29 @@ def config_home() -> str:
     return os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
 
 
+def host_env(env: dict[str, str] | None = None,
+             bundle: str | None = None) -> dict[str, str]:
+    """`env` (default: this process's) for a program of the user's own system started
+    from a built copy: the library path PyInstaller's loader pointed at the bundle is
+    put back as it was. With the bundle's path, Fedora's python3 loaded the bundle's
+    older libraries and `python3 -m venv` couldn't set up pip, so add-ons (AI voices)
+    didn't install from the AppImage. From source: `env` as it is."""
+    import os
+    env = dict(os.environ if env is None else env)
+    bundle = bundle if bundle is not None else getattr(sys, "_MEIPASS", None)
+    if "LD_LIBRARY_PATH_ORIG" in env:
+        env["LD_LIBRARY_PATH"] = env.pop("LD_LIBRARY_PATH_ORIG")
+    elif "LD_LIBRARY_PATH" in env and bundle:
+        root = os.path.abspath(bundle)
+        keep = [p for p in env["LD_LIBRARY_PATH"].split(os.pathsep)
+                if p and not os.path.abspath(p).startswith(root)]
+        if keep:
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(keep)
+        else:
+            del env["LD_LIBRARY_PATH"]
+    return env
+
+
 def use_bundled_portaudio() -> str | None:
     """In a built copy, make sounddevice load the PortAudio the build ships
     (build-linux.sh: ALSA only, no JACK) instead of searching the system for one.

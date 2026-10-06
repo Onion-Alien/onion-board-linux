@@ -16,16 +16,30 @@ import subprocess
 import sys
 from pathlib import Path
 
+from soundboard.linux import host_env
+
 __all__ = ["base_python", "env_dir", "venv_python"]
 
 MIN_PYTHON = (3, 12)   # the add-ons' pinned numpy (2.5) needs it
 CANDIDATES = ("python3.14", "python3.13", "python3.12", "python3", "python")
 
 
+def _in_appimage(folder: Path) -> bool:
+    """Is `folder` inside this copy's AppImage? Mounted read-only, or unpacked to a
+    temporary folder (--appimage-extract-and-run, or no FUSE): writable but gone at
+    the next start, so an environment made there was lost (and with it the install)."""
+    appdir = os.environ.get("APPDIR")
+    if not appdir or not getattr(sys, "frozen", False):
+        return False
+    root = Path(appdir).resolve()
+    f = folder.resolve()
+    return f == root or root in f.parents
+
+
 def env_dir(folder: Path) -> Path:
     """The environment of the add-on in `folder`: its .venv, or in the data folder
-    when `folder` can't be written (the AppImage)."""
-    if os.access(folder, os.W_OK):
+    when `folder` can't be written or is inside the AppImage."""
+    if os.access(folder, os.W_OK) and not _in_appimage(folder):
         return folder / ".venv"
     from soundboard import library
     return library.APP_DIR / "envs" / folder.name
@@ -39,7 +53,8 @@ def venv_python(folder: Path) -> Path:
 def _version(exe: str) -> tuple[int, ...]:
     try:
         out = subprocess.run([exe, "-c", "import sys; print(*sys.version_info[:2])"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, timeout=10,
+                             env=host_env()).stdout
         return tuple(int(x) for x in out.split())
     except (OSError, ValueError, subprocess.SubprocessError):
         return ()

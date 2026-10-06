@@ -55,6 +55,39 @@ def test_a_read_only_add_on_keeps_its_environment_in_the_data_folder(tmp_path, m
     assert info.installed and info.resolved_command() == [str(py), f"{m}/run.py"]
 
 
+def test_an_unpacked_appimage_keeps_environments_in_the_data_folder(tmp_path, monkeypatch):
+    """--appimage-extract-and-run (or no FUSE) unpacks the AppImage to a temporary
+    folder: writable, but gone at the next start. Found on Fedora: AI voices' venv
+    went into /tmp/appimage_extracted_*."""
+    appdir = tmp_path / "appimage_extracted_1"
+    m = _service(appdir / "usr" / "lib" / "onionboard" / "modules" / "s")
+    monkeypatch.setenv("APPDIR", str(appdir))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert modules.env_dir(m) == library.APP_DIR / "envs" / "s"
+    monkeypatch.setattr(sys, "frozen", False)              # from source: its own .venv
+    assert modules.env_dir(m) == m / ".venv"
+
+
+def test_programs_of_the_system_get_its_own_library_path(monkeypatch):
+    """PyInstaller points LD_LIBRARY_PATH at the bundle; Fedora's python3 then loaded
+    the bundle's libraries and `python3 -m venv` failed setting up pip (AI voices
+    didn't install). Add-on installs and the voice helpers get the user's own path."""
+    from soundboard import net
+    from soundboard.linux import host_env
+    bundle = "/tmp/_MEI123"
+    monkeypatch.setattr(sys, "_MEIPASS", bundle, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{bundle}:{bundle}/PySide6/Qt/lib:/opt/mine")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    assert host_env()["LD_LIBRARY_PATH"] == "/opt/mine"
+    assert net.child_env("addons")["LD_LIBRARY_PATH"] == "/opt/mine"
+    monkeypatch.setenv("LD_LIBRARY_PATH", bundle)
+    assert "LD_LIBRARY_PATH" not in net.child_env("addons")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")   # the user had one set
+    assert host_env()["LD_LIBRARY_PATH"] == "/usr/local/lib"
+    assert "LD_LIBRARY_PATH_ORIG" not in host_env()
+    assert "127.0.0.1" in net.child_env("addons")["no_proxy"]      # upstream's part kept
+
+
 def test_the_appimage_builds_environments_from_a_new_enough_python3(monkeypatch):
     found = {"python3.12": "/usr/bin/python3.12", "python3": "/usr/bin/python3"}
     versions = {"/usr/bin/python3.12": (3, 12), "/usr/bin/python3": (3, 10)}

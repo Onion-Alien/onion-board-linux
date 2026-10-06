@@ -4,12 +4,26 @@ user's own HTTPS_PROXY or NO_PROXY left beside the relay's lowercase ones could
 send a child program around the relay. Both spellings are set (and both saved for
 own_env), and neither no_proxy is: FFmpeg would connect straight to what it lists,
 so a radio station redirecting to 127.0.0.1 would step around the relay (upstream
-took no_proxy out in 1.6.8; on Linux NO_PROXY has to go too)."""
+took no_proxy out in 1.6.8; on Linux NO_PROXY has to go too).
+
+child_env() (pip for add-ons, the voice helpers) also gets the user's own library
+path back in a built copy (soundboard.linux.host_env): the system's python3 with the
+bundle's libraries couldn't make an add-on's environment."""
 from __future__ import annotations
 
 import os
+import sys
 
-__all__ = ["_set_env"]
+__all__ = ["_set_env", "child_env"]
+
+# upstream's, kept for child_env() below: this module is imported by the last line of
+# soundboard.net, which has defined it by then
+_upstream_child_env = sys.modules["soundboard.net"].child_env
+
+
+def child_env(feature: str, env: dict[str, str] | None = None) -> dict[str, str]:
+    from soundboard.linux import host_env
+    return _upstream_child_env(feature, host_env(env))
 
 
 def _set_env():
