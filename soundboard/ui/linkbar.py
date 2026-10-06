@@ -130,6 +130,7 @@ class LinkBar(QFrame):
             self._buttons()
             return
         self._say(f"Looking up <b>{html.escape(self._host())}</b>…")
+        self._looking = True   # until something else is said: the look-up's answer shows
         self._buttons()
         self._probe_timer.start()
 
@@ -161,6 +162,7 @@ class LinkBar(QFrame):
         return self.url.split("/")[2].removeprefix("www.") if self.url else ""
 
     def _say(self, text: str, color: str = ""):
+        self._looking = False
         self.info.setText(f"<span style='color:{color}'>{text}</span>" if color else text)
 
     def _buttons(self):
@@ -325,15 +327,16 @@ class LinkBar(QFrame):
         if kind == "found":
             if current:
                 self.title, secs = payload
-                if url == getattr(self, "_added", ""):   # a look-up slower than the add:
-                    return                               # "✓ Added …" stays
+                # a look-up slower than Play or Add: "▶ Playing …" / "✓ Added …" stays
+                if not getattr(self, "_looking", False):
+                    return
                 dur = f" · {fmt_time(secs)}" if secs else ""
                 self._say(f"<b>{html.escape(self.title)}</b>{dur} "
                           f"<span style='color:{theme.T['muted']}'>"
                           f"· {html.escape(self._host())}</span>")
             return
         if kind == "probe-error":
-            if current and not self._busy:
+            if current and not self._busy and getattr(self, "_looking", False):
                 self._say(html.escape(f"Can't use this link: {payload}"), theme.status("error"))
             return
         if kind == "title":

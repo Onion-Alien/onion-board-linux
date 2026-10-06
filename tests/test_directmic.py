@@ -381,6 +381,7 @@ def test_stream_keeps_time_without_the_effect(ring_file):
         calls.append(frames)
 
     s = dm.DirectMicStream(cb, ring_file)
+    t0 = time.monotonic()
     s.start()
     try:
         assert s._ring.h[0]["enabled"] == 1
@@ -388,8 +389,11 @@ def test_stream_keeps_time_without_the_effect(ring_file):
         assert not s.mic_live
     finally:
         s.close()
+    # against the time it really ran: a busy Windows runner slept 0.72 s, and the
+    # stream rightly made 0.72 s of sound
+    took = time.monotonic() - t0
     made = sum(calls)
-    assert 0.35 * dm.RATE < made < 0.65 * dm.RATE
+    assert (took - 0.15) * dm.RATE < made < (took + 0.15) * dm.RATE
     assert max(calls) <= dm.BLOCK
 
 

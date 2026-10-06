@@ -402,6 +402,18 @@ def test_a_look_up_slower_than_the_add_keeps_added(qapp, window, monkeypatch,  #
     assert "Added" in window.linkbar.info.text()
 
 
+def test_a_look_up_slower_than_play_keeps_playing(qapp, window, monkeypatch,  # noqa: F811
+                                                  tmp_path):
+    fake_link_download(monkeypatch, tmp_path)
+    monkeypatch.setattr(window.engine, "play", lambda *a, **kw: object())
+    window.search.setText("https://youtu.be/abc")
+    window.linkbar._probe_timer.stop()                       # the look-up comes last
+    window.linkbar.play_once()
+    assert process_events(qapp, lambda: "Playing" in window.linkbar.info.text(), 5)
+    window.linkbar._on_msg("found", "https://youtu.be/abc", ("A Tone", 1.0))
+    assert "Playing" in window.linkbar.info.text()
+
+
 def test_link_play_once_then_add_downloads_once(qapp, window, monkeypatch, tmp_path):  # noqa: F811
     calls = fake_link_download(monkeypatch, tmp_path)
     played = []

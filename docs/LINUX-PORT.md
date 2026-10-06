@@ -134,7 +134,11 @@ fails `tests/test_linux_wording.py`, which lists each string: reword it in
    60 ms, and moves the skip-ahead line to 120 ms: 0 gaps in 110 s with and without the
    window, 1 in 150 s while clicking through every tab (the mic itself 53 ms late),
    about 15 ms more delay on the voice. `test_the_mics_rings_cover_the_sound_servers_quantum`
-   replays the measured pattern.
+   replays the measured pattern. The CI AppImage of 62a2b4e on Fedora, 3 minutes on the mic
+   route with the window drawing and 49 clicks through every tab, then a clean quit:
+   mic into cable gaps 4 / skips 6 (the build before: 111 / 21 and 115 / 19), drop-outs
+   main 6 / mon 2 (before: 10-16 / 3; most come while the Radio tab's globe starts on
+   the VM's software OpenGL).
 4. **Who's listening: the program recording the cable.** 1.7.0 names the program
    that records the cable's far end and can switch the mode by itself
    (`voicesdk.Listeners`, `appaudio.recording_apps`); upstream only starts it on
@@ -325,6 +329,11 @@ WSL's mirrored networking drops a connection to a closed loopback port instead o
 refusing it, so tests that expect "connection refused" wait out their timeout there
 (`test_customvoices.py::test_server_errors_say_what_happened` takes 60 s); a real
 Linux refuses at once.
+
+One full-suite run hung once (2026-10-06, at 96%, killed by the outer `timeout`
+with no stacks); 17 full runs since haven't. Run the whole suite with
+`--timeout 120` (pytest-timeout): a test stuck that long fails and prints every
+thread's stack, so a repeat says where.
 
 As root (containers), Chromium needs `QTWEBENGINE_DISABLE_SANDBOX=1` or the radio
 globe test aborts the run. A machine whose own `https_proxy` / `no_proxy` are set can
