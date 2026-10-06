@@ -104,6 +104,26 @@ PHRASES: list[tuple[str, str]] = [
      "or <b>Onion Board Mic</b> there."),
     ("</b> — your sounds are in it ", "</b> — goes out with your sounds as “Onion Board "
      "Mic” "),
+    # the guide's last page: on Windows apps keep the user's mic (the effect is on
+    # it); on Linux an app pinned to that mic by name doesn't hear the sounds
+    ("Last step: nothing to pick", "Last step: Default is all it takes"),
+    ("Discord and your games keep using the mic they already have:",
+     "Discord and games on <b>Default</b> hear “Onion Board Mic”: your voice from"),
+    ("Your sounds are in it now, so there's nothing to pick anywhere.",
+     "with your sounds in it. An app set to your mic by name: pick <b>Default</b> or "
+     "<b>Onion Board Mic</b> there."),
+    # Voicemeeter is Windows-only (the route to another device, the sound modes, the
+    # guides); sending a device on is a patchbay's job on Linux (qpwgraph)
+    ("Voicemeeter, OBS, a mixer", "OBS, a mixer, another sound card"),
+    ("Voicemeeter, a mixer, a device OBS captures", "a mixer, a device OBS captures"),
+    ("Voicemeeter, a mixer, anything OBS captures", "a mixer, anything OBS captures"),
+    ("Streaming, recording, Voicemeeter or a mixer.", "Streaming, recording or a mixer."),
+    ("recording, Voicemeeter, a mixer,", "recording, a mixer,"),
+    ("OBS, Voicemeeter, a mixer or a capture card", "OBS, a mixer or a capture card"),
+    ("), Voicemeeter, a mixer or a capture card", "), a mixer or a capture card"),
+    ("Use Voicemeeter, a mixer or OBS?", "Use a mixer or OBS?"),
+    ("Voicemeeter / a mixer?", "a mixer?"),
+    ("Voicemeeter or a mixer", "a mixer or a patchbay (qpwgraph)"),
     ("Setting up… click Yes when Windows asks", "Setting up…"),
     ("Onion Board was on your mic but needs a quick repair: <b>one click</b>, and "
      "Windows asks for permission once.",

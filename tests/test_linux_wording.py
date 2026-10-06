@@ -76,7 +76,7 @@ def test_static_message_boxes_are_reworded():
 # ---------------------------------------------------------------- the source
 
 WORDS = re.compile(r"\bWindows\b|Task Manager|Recycle Bin|%APPDATA%|taskbar|VB-Cable|vb-audio"
-                   r"|CABLE (Input|Output)")
+                   r"|CABLE (Input|Output)|Voicemeeter")
 
 # strings that say Windows but never reach the screen on Linux: (file, start) → why
 NOT_ON_LINUX = {

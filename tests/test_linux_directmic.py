@@ -213,6 +213,28 @@ def test_the_window_offers_the_mic_and_gives_the_users_mic_back(window, pa):  # 
     assert pa.default == USER_MIC and not pa.modules
 
 
+def test_the_guides_last_page_says_default_not_your_old_mic(window, pa):  # noqa: F811
+    """Windows apps keep the user's mic (the effect is on it); on Linux an app pinned
+    to that mic by name doesn't hear the sounds: the guide's last page says Default,
+    and names no Windows-only mixer (found on Fedora)."""
+    from soundboard.ui import setupwizard
+    w, _ = window
+    directmic.install(None)
+    w.cfg.route, w.cfg.mic_device = "mic", "Headset Mic"
+    setupwizard.resume_after_restart(True)
+    wiz = setupwizard.SetupWizard(w)
+    try:
+        wiz._fill_direct()
+        text = wiz.discord_text.text()
+        assert "<b>Default</b>" in text and "Onion Board Mic" in text
+        assert "keep using the mic" not in text and "nothing to pick anywhere" not in text
+        assert wiz.discord_title.text() == "Last step: Default is all it takes"
+        assert "Voicemeeter" not in wiz.btn_other.text()
+    finally:
+        wiz.done(0)
+        wiz.deleteLater()
+
+
 @pytest.fixture
 def fake_pactl(tmp_path, monkeypatch):
     """A pactl on PATH that logs its calls and says Onion Board's mic is the default."""

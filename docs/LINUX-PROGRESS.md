@@ -32,7 +32,7 @@ the number move: new work found means the number can go down, and that's fine.
 | dropouts | No drop-outs at "low" with the whole app running | 4 | done |
 | cable | Virtual cable made by the app (pactl, made at every login) | 3 | done |
 | cable-guide | Setup guide's "Make the virtual cable" clicked through on Fedora | 1 | open |
-| setup-guide | Setup guide and every page checked on a real desktop | 2 | half |
+| setup-guide | Setup guide and every page checked on a real desktop | 2 | done |
 | apps-tab | Apps tab and instant replay (PipeWire) | 2 | done |
 | midi | MIDI pads (ALSA raw MIDI) | 1 | done |
 | autostart | Start at login (XDG autostart) | 1 | done |
@@ -119,3 +119,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 76% | merged upstream 1.9.2 (README On Linux tells the mic route); Linux mic tests fixed for CI (no pactl there); usage count tells Linux apart (/app/linux/<version>, events end in /linux); Windows crash hunt workflow for the CI abort |
 | 2026-10-06 | 76% | direct mic checked in the CI AppImage on Fedora (kill -9 safe, 0 drop-outs headless and with the window on the mic route; the from-source drop-outs were the source run's) |
 | 2026-10-06 | 76% | found + fixed: the AppImage window never drew on Fedora (bundled libstdc++ kept Mesa from loading); half until the next CI AppImage is checked |
+| 2026-10-06 | 77% | setup guide clicked through on Fedora (CI AppImage): found + fixed its last page telling Linux users their old mic needs nothing (apps pinned to it don't hear the sounds) and Voicemeeter in 14 texts |
