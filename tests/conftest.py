@@ -122,6 +122,22 @@ def _refuse_closed_ports_at_once():
 
     socket.socket.connect = fast_connect
     socket.socket.connect_ex = fast_connect_ex
+    listen = socket.socket.listen
+
+    def listen_opens_it(self, *a):
+        # the system hands a port number closed_port() gave back to later servers too:
+        # once something listens there it isn't closed (a test web server reached
+        # through a fake proxy was refused that way: tests/test_closed_ports.py)
+        listen(self, *a)
+        try:
+            port = self.getsockname()[1]
+        except OSError:
+            return
+        _CLOSED_PORTS.discard(port)
+        if self.family == socket.AF_INET6:
+            _V4_ONLY_PORTS.discard(port)
+
+    socket.socket.listen = listen_opens_it
 
 
 _refuse_closed_ports_at_once()
