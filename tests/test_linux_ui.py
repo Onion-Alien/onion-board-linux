@@ -352,3 +352,21 @@ def test_a_tests_window_opens_its_outputs_at_once(qapp, app_dir, server, monkeyp
         assert calls == ["Built-in Audio Analog Stereo"]
     finally:
         _close(qapp, w)
+
+
+@pytest.mark.parametrize("why", ["x11-only", "no-portal", ""])
+def test_settings_hotkeys_says_when_the_desktop_limits_them(window, why, monkeypatch):
+    # Sway: X11 grabs only, the status line's note is soon replaced; Settings keeps it
+    from PySide6.QtWidgets import QLabel
+
+    from soundboard.linux import ui
+    from soundboard.settings import SettingsDialog
+    w, _toasts = window
+    monkeypatch.setattr(type(w.hotkeys), "why", property(lambda self: why))
+    d = SettingsDialog(w, "hotkeys")
+    try:
+        notes = [lb.text() for lb in d.findChildren(QLabel, "hotkeyslimit")]
+        assert notes == ([ui.HOTKEY_WORDS[why]] if why else [])
+    finally:
+        d.close()
+        d.deleteLater()

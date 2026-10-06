@@ -403,3 +403,23 @@ def patch_settings(cls):
         return card
 
     cls._addons_card = _addons_card
+    orig_hotkeys = cls._hotkeys
+
+    def _hotkeys(self):
+        """Hotkeys: when the desktop doesn't let them work everywhere, say so on top
+        (the status line's note is soon replaced by the next message)."""
+        w = orig_hotkeys(self)
+        words = HOTKEY_WORDS.get(getattr(getattr(self.mw, "hotkeys", None), "why", ""))
+        if words:
+            from PySide6.QtWidgets import QLabel
+
+            from soundboard import theme
+            note = QLabel(words)
+            note.setObjectName("hotkeyslimit")
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color: {theme.status('warn')};")
+            note.setContentsMargins(14, 0, 14, 0)   # in line with the cards' text
+            w.layout().insertWidget(0, note)
+        return w
+
+    cls._hotkeys = _hotkeys
