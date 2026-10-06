@@ -255,6 +255,48 @@ def test_a_new_stream_gets_time_to_start(server, monkeypatch):
         e.shutdown()
 
 
+def _quantum_low(ring, cycles=3000):
+    """The sound server's way, as measured on Fedora at 48 kHz: each quantum (1024
+    frames) the mic hands over 480 + 480 + 64 frames, then the output takes what it
+    owes in 480-frame reads: two, and every 7th or 8th quantum three (1440 frames).
+    Drift tracking is on (start-up's glitches switch it on). Returns the gaps and the
+    lowest fill a three-read burst found, once settled."""
+    import numpy as np
+    ring.track_drift = True
+    owed, lows = 0, []
+    for k in range(cycles):
+        for n in (480, 480, 64):
+            ring.write(np.zeros((n, 2), np.float32))
+        owed += 1024
+        if k == 100:
+            ring.underruns, lows = 0, []
+        if owed >= 3 * 480:
+            lows.append(ring.count)
+        while owed >= 480:
+            ring.read(480)
+            owed -= 480
+    return ring.underruns, min(lows)
+
+
+def test_the_mics_rings_cover_the_sound_servers_quantum(server):
+    """Windows' 15 ms cushion left a three-read burst under 1 ms to spare (on Fedora
+    ~10 gaps a minute in the voice others hear, window or not: the burst found 1411
+    frames). The Linux cushion leaves it 10 ms or more."""
+    from soundboard import engine
+    from soundboard.linux import engine as linux_engine
+    gaps, low = _quantum_low(engine.Ring(auto_drift=True))       # Windows' cushion
+    assert low - 3 * 480 < 48
+    e = engine.Engine()
+    try:
+        for attr in ("ring_main", "ring_mon", "ring_obs"):
+            ring = getattr(e, attr)
+            assert ring.prefill == int(ring.rate * linux_engine.MIC_PREFILL_S)
+            gaps, low = _quantum_low(ring)
+            assert gaps == 0 and low - 3 * 480 >= 480, attr
+    finally:
+        e.shutdown()
+
+
 def test_an_unplugged_device_is_let_go_and_taken_back_when_it_returns(server, monkeypatch):
     """The sound server moves an unplugged device's stream to its default device and
     it plays on: the watchdog closes it, says the device is gone, and reopens it on

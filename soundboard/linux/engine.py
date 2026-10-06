@@ -61,6 +61,16 @@ def _device(name: str, kind: str) -> audio.Device | None:
 START_S = 3.0
 _SETTERS = (("main", "set_main_device"), ("mon", "set_mon_device"),
             ("mic", "set_mic_device"), ("obs", "set_obs_device"))
+# The mic's rings (mic -> what others hear / Hear my voice / OBS). The sound server
+# moves sound a quantum at a time (PipeWire: 1024 frames, 21 ms, at 48 kHz), so the
+# mic's writes and the outputs' reads each come in 21 ms bursts and the fill swings
+# by a whole quantum. Windows' 15 ms cushion (10 ms blocks there) ran dry ~10 times
+# a minute on Fedora, window or not (voice gaps: the read found ~450 frames, the mic
+# on time). 30 ms covers a quantum and a read; a ring that still runs dry grows its
+# cushion by half each time, up to 60 ms (a bigger quantum: a busy graph or a
+# Bluetooth headset), and the skip-ahead line moves up to stay above it.
+MIC_PREFILL_S, MIC_GROW_TO_S, MIC_MAX_S = 0.03, 0.06, 0.12
+_MIC_RINGS = ("ring_main", "ring_mon", "ring_obs")
 
 
 def patch_engine(cls):
@@ -70,7 +80,17 @@ def patch_engine(cls):
     sound server is asked on a thread when audio.watch says a device came or went
     (every GONE_POLL_S without a watcher: asking every time stalled every stream for
     ~20 ms on PulseAudio). And a stream opened less than START_S ago isn't stalled
-    yet."""
+    yet. The mic's rings get a cushion for the sound server's quantum (MIC_PREFILL_S)."""
+    orig_init = cls.__init__
+
+    def __init__(self, *a, **k):
+        orig_init(self, *a, **k)
+        for attr in _MIC_RINGS:
+            ring = getattr(self, attr)
+            ring.prefill_s, ring.grow_to_s, ring.max_s = MIC_PREFILL_S, MIC_GROW_TO_S, MIC_MAX_S
+            ring.configure(ring.rate)
+
+    cls.__init__ = __init__
     orig = cls.check_streams
 
     for key, setter in _SETTERS:

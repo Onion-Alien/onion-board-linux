@@ -52,7 +52,8 @@ the number move: new work found means the number can go down, and that's fine.
 | wording | No Windows wording on screen (table + test) | 2 | done |
 | packaging | AppImage build (own PortAudio, prune, licences, self-test) | 6 | done |
 | appimage-window | The AppImage's window draws on newer distros (the user's C++ runtime, so Mesa loads) | 1 | done |
-| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: ~2 a minute idle, dozens while clicking; earlier zero counts had no visible window) | 2 | open |
+| dropouts-window | No drop-outs at "low" with the window drawing (Fedora VM, software OpenGL: after the voice-gaps fix 2-3 as the streams open, then ~1 in 2 min while clicking through every tab; a real PC still to check) | 2 | half |
+| voice-gaps | The voice reaches what others hear without gaps on PipeWire (the mic's cushion covers the sound server's quantum; was ~10-40 gaps a minute, window or not) | 1 | done |
 | ci-appimage-fedora | Newest CI AppImage tested on Fedora (cable test, hotkeys) | 1 | done |
 | certs | HTTPS in a built copy on every distro (Fedora's certificates) | 1 | done |
 | self-update | Self-update from an AppImage | 2 | done |
@@ -124,3 +125,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 78% | Voice tab on Fedora (CI AppImage): Female voice shifts a 300 Hz tone to 408 Hz in what others hear, Hear my voice, the delay label (166 ms) |
 | 2026-10-06 | 76% | CI AppImage with the C++ runtime fix draws its window on Fedora; new open row: drop-outs with the window drawing (the VM's ~2/min idle; earlier zero counts had no visible window) |
 | 2026-10-06 | 78% | AI voices on Fedora from the CI AppImage: Get, install (python3.14) and a voice heard through Onion Board Mic; found + fixed on the way: the bundle's LD_LIBRARY_PATH broke the system python3's venv, and the build shipped the add-on without its model |
+| 2026-10-06 | 79% | voice gaps on the mic route found + fixed: not the window; PipeWire's 21 ms quanta vs Windows' 15 ms mic cushion (Fedora: 41 gaps in 110 s -> 0); drop-outs with the window down to start-up + ~1 in 2 min clicking |
