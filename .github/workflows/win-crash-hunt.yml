@@ -1,0 +1,87 @@
+name: win-crash-hunt
+
+# Linux port only (not upstream's): hunts the rare native abort on Windows CI
+# ("Fatal Python error: Aborted", <freed thread state>, in test_radio.py's player
+# tests). Windows saves a crash dump of the dying python.exe and cdb prints every
+# thread's native stack into the log. Python's own fault handler is off here: it
+# catches the abort first and exits without a dump (and it only printed
+# "<freed thread state>" for this one anyway).
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "pytest arguments (each loop)"
+        default: "tests/test_radio.py -n 4"
+      loops:
+        description: "times each job runs them"
+        default: "15"
+
+permissions:
+  contents: read
+
+jobs:
+  hunt:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        id: py
+        with:
+          python-version: "3.13"
+      - uses: actions/cache@v6
+        id: venv
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+      - if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Crash dumps on
+        shell: pwsh
+        run: |
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\python.exe"
+          New-Item -Force -Path $k | Out-Null
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
+          Set-ItemProperty $k DumpFolder "$env:RUNNER_TEMP\dumps"
+          Set-ItemProperty $k DumpType 2 -Type DWord      # full: every thread's memory
+          Set-ItemProperty $k DumpCount 3 -Type DWord
+      - name: Loop the tests
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          TESTS: ${{ inputs.tests }}
+          LOOPS: ${{ inputs.loops }}
+        run: |
+          $bad = 0
+          for ($i = 1; $i -le [int]$env:LOOPS; $i++) {
+            .venv\Scripts\python -m pytest -q -p no:faulthandler -p no:cacheprovider ($env:TESTS -split ' ') | Select-Object -Last 3
+            if ($LASTEXITCODE -ne 0) { $bad++; Write-Host "::warning::loop $i failed" }
+            if (Get-ChildItem "$env:RUNNER_TEMP\dumps" -Filter *.dmp -ErrorAction SilentlyContinue) { break }
+          }
+          Write-Host "$bad failed loop(s)"
+          if (Get-ChildItem "$env:RUNNER_TEMP\dumps" -Filter *.dmp -ErrorAction SilentlyContinue) { exit 1 }
+      - name: Native stacks
+        if: failure()
+        shell: pwsh
+        run: |
+          $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe" -ErrorAction SilentlyContinue
+          foreach ($d in Get-ChildItem "$env:RUNNER_TEMP\dumps" -Filter *.dmp -ErrorAction SilentlyContinue) {
+            Write-Host "=== $($d.Name) ($([int]($d.Length / 1MB)) MB)"
+            if ($cdb) {
+              & $cdb.FullName -z $d.FullName -y "srv*$env:RUNNER_TEMP\sym*https://msdl.microsoft.com/download/symbols" `
+                -c ".ecxr; kn 40; ~*kn 25; !analyze -v; q" 2>&1 | Select-Object -Last 900
+            } else { Write-Host "no cdb on this runner" }
+          }
+      - if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dumps-${{ matrix.job }}
+          path: ${{ runner.temp }}\dumps
+          retention-days: 7
+          if-no-files-found: ignore
