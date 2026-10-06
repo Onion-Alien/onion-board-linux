@@ -325,6 +325,8 @@ class LinkBar(QFrame):
         if kind == "found":
             if current:
                 self.title, secs = payload
+                if url == getattr(self, "_added", ""):   # a look-up slower than the add:
+                    return                               # "✓ Added …" stays
                 dur = f" · {fmt_time(secs)}" if secs else ""
                 self._say(f"<b>{html.escape(self.title)}</b>{dur} "
                           f"<span style='color:{theme.T['muted']}'>"

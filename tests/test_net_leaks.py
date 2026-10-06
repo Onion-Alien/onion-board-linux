@@ -10,6 +10,7 @@ import http.server
 import io
 import json
 import threading
+import time
 import types
 
 import numpy as np
@@ -320,8 +321,22 @@ def test_the_globe_page_cant_reach_the_network(qapp, app_dir, sites):
     cfg = Config()
     cfg.radio = {"map": "globe"}
     t = RadioTab(FakeEngine(), cfg, lambda: None, FakeMeter, directory=d, globe=True)
+    # what the page did, for a failure: loaded (True / False), its renderer died, or
+    # nothing at all in 20 s (it failed once in 14 Windows CI suites)
+    seen = []
+    make = t._make_globe
+
+    def made():
+        make()
+        seen.append(("made", round(time.monotonic() - t0, 1)))
+        page = t.view.page()
+        page.loadFinished.connect(lambda ok: seen.append(("loaded", ok)))
+        page.renderProcessTerminated.connect(lambda s, c: seen.append(("renderer", s, c)))
+    t._make_globe = made
+    t0 = time.monotonic()
     t.start()
-    assert process_events(qapp, lambda: t._globe_loaded, timeout=20)
+    assert process_events(qapp, lambda: t._globe_loaded, timeout=20), \
+        f"globe page after {time.monotonic() - t0:.1f} s: {seen or 'nothing'}"
     leak = f"http://127.0.0.1:{sites.port}/leak"
     t.view.page().runJavaScript(f"fetch('{leak}').catch(()=>0); new Image().src='{leak}2'")
     process_events(qapp, lambda: False, timeout=1.5)

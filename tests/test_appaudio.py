@@ -127,7 +127,11 @@ def test_peak_watcher_reads_meters_between_scans_and_releases_them(monkeypatch):
     assert w.peak(42) == pytest.approx(0.5)
     for m in made:                                  # it keeps reading without rescanning
         m.v = 0.0
-    time.sleep(0.3)
+    # the level falls by a fifth each pass, so it takes 11 passes to get under 0.05: a
+    # fixed 0.3 s got only 7 on a busy Windows runner (0.5 * 0.8 ** 7 = 0.105)
+    deadline = time.monotonic() + 2
+    while w.peak(42) >= 0.05 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert w.peak(42) < 0.05 and len(made) == 2
     t = w._thread
     w.stop()
@@ -175,13 +179,19 @@ def test_a_quiet_program_is_handed_over_as_silence():
     cap = appaudio.AppCapture(os.getpid(), got.append, name="quiet")
     evt = appaudio._k32.CreateEventW(None, False, False, None)
     fmt = appaudio._format("f32")
-    th = threading.Thread(target=cap._loop, args=(NoPackets(), fmt, True, evt), daemon=True)
-    t0 = time.monotonic()
+    ran = []
+
+    def loop():   # timed inside the thread: a busy runner starts and joins it late
+        t0 = time.monotonic()
+        cap._loop(NoPackets(), fmt, True, evt)
+        ran.append(time.monotonic() - t0)
+
+    th = threading.Thread(target=loop, daemon=True)
     th.start()
     time.sleep(0.4)
     cap._stop.set()
     th.join(2)
-    took = time.monotonic() - t0
+    took = ran[0] if ran else 0.0
     appaudio._k32.CloseHandle(evt)
     n = sum(len(x) for x in got)
     assert not th.is_alive() and cap.error is None

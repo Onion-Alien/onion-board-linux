@@ -389,6 +389,19 @@ def test_link_add_as_sound(qapp, window, monkeypatch, tmp_path):  # noqa: F811
     assert len(window.cfg.sounds) == 3
 
 
+def test_a_look_up_slower_than_the_add_keeps_added(qapp, window, monkeypatch,  # noqa: F811
+                                                   tmp_path):
+    """The name look-up and the download run side by side: when the add finishes
+    first (a slow look-up), the look-up's answer mustn't replace "✓ Added …"."""
+    fake_link_download(monkeypatch, tmp_path)
+    window.search.setText("https://youtu.be/abc")
+    window.linkbar._probe_timer.stop()                       # the look-up comes last
+    window.linkbar.add()
+    assert process_events(qapp, lambda: len(window.cfg.sounds) == 3, 5)
+    window.linkbar._on_msg("found", "https://youtu.be/abc", ("A Tone", 1.0))
+    assert "Added" in window.linkbar.info.text()
+
+
 def test_link_play_once_then_add_downloads_once(qapp, window, monkeypatch, tmp_path):  # noqa: F811
     calls = fake_link_download(monkeypatch, tmp_path)
     played = []
