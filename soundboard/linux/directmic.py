@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -40,6 +39,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+from soundboard import linux
 
 log = logging.getLogger(__name__)
 
@@ -72,17 +73,17 @@ _holder: subprocess.Popen | None = None
 
 # ------------------------------------------------------------------ pactl
 def _env() -> dict[str, str]:
-    env = dict(os.environ)
+    env = linux.pactl_env()
     env["LC_ALL"] = "C"   # parsed: in English whatever the desktop's language
     return env
 
 
 def _have_pactl() -> bool:
-    return shutil.which("pactl") is not None
+    return linux.pactl() is not None
 
 
 def _pactl(*args: str) -> subprocess.CompletedProcess | None:
-    exe = shutil.which("pactl")
+    exe = linux.pactl()
     if exe is None:
         return None
     try:

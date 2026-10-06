@@ -63,6 +63,16 @@ if ls dist/OnionBoard/_internal | grep -E '^lib(readline|gdbm|db-|jack)'; then
   exit 1
 fi
 
+# pactl (pulseaudio-utils): the device lists, the cable and the mic go through it, and
+# Ubuntu 26.04's desktop has none (PipeWire's pulse server, no pulseaudio-utils): the
+# app found no speakers or mics. Its libpulse is in the bundle already; the app runs
+# the system's pactl when there is one (soundboard/linux/__init__.py: pactl).
+# Before the prune: its check makes sure every library pactl needs is in the build
+pactl_exe="$(command -v pactl || true)"
+[ -n "$pactl_exe" ] || { echo "No pactl here: install pulseaudio-utils so the build ships it." >&2; exit 1; }
+mkdir -p dist/OnionBoard/_internal/pactl-bin
+cp "$pactl_exe" dist/OnionBoard/_internal/pactl-bin/pactl
+
 # PySide6 brings all of Qt: cut what the app never loads (QML, Quick 3D, translations…)
 "$py" scripts/prune_build_linux.py dist/OnionBoard
 

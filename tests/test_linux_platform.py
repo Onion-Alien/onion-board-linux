@@ -360,3 +360,34 @@ def test_espeak_speaks():
     t._load()   # conftest stubs warm_up outside test_speech.py
     mono, sr = t.synth("--help me", t.voice_for("en"))   # text is never an option
     assert sr > 8000 and len(mono) > sr // 4 and abs(mono).max() > 0.05
+
+
+def test_a_built_copy_brings_its_own_pactl_where_the_system_has_none(tmp_path, monkeypatch):
+    # Ubuntu 26.04's desktop has PipeWire's pulse server but no pactl: the app found no
+    # speakers or mics at all; the AppImage carries one (build-linux.sh)
+    from soundboard import linux
+    bundle = tmp_path / "_internal"
+    exe = bundle / linux.PACTL_DIR / "pactl"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    system = tmp_path / "usr-bin"
+    system.mkdir()
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setenv("PATH", str(system))
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(bundle))
+    assert linux.pactl() == str(exe)
+    env = linux.pactl_env()
+    assert env["PATH"].split(os.pathsep)[0] == str(exe.parent)   # shells find it by name
+    assert env["LD_LIBRARY_PATH"] == str(bundle)                  # with the bundle's libpulse
+    # the system's own pactl comes first, with the system's libraries
+    own = system / "pactl"
+    own.write_text("#!/bin/sh\n")
+    own.chmod(0o755)
+    assert linux.pactl() == str(own)
+    env = linux.pactl_env()
+    assert "LD_LIBRARY_PATH" not in env and env["PATH"] == str(system)
+    # from source: no bundle, no pactl of its own
+    monkeypatch.delattr(sys, "_MEIPASS")
+    own.unlink()
+    assert linux.pactl() is None

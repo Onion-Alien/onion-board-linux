@@ -39,6 +39,8 @@ import subprocess
 import threading
 from dataclasses import dataclass
 
+from soundboard import linux
+
 log = logging.getLogger(__name__)
 
 FIRST_INDEX = 100_000      # stand-in indices: far above any real PortAudio index
@@ -66,10 +68,10 @@ _defaults: dict[str, str] = {}
 
 
 def _pactl(*args: str) -> str:
-    exe = shutil.which("pactl")
+    exe = linux.pactl()
     if exe is None:
         return ""
-    env = dict(os.environ)
+    env = linux.pactl_env()
     env["LC_ALL"] = "C"   # parsed: English whatever the desktop's language
     try:
         p = subprocess.run([exe, *args], capture_output=True, text=True, timeout=TIMEOUT_S,
@@ -162,7 +164,7 @@ _WATCH_SH = 'pactl subscribe </dev/null & p=$!; cat >/dev/null; kill $p 2>/dev/n
 
 def _watch_cmd() -> list[str] | None:
     sh = shutil.which("sh")
-    return [sh, "-c", _WATCH_SH] if sh and shutil.which("pactl") else None
+    return [sh, "-c", _WATCH_SH] if sh and linux.pactl() else None
 
 
 class DeviceWatch:
@@ -184,7 +186,7 @@ class DeviceWatch:
             cmd = _watch_cmd()
             if cmd is None:
                 return False
-            env = dict(os.environ)
+            env = linux.pactl_env()
             env["LC_ALL"] = "C"
             try:
                 self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,

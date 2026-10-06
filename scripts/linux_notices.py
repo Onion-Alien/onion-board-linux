@@ -29,10 +29,14 @@ def bundled_libraries(app_dir: Path) -> list[str]:
     """Names of the shared libraries PyInstaller put loose in _internal/ (the ones it
     took from the system; Python packages' own libraries sit in their folders)."""
     internal = app_dir / "_internal"
-    return sorted(p.name for p in internal.iterdir()
-                  if ".so" in p.name and p.is_file() and not p.is_symlink()
-                  and not p.name.startswith(("libpython", "libpyside6", "libshiboken6",
-                                             "libportaudio")))   # ours: below
+    names = sorted(p.name for p in internal.iterdir()
+                   if ".so" in p.name and p.is_file() and not p.is_symlink()
+                   and not p.name.startswith(("libpython", "libpyside6", "libshiboken6",
+                                              "libportaudio")))   # ours: below
+    tools = internal / "pactl-bin"   # build-linux.sh: the system's pactl, copied
+    if tools.is_dir():
+        names += sorted(p.name for p in tools.iterdir() if p.is_file())
+    return names
 
 
 def packages_of(names: list[str]) -> dict[str, list[str]]:

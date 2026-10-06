@@ -66,6 +66,8 @@ the number move: new work found means the number can go down, and that's fine.
 | discord | A real Discord call: Linux app's cable → Windows listener | 3 | open |
 | usb-headset | Real USB headset unplugged / replugged on PipeWire | 2 | open |
 | distros | Checked on more than one real distro (Ubuntu desktop, Arch) | 2 | half |
+| ubuntu-pactl | Stock Ubuntu 26.04 desktop: no pactl there, so the app listed no speakers or mics; the AppImage ships pactl (a local build with CI's PortAudio on Ubuntu 26.04: devices open, Straight into my mic heard on Default at peak 0.71, kill -9 puts the real mic back, the cable made and a sound through it at 0.71); half until a CI AppImage is checked there | 2 | half |
+| cable-button-words | Setup tab's cable card on the cable route says "Install the free virtual cable" (Windows words; it makes the cable, seen on Ubuntu 26.04) | 1 | open |
 | upstream-merge | Upstream releases merged and kept current | 1 | done |
 | launch | Merged back into the public repo, Linux download live | 3 | open |
 | upstream-191 | 1.9.1 merged: direct mic hidden, the cable the route, capture and update hooks, Fedora checked | 1 | done |
@@ -133,3 +135,4 @@ launch, so they aren't in the estimate; move one up into *Items* when it's picke
 | 2026-10-06 | 83% | Who's listening on Linux: PipeWire's links name the program recording the cable / Onion Board Mic; checked on Fedora with stand-ins on both routes |
 | 2026-10-07 | 85% | GNOME 50 hotkeys: found + fixed the app id GNOME threw away and X11 grabs on a normal Wayland login (no keys at all); portal checked with the app, a terminal and an X11 window in front; Wayland with no portal says why |
 | 2026-10-07 | 87% | Sway checked: no portal -> X11 grabs work with an X11 window in front, the note in the status line and on Settings > Hotkeys (the status line's was soon replaced) |
+| 2026-10-07 | 85% | Ubuntu 26.04 desktop: found + fixed no speakers/mics at all (no pactl there; the AppImage ships it), checked with a local build; GNOME hotkeys fixed there too; new open row: the cable card's Windows words |

@@ -93,6 +93,43 @@ def host_env(env: dict[str, str] | None = None,
     return env
 
 
+PACTL_DIR = "pactl-bin"   # in a built copy: the pactl the build ships (build-linux.sh)
+
+
+def bundled_pactl(bundle: str | None = None) -> str | None:
+    """The pactl a built copy carries, if there's one."""
+    import os
+    bundle = bundle if bundle is not None else getattr(sys, "_MEIPASS", None)
+    if not bundle:
+        return None
+    p = os.path.join(bundle, PACTL_DIR, "pactl")
+    return p if os.access(p, os.X_OK) else None
+
+
+def pactl() -> str | None:
+    """The pactl the app runs (the sound server's device lists, the cable, the mic):
+    the system's (pulseaudio-utils), else the one a built copy carries. Ubuntu 26.04's
+    desktop runs PipeWire's pulse server but has no pactl: the app found no speakers
+    or mics at all there."""
+    import shutil
+    return shutil.which("pactl") or bundled_pactl()
+
+
+def pactl_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for pactl, and for shells that call it by name: the system's
+    own pactl gets the system's libraries (host_env); the bundle's keeps the bundle's
+    library path (its libpulse) and has its folder on PATH."""
+    import os
+    import shutil
+    env = dict(os.environ if env is None else env)
+    if shutil.which("pactl", path=env.get("PATH")):
+        return host_env(env)
+    exe = bundled_pactl()
+    if exe:
+        env["PATH"] = os.path.dirname(exe) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def use_bundled_portaudio() -> str | None:
     """In a built copy, make sounddevice load the PortAudio the build ships
     (build-linux.sh: ALSA only, no JACK) instead of searching the system for one.

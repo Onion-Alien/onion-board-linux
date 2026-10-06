@@ -20,12 +20,11 @@ remove() takes both away again (Settings, and the uninstall).
 from __future__ import annotations
 
 import logging
-import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
+from soundboard import linux
 from soundboard.linux import config_home
 
 log = logging.getLogger(__name__)
@@ -41,7 +40,7 @@ PA_MARK = "# Onion Board virtual cable"
 
 
 def _pactl(*args: str) -> subprocess.CompletedProcess | None:
-    exe = shutil.which("pactl")
+    exe = linux.pactl()
     if exe is None:
         return None
     try:
@@ -54,7 +53,7 @@ def _pactl(*args: str) -> subprocess.CompletedProcess | None:
 
 def _c_env() -> dict[str, str]:
     """pactl's output in English whatever the desktop's language (it's parsed)."""
-    env = dict(os.environ)
+    env = linux.pactl_env()
     env["LC_ALL"] = "C"
     return env
 
