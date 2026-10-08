@@ -42,10 +42,10 @@ def vt_link(r: dict) -> str:
 
 
 def readme_block(r: dict) -> str:
-    vt = f"VirusTotal: {r['vt_clean']} of {r['vt_total']} clean"
-    return (f"Version **{r['version']}** · Windows 10 / 11 · free, no account, no ads, "
-            f"anonymous usage count you can switch off ·\n"
-            f"[{vt}]({vt_link(r)}) ·\n[what's new](CHANGELOG.md)")
+    # the Linux README: no VirusTotal line (that scan is of the Windows installer)
+    return (f"Version **{r['version']}** · 64-bit Linux (Ubuntu 22.04 or newer, Fedora, …) · "
+            f"free, no account, no\nads, anonymous usage count you can switch off · "
+            f"[what's new](CHANGELOG.md)")
 
 
 def site_block(r: dict) -> str:
