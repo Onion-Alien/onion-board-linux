@@ -158,7 +158,10 @@ def test_pw_dump_is_decoded_gently(monkeypatch):
 def window(qapp, app_dir, monkeypatch):
     from PySide6.QtCore import QEvent
     from soundboard.ui import mainwindow
+    # both names: soundboard.appaudio star-imports the Linux one, so it holds its own
+    # copy (a CI runner has no pw-dump: the real one says no there)
     monkeypatch.setattr(lappaudio, "supported", lambda: (True, ""))
+    monkeypatch.setattr(appaudio, "supported", lambda: (True, ""))
     w = mainwindow.MainWindow()
     yield w
     w._load_thread.join(15)
