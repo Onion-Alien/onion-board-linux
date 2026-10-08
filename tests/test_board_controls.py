@@ -324,8 +324,9 @@ def test_pad_menu_is_short_grouped_and_shows_the_hotkey(window, monkeypatch):
     monkeypatch.setattr(mainwindow.HotkeyDialog, "exec",
                         lambda self: setattr(self, "result_combo", "ctrl+alt+7") or True)
     w.pad_menu("s0", None)
-    assert shown == ["Play next", "---", "Edit…", "Effects…", "Set hotkey…",
-                     "Categories", "Add picture…", "---", "Export…", "Remove"]
+    assert shown == ["Play next", "---", "Edit…", "Rename…", "Effects…", "Volume",
+                     "Set hotkey…", "Categories", "Add picture…", "---", "Duplicate",
+                     "Export…", "Show the file in its folder", "Remove"]
     assert w.meta("s0").hotkey == "ctrl+alt+7"
     shown = menu_pick(monkeypatch, ["Hotkey: Ctrl+Alt+7", "Remove hotkey"])
     w.pad_menu("s0", None)
@@ -344,3 +345,84 @@ def test_a_key_taken_from_another_sound_or_action_says_so(window):
     w.status.setText("")
     w.set_sound_hotkey("s1", "f9")         # a free key: nothing to say
     assert w.status.text() == ""
+
+
+def test_a_global_hotkey_taken_off_a_sound_is_said_out_loud(window, monkeypatch):
+    """Settings → Hotkeys: giving Stop everything a key a pad had takes it off the
+    pad (a combo does one thing) and a warn toast names what lost it."""
+    from soundboard.ui import busy
+    toasts = []
+    monkeypatch.setattr(busy, "toast", lambda win, text, kind="", ms=0: toasts.append((text, kind)))
+    w = window
+    w.meta("s0").hotkey = "f1"
+    w.cfg.category_hotkeys["All"] = "f1"
+    w.set_global_hotkey("stop_hotkey", "f1")
+    assert w.meta("s0").hotkey == ""
+    assert "All" not in w.cfg.category_hotkeys
+    assert w.cfg.stop_hotkey == "f1"
+    text, kind = toasts[-1]
+    assert kind == "warn" and "Boom" in text and "Stop everything" in text and "All" in text
+    toasts.clear()
+    w.set_global_hotkey("pause_hotkey", "f2")   # nothing had F2: no warning
+    assert not [t for t in toasts if t[1] == "warn"]
+
+
+def test_pad_keys_rename_edit_delete_and_find(window, monkeypatch, qapp):
+    """F2 renames the pad the keyboard is on, Alt+Enter opens Edit, Delete removes it
+    (nothing picked), Ctrl+F lands in the search box."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QInputDialog
+    w = window
+    w.show()
+    w.tabs.setCurrentWidget(w.sounds_page)
+    pad = w.pads["s0"]
+    pad.setFocus()
+    qapp.processEvents()   # the tab shown: a shortcut on a hidden widget doesn't fire
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Big boom", True)))
+    QTest.keyClick(pad, Qt.Key_F2)
+    assert w.meta("s0").name == "Big boom" and pad.meta.name == "Big boom"
+    edited = []
+    monkeypatch.setattr(w, "edit", lambda sid, tab="sound": edited.append(sid))
+    QTest.keyClick(pad, Qt.Key_Return, Qt.AltModifier)
+    assert edited == ["s0"]
+    asked = []
+    monkeypatch.setattr(w, "ask_remove", lambda sids: asked.append(list(sids)) or False)
+    QTest.keyClick(pad, Qt.Key_Delete)
+    assert asked == [["s0"]]
+    QTest.keyClick(pad, Qt.Key_F, Qt.ControlModifier)
+    assert qapp.focusWidget() is w.search
+
+
+def test_duplicate_and_show_file(window, monkeypatch):
+    """Duplicate adds a copy right after the original, with its own file and no
+    hotkey; Show the file opens Explorer on it (and says so if the file is gone)."""
+    import subprocess
+    from pathlib import Path
+    w = window
+    w.meta("s0").hotkey = "f1"
+    new = w.duplicate_sound("s0")
+    assert new is not None and new.id in w.pads
+    assert [m.id for m in w.cfg.sounds][:2] == ["s0", new.id]
+    assert new.name == "Boom (copy)" and new.hotkey == "" and new.file != w.meta("s0").file
+    assert Path(new.file).is_file()
+    runs = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **k: runs.append(args))
+    from soundboard.ui import mainwindow as mwmod
+    monkeypatch.setattr(mwmod.sys, "platform", "win32")
+    w.show_sound_file("s0")
+    assert runs and runs[-1][0] == "explorer" and runs[-1][-1] == w.meta("s0").file
+    toasts = []
+    from soundboard.ui import busy
+    monkeypatch.setattr(busy, "toast", lambda win, text, kind="", ms=0: toasts.append(kind))
+    w.meta("s0").file = str(Path(w.meta("s0").file).with_name("gone.wav"))
+    w.show_sound_file("s0")
+    assert toasts[-1] == "warn" and len(runs) == 1
+
+
+def test_transport_time_is_blank_until_a_sound_is_picked(window):
+    w = window
+    assert w.np_time.text() == "" and w.mini_time.text() == ""
+    w.select("s0")
+    w.remove_sound("s0")   # back to "Pick a sound"
+    assert w.np_time.text() == ""

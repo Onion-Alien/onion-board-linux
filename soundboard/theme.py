@@ -11,9 +11,12 @@ import tempfile
 from pathlib import Path
 from string import Template
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt
 from PySide6.QtGui import (QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath,
                            QPen, QPixmap, QTransform)
+from shiboken6 import isValid as qt_valid
+
+from soundboard.i18n import _
 
 # Status colours (inline ok / warn / error messages, danger buttons) most themes share:
 # the bright ones read on dark backgrounds, the deep ones on light.
@@ -403,7 +406,22 @@ GROUPS: list[tuple[str, list[str]]] = [
     ("Meme", ["Flashbang", "Barbie", "Swamp", "Deep Fried", "Retro 98", "Comic Sans",
               "Brainrot"]),
 ]
+
+
+def group_name(group: str) -> str:
+    """A GROUPS key as Settings shows it, in the language picked (the keys stay
+    English; a function: this module can be imported before the language is)."""
+    return {"Classic": _("Classic"), "Colourful": _("Colourful"), "Wild": _("Wild"),
+            "Meme": _("Meme")}.get(group, group)
+
+
 FONT = "Segoe UI"   # a theme can swap it with a `font` token
+
+
+def font_families() -> list[str]:
+    """Every font a theme uses."""
+    return sorted({FONT, *(t["font"] for t in THEMES.values() if t.get("font"))})
+
 
 T: dict[str, str] = dict(THEMES[DEFAULT])   # current theme (read at paint time)
 current_name = DEFAULT
@@ -466,8 +484,10 @@ QFrame#card QWidget { background:transparent; }
 QFrame#card[interactive="true"] { border:1px solid transparent; }
 QFrame#card[interactive="true"][hovered="true"] { background:$card_hi; border-color:$border_hi; }
 QFrame#card[interactive="true"]:focus { background:$card_hi; border-color:$accent; }
+QFrame#card[interactive="true"][playing="true"] { background:$card_hi; border:2px solid $accent; }
 QLabel#section { color:$section; font-size:8pt; font-weight:700; letter-spacing:1px; padding-top:8px;
                  qproperty-indent:0; }  /* padding alone makes Qt indent the text 3 px */
+QLabel#section[head="true"] { padding-top:0; }
 QLabel#hint, QLabel#muted { color:$muted; }
 QLabel#hint { font-size:8.5pt; }
 QLabel[tone="ok"], QLabel#hint[tone="ok"] { color:$ok_text; }
@@ -493,10 +513,17 @@ QPushButton#primary:focus { border:1px solid $text_hi; }
 QPushButton#danger { background:$danger_bg; border:1px solid $danger_border; color:$danger_text; font-weight:600; }
 QPushButton#danger:hover { background:$danger_hover; }
 QPushButton#small { padding:2px 8px; font-size:8pt; }
+QPushButton#backhome { background:$danger_bg; border:1px solid $danger_border; color:$danger_text;
+    font-weight:700; font-size:10pt; padding:6px 14px; border-radius:8px; }
+QPushButton#backhome:hover { background:$danger_hover; border-color:$danger_text; }
 QPushButton#tabinfo { padding:0; border-radius:8px; background:transparent; border:1px solid transparent; }
 QPushButton#tabinfo:hover { background:$btn_hover; border-color:$border_hi; }
 QPushButton#tabinfo:pressed { background:$btn_press; border-color:$accent; }
 QPushButton#tabinfo:focus { border-color:$accent; }
+QPushButton#moretabs { padding:3px 10px; border-radius:8px; background:transparent; border:1px dashed $border_hi; }
+QPushButton#moretabs:hover { background:$btn_hover; border-color:$accent; }
+QPushButton#moretabs:pressed, QPushButton#moretabs:focus { border-color:$accent; }
+QPushButton#moretabs::menu-indicator { image:none; width:0; }
 QPushButton#settings { padding:6px 14px; font-weight:600; }
 QFrame#transport, QFrame#deck { background:$panel; border-radius:12px; }
 QFrame#mixer { background:transparent; }
@@ -529,7 +556,7 @@ QSpinBox#pct, QFrame#card QSpinBox#pct { background:transparent; border-color:tr
     padding:3px 2px; }
 QSpinBox#pct:hover, QFrame#card QSpinBox#pct:hover { background:$bg; border-color:$border_hi; }
 QSpinBox#pct:focus, QFrame#card QSpinBox#pct:focus { background:$bg; border-color:$accent; }
-QDoubleSpinBox, QSpinBox#stepper { padding-right:20px; }
+QDoubleSpinBox, QSpinBox#stepper { padding-right:2px; }
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
 QSpinBox#stepper::up-button, QSpinBox#stepper::down-button {
     subcontrol-origin:border; width:18px; border:none; background:transparent; }
@@ -550,8 +577,17 @@ QSlider::add-page:vertical { background:$accent; border-radius:2px; }
 QSlider::handle:vertical { background:white; border:1px solid $border_hi; width:14px; height:14px; margin:0 -5px; border-radius:7px; }
 QPushButton#micbanner { background:#d32f2f; color:white; font-weight:700; font-size:11pt;
     border:none; border-radius:10px; padding:10px; }
-QPushButton#miccheck:checked { background:#d32f2f; border:1px solid #ff6b6b; color:white;
-    font-weight:700; }
+QFrame#urgentbar { background:$warn_bg; border:1px solid $warn_text; border-radius:10px; }
+QFrame#tipbar { background:$panel; border:1px solid $border_hi; border-radius:10px; }
+QFrame#tipbar QLabel { background:transparent; color:$text; }
+QFrame#tipbar QPushButton#urgenthide { background:transparent; color:$muted; border:none;
+                                       border-radius:6px; font-weight:700; font-size:12pt; }
+QFrame#tipbar QPushButton#urgenthide:hover { background:$btn_hover; }
+QFrame#urgentbar QLabel { background:transparent; color:$warn_text; font-weight:600; }
+QFrame#urgentbar QPushButton#urgenthide { background:transparent; color:$warn_text; border:none;
+    border-radius:14px; padding:0; font-size:12pt; }
+QFrame#urgentbar QPushButton#urgenthide:hover { background:$danger_bg; }
+QPushButton#miccheck:checked { background:#d32f2f; border:1px solid #ff6b6b; color:white; }
 QFrame#transport QLabel, QFrame#transport QCheckBox, QFrame#transport QSlider,
 QFrame#deck QLabel, QFrame#deck QCheckBox, QFrame#deck QSlider { background:transparent; }
 QPushButton#round { padding:0; font-size:14pt; border-radius:10px; }
@@ -561,7 +597,7 @@ QLineEdit, QComboBox { background:$card; border:1px solid $border; border-radius
 QLineEdit:hover, QComboBox:hover { border-color:$border_hi; }
 QLineEdit:focus, QComboBox:focus, QComboBox:on { border-color:$accent; }
 QLineEdit { selection-background-color:$accent; selection-color:$on_accent; }
-QComboBox { padding:6px 10px; padding-right:30px; combobox-popup:0; }
+QComboBox { padding:6px 10px; padding-right:6px; combobox-popup:0; }
 QComboBox::drop-down { subcontrol-origin:padding; subcontrol-position:center right;
     width:26px; border:none; background:transparent; }
 QComboBox::down-arrow { image:url("$down"); width:10px; height:10px; }
@@ -683,6 +719,7 @@ QPushButton#fxreset, QFrame#card QPushButton#fxreset, QFrame#card[roomy="true"] 
 QPushButton#fxreset:hover, QFrame#card QPushButton#fxreset:hover, QFrame#card[roomy="true"] QPushButton#fxreset:hover { color:$text; background:transparent; }
 QLabel#pill { background:$inset; border:1px solid $border; border-radius:10px; padding:3px 10px; color:$muted; font-size:8.5pt; font-weight:600; }
 QLabel#pill[slow="true"] { color:$warn_text; border-color:$warn_text; }
+QLabel#pill[on="true"] { color:$live_text; border-color:$live_border; }
 QPushButton#fold { background:transparent; border:none; color:$muted; padding:3px 6px; font-size:8.5pt; font-weight:600; }
 QPushButton#fold:hover, QPushButton#fold:checked { color:$text; background:transparent; }
 QFrame#card QPushButton#fold, QFrame#card QPushButton#fold:checked { background:transparent; }
@@ -740,6 +777,11 @@ QFrame#setcard QPushButton:checked:focus { border:1px solid $text_hi; }
 QCheckBox::indicator:focus { border-color:$accent; }
 QCheckBox::indicator:checked:focus { border-color:$text_hi; }
 QSlider::handle:horizontal:focus, QSlider::handle:vertical:focus { border:2px solid $accent; }
+/* a busy accent button looks busy in a card too (busy.hold: "Setting up…") */
+QPushButton#primary[busy="true"], QPushButton#primary[busy="true"]:hover,
+QFrame#card QPushButton#primary[busy="true"], QFrame#card QPushButton#primary[busy="true"]:hover,
+QFrame#setcard QPushButton#primary[busy="true"],
+QFrame#setcard QPushButton#primary[busy="true"]:hover { background:$inset; color:$muted; }
 """)
 
 
@@ -1007,6 +1049,35 @@ def _recolour_inline(widgets, old: dict[str, str]) -> None:
             pass
 
 
+# App-wide event filters written in Python (Space plays, quiet message boxes) are called
+# for every event of every widget, and restyling sends each widget ~10 (font, palette
+# and style changes: 20,000+ with Settings open) that none of them wants: a third of a
+# theme switch went on them. Installed with app_filter(), they sit out each restyle.
+_app_filters: list[QObject] = []
+
+
+def app_filter(app, f: QObject) -> None:
+    """app.installEventFilter(f), but `f` is left out while apply() restyles."""
+    app.installEventFilter(f)
+    _app_filters.append(f)
+
+
+def _restyle(app, css: str) -> None:
+    live = [f for f in _app_filters if qt_valid(f)]
+    _app_filters[:] = live
+    for f in live:
+        app.removeEventFilter(f)
+    try:
+        # cleared first: Qt swapping one app-wide sheet straight for another re-styles
+        # every widget the slow way (3 s against 0.6 s with ~2000 widgets); empty and
+        # then the new sheet gives the same look. No paint happens in between.
+        app.setStyleSheet("")
+        app.setStyleSheet(css)
+    finally:
+        for f in live:   # oldest first: Qt asks the newest first, as before
+            app.installEventFilter(f)
+
+
 def apply(app, name: str, live: str | None = None) -> str:
     """Switch the whole app to theme `name` (live). `live`: the user's own highlight
     colour ("" = the theme's), None = keep the one set already."""
@@ -1014,11 +1085,7 @@ def apply(app, name: str, live: str | None = None) -> str:
     if live is not None:
         set_live(live)
     name = set_current(name)
-    # cleared first: Qt swapping one app-wide sheet straight for another re-styles every
-    # widget the slow way (0.6-1.3 s with ~1000 widgets); empty and then the new sheet
-    # gives the same look in about a quarter of the time. No paint happens in between.
-    app.setStyleSheet("")
-    app.setStyleSheet(stylesheet(name))
+    _restyle(app, stylesheet(name))
     widgets = app.allWidgets()
     _recolour_inline(widgets, old)
     sheet = live_sheet()

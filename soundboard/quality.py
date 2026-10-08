@@ -1,8 +1,8 @@
 """Settings > Data & quality: how much the app downloads and streams.
 
 For slow, capped or mobile connections: smaller downloads, lower-bitrate radio
-stations, more patience before a stream counts as dead, and no result pictures or
-like counts in Sounds from the web. Also whether "Add as sound" keeps the video.
+stations, more patience before a stream counts as dead, and no result pictures in
+Sounds from the web. Also whether "Add as sound" keeps the video.
 
 `current` is what the rest of the app reads (soundboard.ytdl, soundboard.radio,
 ui.ytsearch); the Settings window changes it with change() and the config keeps it
@@ -10,20 +10,41 @@ as `Config.data` (a plain dict, like `radio` and `overlay`).
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from soundboard.i18n import _
+
+
+class _Shown(Mapping):
+    """A table whose labels are translated each time it's read: this module is imported
+    before the language is set, so a plain dict would keep the English."""
+
+    def __init__(self, make: Callable[[], dict]):
+        self._make = make
+
+    def __getitem__(self, key):
+        return self._make()[key]
+
+    def __iter__(self):
+        return iter(self._make())
+
+    def __len__(self):
+        return len(self._make())
+
+
 # "Add as sound" / Play: key -> (label, yt-dlp audio format)
-DOWNLOADS = {
-    "best": ("Best quality", "bestaudio/best"),
+DOWNLOADS = _Shown(lambda: {
+    "best": (_("Best quality"), "bestaudio/best"),
     # YouTube's ~50-70 kbps Opus / 48 kbps AAC: about a third of "best", fine for a pad
-    "small": ("Smaller files", "bestaudio[abr<=80]/worstaudio/bestaudio/best"),
-}
+    "small": (_("Smaller files"), "bestaudio[abr<=80]/worstaudio/bestaudio/best"),
+})
 VIDEO_HEIGHTS = (1080, 720, 480, 360)
 # Radio: the highest station bitrate shown (0 = any). Radio Browser lists most
 # stations at 128 kbps; 64 and under are the "mobile" streams.
-RADIO_KBPS = {0: "Any quality", 128: "Up to 128 kbps", 64: "Up to 64 kbps",
-              32: "Up to 32 kbps"}
+RADIO_KBPS = _Shown(lambda: {0: _("Any quality"), 128: _("Up to 128 kbps"),
+                             64: _("Up to 64 kbps"), 32: _("Up to 32 kbps")})
 LOW_RADIO_KBPS = 64
 GLOBE_LOW = 1000              # stations the map fetches in low data mode (else radio's 3000)
 
@@ -40,7 +61,7 @@ class Prefs:
     video_dir: str = ""           # "" = default_video_dir()
     radio_kbps: int = 0           # a RADIO_KBPS key
     patient: bool = False         # slow connection: wait longer, retry more (radio)
-    web_extras: bool = True       # search result pictures + like / comment counts
+    web_extras: bool = True       # search result pictures
 
     def audio_format(self) -> str:
         return DOWNLOADS.get(self.download, DOWNLOADS["best"])[1]

@@ -2,9 +2,9 @@
 game, a call in another app) and push it into the engine so it goes out through
 the send device like a sound, without touching what any other program plays.
 
-Windows 10 build 20348+ and Windows 11 have this built into WASAPI ("process
-loopback", what Discord's and OBS's application-audio capture use). It is a *copy*
-of the program's audio: the program keeps playing on your speakers as before.
+Windows 11 and Windows 10 version 2004+ (build 19041) have this built into WASAPI
+("process loopback", what Discord's and OBS's application-audio capture use). It is a
+*copy* of the program's audio: the program keeps playing on your speakers as before.
 
 Everything here is ctypes over COM (no extra packages). Nothing in it works
 outside Windows; `supported()` says whether this machine can do it, and a failed
@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from ctypes import (POINTER, Structure, Union, addressof, byref, c_float, c_int, c_int64,
                     c_long, c_ubyte, c_uint, c_ulong, c_ushort, c_void_p, c_wchar_p, cast, sizeof)
 from dataclasses import dataclass, field
@@ -29,11 +30,13 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from soundboard import errors
+from soundboard.i18n import _
 
 log = logging.getLogger(__name__)
 
 SR = 48000            # what the sink gets (the engine's storage rate)
-MIN_BUILD = 20348     # first Windows build with process loopback
+MIN_BUILD = 19041     # Windows 10 2004: process loopback works there (OBS relies on it),
+                      # though Microsoft only documents it from 20348, a Server build
 GAP_S = 0.03          # no packets from the program this long: it's quiet, send silence
 
 S_OK = 0
@@ -100,16 +103,20 @@ if _win:
     _k32le = ctypes.WinDLL("kernel32", use_last_error=True)
     _k32le.OpenProcess.restype = c_void_p
     _k32le.OpenProcess.argtypes = (c_ulong, c_int, c_ulong)
+    _ntdll = windll.ntdll
+    _ntdll.NtQueryInformationProcess.restype = c_long
+    _ntdll.NtQueryInformationProcess.argtypes = (c_void_p, c_int, c_void_p, c_ulong, c_void_p)
 
 
 def supported() -> tuple[bool, str]:
     """(can this machine capture a program's audio, why not)."""
     if not _win:
-        return False, "Capturing a program's audio needs Windows."
+        return False, _("Capturing a program's audio needs Windows.")
     build = sys.getwindowsversion().build
     if build < MIN_BUILD:
-        return False, (f"Capturing a program's audio needs Windows 11 or Windows 10 build "
-                       f"{MIN_BUILD} or newer (this is build {build}).")
+        return False, _("Capturing a program's audio needs Windows 11, or Windows 10 "
+                        "updated to version 2004 or newer (this is build {build}).",
+                        build=build)
     return True, ""
 
 
@@ -403,6 +410,80 @@ def _process_table() -> dict[int, tuple[int, str]]:
     return table
 
 
+class _PBI(Structure):   # PROCESS_BASIC_INFORMATION
+    _fields_ = [("ExitStatus", c_long), ("PebBaseAddress", c_void_p),
+                ("AffinityMask", ctypes.c_size_t), ("BasePriority", c_long),
+                ("UniqueProcessId", ctypes.c_size_t), ("ParentPid", ctypes.c_size_t)]
+
+
+class PidTable:
+    """The _process_table rows a session list needs, (parent pid, exe name), looked up
+    one process at a time as they're asked for. A recording-session list touches a
+    handful of pids (each session's and a few parents), and a full snapshot of every
+    process (~500 on a gaming PC) cost ~20 ms of the ~28 ms the Who's listening poll
+    took every 3 s. A pid that's gone isn't in it, as in a snapshot; one Windows won't
+    let us open (a protected process) makes it take the full snapshot after all, so
+    nothing is ever named differently from before."""
+
+    def __init__(self):
+        self._rows: dict[int, tuple[int, str] | None] = {}
+        self._full: dict[int, tuple[int, str]] | None = None
+        self.snapshots = 0   # full snapshots it had to take (for the tests and benches)
+
+    def _row(self, pid: int) -> tuple[int, str] | None:
+        if self._full is not None:
+            return self._full.get(pid)
+        if pid in self._rows:
+            return self._rows[pid]
+        row = _open_row(pid)
+        if row is _DENIED:
+            self._full = _process_table()
+            self.snapshots += 1
+            return self._full.get(pid)
+        self._rows[pid] = row
+        return row
+
+    def get(self, pid: int, default=None):
+        row = self._row(pid)
+        return default if row is None else row
+
+    def __contains__(self, pid) -> bool:
+        return self._row(pid) is not None
+
+    def __getitem__(self, pid: int) -> tuple[int, str]:
+        row = self._row(pid)
+        if row is None:
+            raise KeyError(pid)
+        return row
+
+
+_DENIED = object()
+
+
+def _open_row(pid: int):
+    """(parent pid, exe name) of one running process, None if there's no such process,
+    _DENIED if Windows won't say."""
+    if pid == 0:
+        return None
+    h = _k32le.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None if ctypes.get_last_error() == 87 else _DENIED   # INVALID_PARAMETER: gone
+    try:
+        code = c_ulong()
+        if _k32.GetExitCodeProcess(h, byref(code)) and code.value != STILL_ACTIVE:
+            return None   # exited, only a handle keeps it (a snapshot wouldn't list it)
+        buf = ctypes.create_unicode_buffer(1024)
+        size = c_ulong(len(buf))
+        pbi, got = _PBI(), c_ulong()
+        if (not _k32.QueryFullProcessImageNameW(h, 0, buf, byref(size))
+                or _ntdll.NtQueryInformationProcess(h, 0, byref(pbi), sizeof(pbi),
+                                                    byref(got)) != 0):
+            return _DENIED
+        return int(pbi.ParentPid), os.path.basename(buf.value).lower()
+    finally:
+        _k32.CloseHandle(h)
+
+
 def running() -> dict[int, str]:
     """pid -> exe name (lower case) of every running process; {} off Windows."""
     return {pid: exe for pid, (_, exe) in _process_table().items()} if _win else {}
@@ -530,15 +611,19 @@ def endpoint_names(kind: str) -> set[str] | None:
             _ole32.CoUninitialize()
 
 
-def list_apps(strict: bool = False) -> list[App]:
+def list_apps(strict: bool = False, alive: dict[int, str] | None = None,
+              meters: dict | None = None) -> list[App]:
     """Every program with a live audio session on any playback device, this
     process excluded and grouped by process tree. Safe from any thread. A failed
-    listing is [] (or raises ComError with `strict`: [] would read as "nothing plays")."""
+    listing is [] (or raises ComError with `strict`: [] would read as "nothing plays").
+    `alive` is filled with every running process (pid -> exe name, lower case) from
+    the process list the listing was made from, as running() would give, without
+    walking every process a second time. `meters`: as in _list_apps."""
     if not _win:
         return []
     own = _co_init()
     try:
-        return _list_apps()
+        return _list_apps(meters, alive=alive, titles=True)
     except ComError:
         if strict:
             raise
@@ -549,15 +634,17 @@ def list_apps(strict: bool = False) -> list[App]:
             _ole32.CoUninitialize()
 
 
-def recording_apps(device: str) -> list[App]:
+def recording_apps(device: str, mine: bool = False) -> list[App]:
     """The programs recording from the recording device named `device` (who listens
-    to the virtual cable's far end: Discord, a game, OBS), this process excluded.
-    Safe from any thread."""
+    to the virtual cable's far end: Discord, a game, OBS), this process excluded
+    unless `mine`. Safe from any thread."""
     if not _win or not device:
         return []
     own = _co_init()
     try:
-        return _list_apps(flow=E_CAPTURE, only=device)
+        # one process at a time (PidTable): only the few recording are looked up
+        return _list_apps(flow=E_CAPTURE, only=device, titles=False, table=PidTable(),
+                          mine=mine)
     except ComError:
         log.debug("listing recording sessions failed", exc_info=True)
         return []
@@ -567,13 +654,21 @@ def recording_apps(device: str) -> list[App]:
 
 
 def _list_apps(meters: dict | None = None, flow: int = E_RENDER,
-               only: str | None = None) -> list[App]:
+               only: str | None = None, alive: dict[int, str] | None = None,
+               titles: bool | None = None, table: PidTable | None = None,
+               mine: bool = False) -> list[App]:
     """With `meters`, also keeps each session's IAudioMeterInformation there
-    (root pid -> [Com]) for the caller to read and release; window titles are skipped.
-    `flow` E_CAPTURE lists recording sessions instead, `only` on one device."""
-    me = os.getpid()
-    table = _process_table()
-    forget_dead_pids(table)
+    (root pid -> [Com]) for the caller to read and release; window titles are then
+    skipped unless `titles`. `flow` E_CAPTURE lists recording sessions instead,
+    `only` on one device. `alive`: see list_apps. `table`: a PidTable instead of a
+    snapshot of every process (not with `alive`, which needs them all). `mine`: this
+    process's own sessions too."""
+    me = 0 if mine else os.getpid()
+    if table is None:
+        table = _process_table()
+        forget_dead_pids(table)
+    if alive is not None:
+        alive.update((pid, exe) for pid, (_, exe) in table.items())
     apps: dict[int, App] = {}
     with _enumerator() as en:
         devices = _render_devices(en, flow)
@@ -606,10 +701,12 @@ def _list_apps(meters: dict | None = None, flow: int = E_RENDER,
     finally:
         for dev in devices:
             dev.release()
-    titles = window_titles() if apps and meters is None else {}
+    if titles is None:
+        titles = meters is None
+    names = window_titles() if apps and titles else {}
     for app in apps.values():
         pids = (app.pid, *sorted(app.session_pids))
-        app.title = next((titles[p] for p in pids if p in titles), "")
+        app.title = next((names[p] for p in pids if p in names), "")
     return sorted(apps.values(), key=lambda a: (not a.active, a.name.lower(), a.pid))
 
 
@@ -656,21 +753,40 @@ def _read_session(c: Com, dname: str, me: int, table, apps: dict[int, App],
             pass
 
 
+Listed = Callable[[list[App] | None, dict[int, str] | None], None]
+
+
 class PeakWatcher:
     """Live levels of every program, from Windows' own session meters, read
     ~20 times a second on a worker thread (`list_apps` is too slow to re-run that
     often: it walks processes and windows). The sessions are re-found every
-    `rescan` seconds. `peak(pid)` takes the root pid, as in `App.pid`."""
+    `rescan` seconds, or sooner when list_for() asks for the whole listing.
+    `peak(pid)` takes the root pid, as in `App.pid`."""
 
     def __init__(self, interval: float = 0.05, rescan: float = 1.5):
         self.interval, self.rescan = interval, rescan
         self._peaks: dict[int, float] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._asks: list[Listed] = []        # list_for() callers waiting for a rescan
+        self._asks_lock = threading.Lock()
 
     def peak(self, pid: int) -> float | None:
         """0..1, or None if the program has no session the watcher knows of yet."""
         return self._peaks.get(pid)
+
+    def list_for(self, done: Listed) -> bool:
+        """The Apps tab's list of programs, made by the watcher's next rescan (within
+        `interval`): done(apps, alive) is called on the watcher's thread with what
+        list_apps(alive=...) gives, apps None if it failed. The tab used to list the
+        programs, walk every process again (running()) and have this watcher find the
+        same sessions on its own: three walks every 1.5 s, now one.
+        False while the watcher isn't running: list them yourself."""
+        with self._asks_lock:
+            if self._thread is None or self._stop.is_set():
+                return False
+            self._asks.append(done)
+        return True
 
     def start(self):
         if not _win or (self._thread and self._thread.is_alive()):
@@ -681,9 +797,18 @@ class PeakWatcher:
         self._thread.start()
 
     def stop(self):
-        self._stop.set()
-        self._thread = None
+        with self._asks_lock:
+            self._stop.set()
+            self._thread = None
         self._peaks = {}
+
+    def _take_asks(self) -> list[Listed]:
+        with self._asks_lock:
+            return self._take_asks_locked()
+
+    def _take_asks_locked(self) -> list[Listed]:
+        asks, self._asks = self._asks, []
+        return asks
 
     def _run(self, stop: threading.Event):
         meters: dict[int, list[Com]] = {}
@@ -692,14 +817,23 @@ class PeakWatcher:
             next_scan = 0.0
             peak = c_float()
             while not stop.is_set():
-                if time.monotonic() >= next_scan:
+                asks = self._take_asks()
+                if asks or time.monotonic() >= next_scan:
                     _release_meters(meters)
                     meters = {}
+                    apps = alive = None
                     try:
-                        _list_apps(meters)
+                        if asks:   # the whole listing, window titles and all
+                            alive = {}
+                            apps = list_apps(strict=True, alive=alive, meters=meters)
+                        else:
+                            _list_apps(meters)
                     except ComError:
                         log.debug("finding session meters failed", exc_info=True)
-                    next_scan = time.monotonic() + self.rescan
+                    finally:
+                        _answer(asks, apps, alive)   # (None on any failure)
+                    # asked every 1.5 s while the Apps tab shows: no rescans of its own
+                    next_scan = time.monotonic() + self.rescan * (2 if asks else 1)
                 old, peaks = self._peaks, {}
                 for pid, ms in meters.items():
                     v = 0.0
@@ -717,8 +851,20 @@ class PeakWatcher:
             log.exception("program level watcher failed")
         finally:
             _release_meters(meters)
+            with self._asks_lock:
+                stop.set()   # this run takes no more asks: list_for says so from now on
+                asks = self._take_asks_locked()
+            _answer(asks, None, None)   # never leave the tab waiting for a list
             if own:
                 _ole32.CoUninitialize()
+
+
+def _answer(asks: list[Listed], apps: list[App] | None, alive: dict[int, str] | None):
+    for done in asks:
+        try:
+            done(apps, alive)
+        except Exception:  # noqa: BLE001 - one caller's bug mustn't stop the levels
+            log.exception("handing over the program list failed")
 
 
 def _release_meters(meters: dict):
@@ -875,7 +1021,7 @@ class AppCapture:
             self.error = supported()[1]
             return False
         if not is_running(self.pid):   # Windows would happily "capture" a pid that's gone
-            self.error = "That program isn't running any more."
+            self.error = _("That program isn't running any more.")
             self.ended = True
             return False
         self._started = process_started(self.pid)
@@ -883,7 +1029,7 @@ class AppCapture:
         if not wait:
             return True
         if not self._ready.wait(timeout):
-            self.error = "Windows didn't answer in time. Switch Send on to try again."
+            self.error = _("Windows didn't answer in time. Switch Send on to try again.")
             self._stop.set()
             return False
         return self.error is None
@@ -956,7 +1102,7 @@ class AppCapture:
         try:
             if not handler.done.wait(5.0):
                 handler.abandon()   # it stays alive in _Handler._live for a late callback
-                raise TimeoutError("Windows didn't answer the capture request.")
+                raise TimeoutError(_("Windows didn't answer the capture request."))
         finally:
             Com(op.value).release()
         if handler.hr < 0:
@@ -1013,7 +1159,8 @@ class AppCapture:
             from soundboard import applog
             applog.report(where=f"sending {self.name}'s audio")
             # surfaces on the Apps tab, which stops the capture and shows this
-            self.error = "Sending this program's sound failed. Switch Send on to try again."
+            self.error = _("Sending this program's sound failed. "
+                           "Switch Send on to try again.")
             return False
 
     def _loop(self, cap: Com, fmt: WAVEFORMATEX, is_float: bool, evt):
@@ -1062,20 +1209,21 @@ class AppCapture:
 
 def _explain(e: ComError) -> str:
     if e.hr == AUDCLNT_E_DEVICE_INVALIDATED & 0xFFFFFFFF:
-        return "The program's audio device went away. Switch Send on to try again."
+        return _("The program's audio device went away. Switch Send on to try again.")
     if e.hr == 0x88890008:
-        return ("Windows won't hand this program's audio over in a format we can use. "
-                "Try switching the program to another output device.")
+        return _("Windows won't hand this program's audio over in a format we can use. "
+                 "Try switching the program to another output device.")
     if e.hr == 0x80070057 or e.hr == 0x88890001:   # E_INVALIDARG / NOT_INITIALIZED
-        return ("Windows refused to capture this program. Check it's still running, "
-                "then switch Send on again.")
+        return _("Windows refused to capture this program. Check it's still running, "
+                 "then switch Send on again.")
     if e.hr in (0x80070005, 0x88890010):   # E_ACCESSDENIED / AUDCLNT_E_DEVICE_IN_USE
-        return ("Windows won't let this app capture that program's audio. If the program "
-                "runs as administrator, run this app as administrator too.")
+        return _("Windows won't let this app capture that program's audio. If the program "
+                 "runs as administrator, run this app as administrator too.")
     ok, why = supported()
     if not ok:
         return why
-    return f"Windows couldn't start the capture ({errors.plain(e)}). Switch Send on to try again."
+    return _("Windows couldn't start the capture ({error}). Switch Send on to try again.",
+             error=errors.plain(e))
 
 
 if not _win:   # Linux: PipeWire's stream nodes, recorded with pw-record

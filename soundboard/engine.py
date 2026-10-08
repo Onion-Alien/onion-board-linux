@@ -29,8 +29,11 @@ Per-sound effects are baked in ahead of time instead (soundboard.soundfx).
 from __future__ import annotations
 
 import logging
+import queue
 import threading
+import functools
 import time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -38,12 +41,13 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
-from soundboard import destination, directmic, livefx, mapped
+from soundboard import destination, directmic, livefx, mapped, sharestore
 from soundboard.dsp import hermite
 from soundboard.eq import EQ
 from soundboard.sendfx import Ducker, Limiter, SafetyLimiter, SmartMono
 from soundboard.voicefx.builtin import PitchShift
 from soundboard import errors
+from soundboard.i18n import _
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +61,7 @@ RETRY_S = 5.0   # how often to retry a device that failed to open
 # 22 ms with ~10 ms to spare per block; asking for a number buys real room.
 BUFFER = {"low": "low", "high": 0.04}
 I16_SCALE = np.float32(1 / 32767.0)   # int16 sound data -> float
-CACHE_BUDGET = 512 << 20               # bytes of resampled copies kept for non-48 kHz devices
+CACHE_BUDGET = 192 << 20               # bytes of resampled copies kept for non-48 kHz devices
 # the app's own playback: the test recording, cue beeps, the setup wizard's tune. With
 # previews ("<sid>:preview", "<sid>~fx:preview") they ignore the live speed / pitch
 FIXED_SIDS = frozenset({"__test__", "__cue__", "__setup__", "__check__"})
@@ -69,6 +73,88 @@ def is_fixed(sid: str) -> bool:
 
 
 # --------------------------------------------------------------------------- devices
+
+# Held while streams are opened or closed and while PortAudio is re-scanned (torn down
+# and started again), which happen on the device thread (DeviceWorker). The device
+# lists below never wait for it: during a re-scan PortAudio's list is being freed, so
+# they answer from the last list they read instead.
+DEVICES = threading.RLock()
+_seen: dict = {}   # the last answers of list_devices / default_device_name
+
+
+class DeviceWorker:
+    """The one thread that does slow device work: closing, opening and re-scanning
+    streams, asking Windows for its devices. A driver can take seconds to answer when
+    a headset is unplugged, Bluetooth drops or the PC wakes from sleep, and on the UI
+    thread that froze the window. Here it only holds up this thread.
+
+    One recovery at a time: claim() first (False: one is running, try again on the
+    next check), then run() its steps; whoever claimed calls release() when the last
+    step is done. A step that hangs keeps the claim, so nothing piles up behind it."""
+
+    IDLE_S = 30.0   # the thread ends after this long without work (a new one starts)
+
+    def __init__(self, name: str = "devices"):
+        self.name = name
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._idle = threading.Event()
+        self._idle.set()
+
+    @property
+    def busy(self) -> bool:
+        return not self._idle.is_set()
+
+    def claim(self) -> bool:
+        with self._lock:
+            if not self._idle.is_set():
+                return False
+            self._idle.clear()
+            return True
+
+    def release(self):
+        self._idle.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Until nothing is claimed (tests, and quitting). False: still busy."""
+        return self._idle.wait(timeout)
+
+    def run(self, fn, done=None):
+        """Call fn() on the device thread, then done(its result) there too (None if it
+        raised). The caller holds the claim."""
+        with self._lock:
+            self._q.put((fn, done))
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._loop, daemon=True, name=self.name)
+                self._thread.start()
+
+    def _loop(self):
+        while True:
+            try:
+                fn, done = self._q.get(timeout=self.IDLE_S)
+            except queue.Empty:
+                with self._lock:
+                    if self._q.empty():
+                        self._thread = None
+                        return
+                continue
+            t0 = time.monotonic()
+            result = None
+            try:
+                result = fn()
+            except Exception:  # noqa: BLE001 - the next recovery must still be able to run
+                log.exception("device work failed")
+            took = time.monotonic() - t0
+            if took > 2:
+                log.warning("device work took %.1fs (a slow driver)", took)
+            if done is not None:
+                try:
+                    done(result)
+                except Exception:  # noqa: BLE001
+                    log.exception("device work's hand-back failed")
+                    self.release()
+
 
 def _wasapi_index() -> int | None:
     for i, api in enumerate(sd.query_hostapis()):
@@ -82,44 +168,65 @@ def rescan() -> bool:
 
     sounddevice has no public API for this; _terminate/_initialize are what its own
     tests use. If a future version drops them, the app keeps its current device list."""
-    try:
-        sd._terminate()
-        sd._initialize()
-        return True
-    except Exception:  # noqa: BLE001
-        log.exception("device rescan failed")
+    with DEVICES:
         try:
+            sd._terminate()
             sd._initialize()
+            return True
         except Exception:  # noqa: BLE001
-            pass
-        return False
+            log.exception("device rescan failed")
+            try:
+                sd._initialize()
+            except Exception:  # noqa: BLE001
+                pass
+            return False
 
 
 def list_devices(kind: str) -> list[dict]:
     """WASAPI devices of kind 'input' or 'output' as [{index, name}]."""
-    api = _wasapi_index()
-    key = "max_input_channels" if kind == "input" else "max_output_channels"
-    out = []
-    for i, d in enumerate(sd.query_devices()):
-        if (api is None or d["hostapi"] == api) and d[key] > 0:
-            out.append({"index": i, "name": d["name"]})
-    return out
+    if not DEVICES.acquire(blocking=False):   # being re-scanned: the last list
+        return list(_seen.get(kind, ()))
+    try:
+        api = _wasapi_index()
+        key = "max_input_channels" if kind == "input" else "max_output_channels"
+        out = []
+        for i, d in enumerate(sd.query_devices()):
+            if (api is None or d["hostapi"] == api) and d[key] > 0:
+                out.append({"index": i, "name": d["name"]})
+        _seen[kind] = out
+        return out
+    finally:
+        DEVICES.release()
 
 
 def default_device_name(kind: str) -> str | None:
-    api = _wasapi_index()
-    if api is None:
-        return None
-    info = sd.query_hostapis(api)
-    idx = info["default_input_device" if kind == "input" else "default_output_device"]
-    if idx is None or idx < 0:
-        return None
-    return sd.query_devices(idx)["name"]
+    if not DEVICES.acquire(blocking=False):
+        return _seen.get(("default", kind))
+    try:
+        api = _wasapi_index()
+        if api is None:
+            return None
+        info = sd.query_hostapis(api)
+        idx = info["default_input_device" if kind == "input" else "default_output_device"]
+        name = None if idx is None or idx < 0 else sd.query_devices(idx)["name"]
+        _seen[("default", kind)] = name
+        return name
+    finally:
+        DEVICES.release()
 
 
 def list_name(index: int) -> str:
     """A device's name as the device lists show it."""
-    return sd.query_devices(index)["name"]
+    if not DEVICES.acquire(blocking=False):
+        for kind in ("output", "input"):
+            for d in _seen.get(kind, ()):
+                if d["index"] == index:
+                    return d["name"]
+        raise LookupError(index)
+    try:
+        return sd.query_devices(index)["name"]
+    finally:
+        DEVICES.release()
 
 
 def find_device(kind: str, name: str | None) -> int | None:
@@ -510,7 +617,14 @@ class DirectFifo:
     Writer and reader run on the same clock (the mic's) one right after the other, so
     unlike Ring there's no cushion: a read takes what's there. Short (a resampler's
     start-up delay), it's padded once with silence at the front; then every read finds
-    what it needs. A pile-up beyond MAX_S (a stall) is dropped down to one read."""
+    what it needs.
+
+    One write can be many reads long: when the board's thread wakes late it takes all
+    the mic that came in meanwhile (40 ms, 100 ms...) and renders the same stretch in
+    10 ms reads. That's all audio still to be sent, never a pile-up; dropping it there
+    cut 20-40 ms holes out of the voice whenever the PC was busy. Only what's left over
+    from earlier writes and never read (a stall) is stale: over MAX_S, it's dropped when
+    the next write comes in."""
 
     MAX_S = 0.03
 
@@ -523,16 +637,17 @@ class DirectFifo:
         self.parts, self.count = [], 0
 
     def write(self, x: np.ndarray):
-        if len(x):
-            self.parts.append(x)
-            self.count += len(x)
+        if not len(x):
+            return
+        if self.count > self.MAX_S * self.rate:   # a stall's leftovers: too late to send
+            self.clear()
+        self.parts.append(x)
+        self.count += len(x)
 
     def read(self, n: int) -> np.ndarray | None:
         if not self.count:
             return None
         buf = self.parts[0] if len(self.parts) == 1 else np.concatenate(self.parts)
-        if len(buf) > n + self.MAX_S * self.rate:
-            buf = buf[-n:]
         if len(buf) >= n:
             out, rest = buf[:n], buf[n:]
         else:
@@ -553,7 +668,7 @@ class CableTap:
     def __init__(self, name: str, latency="low"):
         idx = find_device("output", name)
         if idx is None:
-            raise RuntimeError(f"device not found: {name}")
+            raise RuntimeError(_("device not found: {device}", device=name))
         self.name = name
         self.rate = int(sd.query_devices(idx)["default_samplerate"])
         self.ring = Ring(self.rate, prefill_s=0.03, max_s=0.2, auto_drift=True)
@@ -587,11 +702,22 @@ class StreamResampler:
 
     def __init__(self, src: int, dst: int):
         self.same = src == dst
+        self.src, self.dst = src, dst
         self.rs = None if self.same else soxr.ResampleStream(src, dst, CH, dtype="float32",
                                                               quality="HQ")
+        self.fed = self.made = 0   # frames in (at src) and out (at dst) so far
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
-        return x if self.same else self.rs.resample_chunk(x)
+        if self.same:
+            return x
+        y = self.rs.resample_chunk(x)
+        self.fed += len(x)
+        self.made += len(y)
+        return y
+
+    def held(self) -> float:
+        """Frames (at dst) it has taken in but not given out yet: its delay."""
+        return 0.0 if self.same else max(0.0, self.fed * self.dst / self.src - self.made)
 
 
 def soft_limit(x: np.ndarray, knee: float = 0.89) -> np.ndarray:
@@ -624,6 +750,14 @@ def is_xrun(status) -> bool:
                 or status.input_underflow or status.input_overflow)
 
 
+def _add(acc: np.ndarray | None, x: np.ndarray) -> np.ndarray:
+    """acc + x, starting a new sum (a copy: x may be a ring's buffer) when acc is None."""
+    if acc is None:
+        return np.array(x, dtype=np.float32)
+    acc += x
+    return acc
+
+
 class LivePitch:
     """Stereo real-time pitch shifter (a voicefx PitchShift on both channels at once,
     spliced at the same places: see its `channels`). Keeps its recent input while
@@ -640,6 +774,11 @@ class LivePitch:
             self._st = semitones   # set directly: past the voice changer's ±12 limit
             self.shift.p = {"semitones": float(semitones), "mix": 1.0}
         return self.shift.run(x, self.rate)
+
+    def skip_silence(self, n: int):
+        """What n frames of silence at 0 st would have done (only kept as history)."""
+        h = self.shift.hist
+        self.shift._remember(np.zeros((min(n, len(h)), CH), np.float32))
 
 
 # --------------------------------------------------------------------------- voices
@@ -825,6 +964,16 @@ class Voice:
 
 # --------------------------------------------------------------------------- engine
 
+def _holding_devices(fn):
+    """Engine methods that open or close streams hold DEVICES: the device thread and
+    the UI thread (a device picked by hand) never do it at the same time."""
+    @functools.wraps(fn)
+    def run(*a, **k):
+        with DEVICES:
+            return fn(*a, **k)
+    return run
+
+
 class Engine:
     def __init__(self):
         # `voices` is an immutable tuple that is *replaced* (never mutated) under
@@ -833,14 +982,21 @@ class Engine:
         # audio thread stalls while a lower-priority thread holds the lock).
         self.lock = threading.Lock()
         self.voices: tuple[Voice, ...] = ()
-        # (sid, rate) -> (source array, resampled copy); LRU, bounded by CACHE_BUDGET
-        self._cache: OrderedDict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        # (sid, rate) -> (weak ref to the source array, resampled copy); LRU, bounded by
+        # CACHE_BUDGET. The source is held weakly, here and in _shares: the library keeps
+        # its sounds alive, while a preview's or a link's audio is only held by its voice
+        # and must be freed when that ends (an effects preview of a song is ~70 MB)
+        self._cache: OrderedDict[tuple[str, int], tuple[weakref.ref, np.ndarray]] = OrderedDict()
         self._cache_bytes = 0
         self._cache_lock = threading.Lock()
         self._resampling: set[tuple[str, int]] = set()   # cache keys being made on a thread
         # sid -> (source array, src rate, destination.cut_shares): worked out once per
         # sound (at load, by prepare), not on every press
-        self._shares: dict[str, tuple[np.ndarray, int, dict]] = {}
+        self._shares: dict[str, tuple[weakref.ref, int, dict]] = {}
+        # a source array died: its entries get dropped on the next _sweep. The weakref
+        # callback only appends here: it can fire on any thread, even one holding
+        # _cache_lock, so it mustn't take a lock itself
+        self._dead: list[None] = []
         # sid -> times forget() was called: a prepare still running when its sound is
         # removed mustn't put the audio back afterwards (it'd hold a mapped cache file
         # open, so the file couldn't be deleted until the app closed)
@@ -883,13 +1039,21 @@ class Engine:
         self.limiter_on = True    # hold the send device's peaks at sendfx.CEILING_DB
         self._send: dict[tuple[str, str], object] = {}   # (out, kind) -> its sendfx stage
         self._quiet: dict[str, int] = {}   # out -> frames of silence on its sounds bus
+        self._idle_n: dict[str, int] = {}  # out -> frames its sounds bus skipped (_bus_idle)
         self._glides: dict = {}   # (out, what) -> the volume its last block ended at (_vol)
         self.sound_speed = 1.0        # live playback speed of every sound (0.25..4)
         self.sound_pitch = 0.0        # live pitch of every sound, semitones
         self.sound_keep_pitch = True  # speed changes leave the pitch alone
         self.sound_fx: dict = {}      # live effects on every sound (livefx), {} = none
         self._spitch: dict[str, LivePitch] = {}
-        self._sfx: dict[str, livefx.LiveFx] = {}
+        self._sfx: dict = {}          # out or (out, bus) -> livefx.LiveFx
+        # the same live pitch / effects on the radio and on the Apps tab's programs
+        # (one setting for all of them): no speed, they're live streams
+        self.radio_pitch = 0.0
+        self.radio_fx: dict = {}
+        self.apps_pitch = 0.0
+        self.apps_fx: dict = {}
+        self._lpitch: dict[tuple[str, str], LivePitch] = {}
 
         self.main_stream = self.mon_stream = self.mic_stream = self.obs_stream = None
         # "straight into my mic" (soundboard.directmic): what others hear goes into the
@@ -901,10 +1065,24 @@ class Engine:
         self.fifo_direct = DirectFifo()
         # ...and the cable gets the same, for a voice app still set to it (CableTap)
         self.tap: CableTap | None = None
+        # Setup -> Devices -> Also send to: a copy of what others hear into each of these
+        # (set_copy_devices). A new tuple each change: the audio thread reads it once.
+        self.copies: tuple[CableTap, ...] = ()
+        self.copy_names: tuple[str, ...] = ()
+        self._copy_try: dict[str, float] = {}
         self.tap_name: str | None = None
         self._tap_try = 0.0
+        # cable / copy devices already logged as failing to open: retried every RETRY_S,
+        # but warned about once until they open again (a log line every 5 s, on the UI
+        # thread, for hours while a cable is missing)
+        self._open_warned: set[str] = set()
         self.rates = {"main": SR, "mon": SR, "mic": SR, "obs": SR}
         self.errors: dict[str, str] = {}
+        # the watchdog's reopens run here (check_streams), and so do the window's
+        # re-scans: one at a time, never on the UI thread
+        self.devices = DeviceWorker()
+        self._touched: list[str] = []   # keys the device thread's last reopens touched
+        self._touched_lock = threading.Lock()
 
         # the mic's clock is its own device's: drift tracking switches itself on if it
         # turns out to wander from the output's (see Ring.auto_drift)
@@ -949,6 +1127,14 @@ class Engine:
         self._mon_fed = False        # the mic wrote to ring_mon last block (mic check)
         self._obs_fed = False        # ...and to ring_obs (your voice on the stream output)
         self._mic_rec: list[np.ndarray] | None = None          # mic during a test (see _mic)
+        # Record a sound: the mic's blocks while set to a list (start_mic_take); the UI
+        # thread moves them to disk as they come. Separate from the test's _mic_rec
+        self._take: list[np.ndarray] | None = None
+        self._take_fx = False        # the take is the mic after the voice changer
+        # Record a sound from what's playing: the sounds bus plus the radio, before your
+        # mic is added, at the main output's rate (start_play_take)
+        self._play_take: list[np.ndarray] | None = None
+        self.play_take_out = "main"   # ...taken from this output ("mon": no send device)
         # a copy of every block sent to the send device while set to a list (the voice chat
         # check compares it with what Discord plays back); None = off
         self.main_tap: list[np.ndarray] | None = None
@@ -963,11 +1149,11 @@ class Engine:
             return self._open_direct(callback)
         idx = find_device("output", name)
         if idx is None:
-            raise RuntimeError(f"device not found: {name}")
+            raise RuntimeError(_("device not found: {device}", device=name))
         rate = self._native_rate(idx)
         chans = min(CH, sd.query_devices(idx)["max_output_channels"])
         if chans < CH:
-            raise RuntimeError("mono output devices aren't supported")
+            raise RuntimeError(_("mono output devices aren't supported"))
         s = sd.OutputStream(device=idx, samplerate=rate, channels=CH, dtype="float32",
                             latency=BUFFER.get(self.latency, "low"), callback=callback)
         self._last_cb[key] = time.monotonic()
@@ -993,9 +1179,10 @@ class Engine:
         """What others hear -> straight into the real mic (soundboard.directmic)."""
         try:
             s = directmic.DirectMicStream(callback, mic_callback=self._mic_direct,
-                                          mode=self.direct_mode, lead_s=self.direct_lead_s)
+                                          mode=self.direct_mode, lead_s=self.direct_lead_s,
+                                          voice_delay=self._direct_voice_delay)
         except FileNotFoundError:
-            raise RuntimeError("Onion Board isn't attached to your mic yet") from None
+            raise RuntimeError(_("Onion Board isn't attached to your mic yet")) from None
         self.fifo_direct.clear()
         self._last_cb["main"] = time.monotonic()
         s.start()
@@ -1010,11 +1197,23 @@ class Engine:
         log.info("opened main output: straight into the mic")
         return s
 
+    def _direct_voice_delay(self) -> float:
+        """Frames (at the send rate) the newest frame of the send mix is behind the newest
+        clean mic, in your voice: what the resampler holds back, what waits in the fifo,
+        the limiter's lookahead. (The mic effect fills in for a late block with the mic
+        from the same moment; a voice changer's own delay doesn't count: the effect
+        doesn't fill in with your real voice then, see _direct_mic_gain.)"""
+        d = self._rs_main.held() + self.fifo_direct.count
+        if self.limiter_on:
+            d += self._stage("main", Limiter).la
+        return d
+
     def effect_alive(self) -> bool:
         """The mic effect is running: a program is recording the mic it's on."""
         s = self.main_stream
         return isinstance(s, directmic.DirectMicStream) and s.effect_alive()
 
+    @_holding_devices
     def set_tap_device(self, name: str | None):
         """Also play what others hear into `name` (the virtual cable) while it goes
         straight into the mic; None = don't."""
@@ -1026,21 +1225,91 @@ class Engine:
         if name:
             try:
                 self.tap = CableTap(name, BUFFER.get(self.latency, "low"))
-                log.info("also sending into %s", name)
             except Exception as e:  # noqa: BLE001 - the mic still works; retried
-                log.warning("can't also send into %s: %s", name, e)
+                self._open_failed(name, e)
+            else:
+                self._opened(name)
 
+    @_holding_devices
+    def set_copy_devices(self, names):
+        """Also play what others hear into each of `names` (Setup -> Devices -> Also send
+        to: Voicemeeter, OBS, a second cable...). Ones already open stay open; one that
+        won't open is retried by check_streams."""
+        names = tuple(dict.fromkeys(n for n in names if n))
+        keep = {t.name: t for t in self.copies if t.name in names}
+        old, self.copies = self.copies, tuple(keep.values())
+        self.copy_names = names
+        for t in old:
+            if t.name not in keep:
+                t.close()
+        for n in names:
+            if n not in keep:
+                self._open_copy(n)
+
+    def _open_copy(self, name: str):
+        self._copy_try[name] = time.monotonic()
+        try:
+            t = CableTap(name, BUFFER.get(self.latency, "low"))
+        except Exception as e:  # noqa: BLE001 - the rest still works; retried
+            self._open_failed(name, e)
+            return
+        self._opened(name)
+        self.copies = (*self.copies, t)
+
+    def _open_failed(self, name: str, e: Exception):
+        self._warn_open(f"copy:{name}", "can't also send into %s: %s", name, e)
+
+    def _opened(self, name: str):
+        self._open_warned.discard(f"copy:{name}")
+        log.info("also sending into %s", name)
+
+    def _warn_open(self, tag: str, msg: str, *args):
+        """A device that won't open: a warning the first time, then debug lines while
+        it's retried every RETRY_S, until it opens (the setter discards `tag`)."""
+        if tag in self._open_warned:
+            log.debug("still: " + msg, *args)
+        else:
+            self._open_warned.add(tag)
+            log.warning(msg + " (trying again every %.0f s)", *args, RETRY_S)
+
+    def copies_down(self) -> list[str]:
+        """The "Also send to" devices that aren't open (unplugged, or busy)."""
+        up = {t.name for t in self.copies}
+        return [n for n in self.copy_names if n not in up]
+
+    def _copies_due(self, now: float) -> bool:
+        return (any(now - t.last_cb > STALL_S for t in self.copies)
+                or any(now - self._copy_try.get(n, 0.0) >= RETRY_S for n in self.copies_down()))
+
+    @_holding_devices
+    def _check_copies(self, now: float):
+        """The "Also send to" copies' watchdog (see check_streams)."""
+        for t in self.copies:
+            if now - t.last_cb > STALL_S:
+                log.warning("copy to %s stalled; reopening", t.name)
+                self.copies = tuple(c for c in self.copies if c is not t)
+                t.close()
+                self._open_copy(t.name)
+        for n in self.copies_down():
+            if now - self._copy_try.get(n, 0.0) >= RETRY_S:
+                self._open_copy(n)
+
+    def _tap_due(self, now: float) -> bool:
+        tap = self.tap
+        if not self.tap_name:
+            return False
+        if tap is None:
+            return now - self._tap_try >= RETRY_S
+        return now - tap.last_cb > STALL_S
+
+    @_holding_devices
     def _check_tap(self, now: float):
         """The cable tap's own watchdog (see check_streams)."""
-        name = self.tap_name
-        if not name:
+        if not self._tap_due(now):
             return
-        if self.tap is None:
-            if now - self._tap_try >= RETRY_S:
-                self.set_tap_device(name)
-        elif now - self.tap.last_cb > STALL_S:
-            log.warning("cable tap stalled; reopening %s", name)
-            self.set_tap_device(name)
+        if self.tap is not None:
+            log.warning("cable tap stalled; reopening %s", self.tap_name)
+        self.set_tap_device(self.tap_name)
 
     def direct_apps(self) -> int:
         """Apps whose mic stream carries the board right now (its own one too)."""
@@ -1099,6 +1368,7 @@ class Engine:
         # new stream is logged and reported again (cb_errors stays a running total)
         self._cb_err_base[key] = self.cb_errors[key]
 
+    @_holding_devices
     def set_main_device(self, name: str | None):
         self._close("main_stream")
         self.errors.pop("main", None)
@@ -1109,9 +1379,12 @@ class Engine:
             try:
                 self.main_stream = self._open_out("main", name, self._cb_main)
             except Exception as e:  # noqa: BLE001
-                log.warning("can't open main output %r: %s", name, e)
+                self._warn_open(f"main:{name}", "can't open main output %r: %s", name, e)
                 self.errors["main"] = errors.plain(e)
+            else:
+                self._open_warned.discard(f"main:{name}")
 
+    @_holding_devices
     def set_mon_device(self, name: str | None):
         self._close("mon_stream")
         self.errors.pop("mon", None)
@@ -1121,9 +1394,12 @@ class Engine:
             try:
                 self.mon_stream = self._open_out("mon", name, self._cb_mon)
             except Exception as e:  # noqa: BLE001
-                log.warning("can't open headphone output %r: %s", name, e)
+                self._warn_open(f"mon:{name}", "can't open headphone output %r: %s", name, e)
                 self.errors["mon"] = errors.plain(e)
+            else:
+                self._open_warned.discard(f"mon:{name}")
 
+    @_holding_devices
     def set_obs_device(self, name: str | None):
         """The stream output: a device OBS captures (None = off)."""
         self._close("obs_stream")
@@ -1134,9 +1410,12 @@ class Engine:
             try:
                 self.obs_stream = self._open_out("obs", name, self._cb_obs)
             except Exception as e:  # noqa: BLE001
-                log.warning("can't open stream output %r: %s", name, e)
+                self._warn_open(f"obs:{name}", "can't open stream output %r: %s", name, e)
                 self.errors["obs"] = errors.plain(e)
+            else:
+                self._open_warned.discard(f"obs:{name}")
 
+    @_holding_devices
     def set_mic_device(self, name: str | None):
         self._close("mic_stream")
         self.errors.pop("mic", None)
@@ -1148,7 +1427,7 @@ class Engine:
             s = None
             try:
                 if idx is None:
-                    raise RuntimeError(f"device not found: {name}")
+                    raise RuntimeError(_("device not found: {device}", device=name))
                 rate = self._native_rate(idx)
                 chans = min(2, sd.query_devices(idx)["max_input_channels"])
                 s = sd.InputStream(device=idx, samplerate=rate, channels=chans, dtype="float32",
@@ -1163,9 +1442,10 @@ class Engine:
                 s.start()
                 self._stream_opened("mic")
                 self.mic_stream = s
+                self._open_warned.discard(f"mic:{name}")
                 log.info("opened mic: %s @ %d Hz, %d ch", name, rate, chans)
             except Exception as e:  # noqa: BLE001
-                log.warning("can't open mic %r: %s", name, e)
+                self._warn_open(f"mic:{name}", "can't open mic %r: %s", name, e)
                 self.errors["mic"] = errors.plain(e)
                 if s is not None:
                     self._close_quietly(s, "mic")
@@ -1173,49 +1453,82 @@ class Engine:
                     self.rates["mic"] = old_rate
                     self._reconfigure_mic_resamplers()
 
+    @_holding_devices
     def reopen_all(self):
         """Close and reopen every stream with the same devices (after a latency change)."""
         self.set_mic_device(self.names["mic"])
         self.set_main_device(self.names["main"])
         self.set_tap_device(self.tap_name)
+        copies = self.copy_names
+        self.set_copy_devices(())
+        self.set_copy_devices(copies)
         self.set_mon_device(self.names["mon"])
         self.set_obs_device(self.names["obs"])
+
+    KEYS = ("main", "mon", "mic", "obs")
+
+    def _key_due(self, key: str, now: float) -> str | None:
+        """'retry' (didn't open, and RETRY_S is up), 'stall' (its callback stopped) or
+        None, for stream `key`."""
+        if not self.names[key]:
+            return None
+        if getattr(self, f"{key}_stream") is None:
+            return "retry" if now - self._last_try[key] >= RETRY_S else None
+        return "stall" if now - self._last_cb[key] > STALL_S else None
 
     def check_streams(self) -> list[str]:
         """Watchdog (call about once a second from the UI thread).
 
         A stream whose callback has stopped being called (headset unplugged, Windows
         changed its sample rate, PC came back from sleep) is closed and reopened. A
-        device that failed to open is retried every RETRY_S. Returns the keys that
-        were touched (reopened, came back, or whose callback raised since the last
-        check), so the UI can refresh its status from errors_snapshot()."""
+        device that failed to open is retried every RETRY_S. Both happen on the device
+        thread (self.devices: closing a dead device's stream or opening a missing one
+        can take the driver seconds), one check at a time. Returns the keys that were
+        touched (reopened or came back since the last check, or whose callback raised),
+        so the UI can refresh its status from errors_snapshot()."""
         now = time.monotonic()
-        touched = []
-        self._check_tap(now)
-        for key, attr, setter in (("main", "main_stream", self.set_main_device),
-                                  ("mon", "mon_stream", self.set_mon_device),
-                                  ("mic", "mic_stream", self.set_mic_device),
-                                  ("obs", "obs_stream", self.set_obs_device)):
+        with self._touched_lock:
+            touched, self._touched = self._touched, []
+        for key in self.KEYS:
             n_err = self.cb_errors[key]
             if n_err != self._cb_err_seen[key]:
                 self._cb_err_seen[key] = n_err
                 touched.append(key)
-            name = self.names[key]
-            if not name:
+        due = (self._tap_due(now) or self._copies_due(now)
+               or any(self._key_due(k, now) for k in self.KEYS))
+        if due and self.devices.claim():
+            self.devices.run(lambda: self._watch(time.monotonic()), self._watched)
+        return list(dict.fromkeys(touched))
+
+    def _watched(self, keys: list[str] | None):
+        with self._touched_lock:
+            self._touched += keys or []
+        self.devices.release()
+
+    @_holding_devices
+    def _watch(self, now: float) -> list[str]:
+        """check_streams' reopens, on the device thread. Returns the keys touched."""
+        touched = []
+        self._check_tap(now)
+        self._check_copies(now)
+        for key in self.KEYS:
+            why = self._key_due(key, now)
+            if why is None:
                 continue
-            if getattr(self, attr) is None:
-                if now - self._last_try[key] >= RETRY_S:
-                    setter(name)
-                    if key not in self.errors:
-                        log.info("%s device came back: %s", key, name)
-                        touched.append(key)
-            elif now - self._last_cb[key] > STALL_S:
+            name = self.names[key]
+            setter = getattr(self, f"set_{key}_device")
+            if why == "stall":
                 log.warning("%s stream stalled (%.1fs without a callback); reopening %s",
                             key, now - self._last_cb[key], name)
                 self.stalls += 1
                 setter(name)
                 touched.append(key)
-        return list(dict.fromkeys(touched))
+            else:
+                setter(name)
+                if key not in self.errors:
+                    log.info("%s device came back: %s", key, name)
+                    touched.append(key)
+        return touched
 
     def errors_snapshot(self) -> dict[str, str]:
         """A copy of `errors` that is safe to iterate. A failing audio callback adds
@@ -1331,10 +1644,24 @@ class Engine:
             except Exception:  # noqa: BLE001
                 log.debug("closing %s raised", attr, exc_info=True)
 
-    def shutdown(self):
-        for a in ("mic_stream", "main_stream", "mon_stream", "obs_stream"):
-            self._close(a)
-        self.set_tap_device(None)
+    def shutdown(self, wait_s: float = 5.0):
+        """Close every stream. Waits up to `wait_s` for the device thread's work
+        (quitting mustn't hang on a driver that never answers)."""
+        held = DEVICES.acquire(timeout=wait_s)
+        if not held:
+            log.warning("the device thread is stuck; closing the streams anyway")
+        try:
+            for a in ("mic_stream", "main_stream", "mon_stream", "obs_stream"):
+                self._close(a)
+            # what set_tap_device(None) and set_copy_devices(()) do, without their wait
+            taps = (self.tap, *self.copies)
+            self.tap, self.tap_name, self.copies, self.copy_names = None, None, (), ()
+            for t in taps:
+                if t is not None:
+                    t.close()
+        finally:
+            if held:
+                DEVICES.release()
 
     def active_outputs(self) -> set:
         outs = set()
@@ -1359,8 +1686,9 @@ class Engine:
         # the cache holds a reference to the source array and compares identity with
         # `is`: comparing id() alone could match a *new* array that happens to be
         # allocated at a freed one's address (e.g. successive test recordings)
-        if hit and hit[0] is data:
+        if hit and hit[0]() is data:
             return hit[1]
+        self._sweep()
         gen = self._forgets.get(key[0], 0)
         if data.dtype == np.int16:   # library audio: resample in float, keep the copy compact
             f = data.astype(np.float32)   # in place from here: a song's float copy is
@@ -1384,7 +1712,7 @@ class Engine:
             old = self._cache.pop(key, None)
             if old is not None:
                 self._cache_bytes -= old[1].nbytes
-            self._cache[key] = (data, out)
+            self._cache[key] = (self._ref(data), out)
             self._cache_bytes += out.nbytes
             while self._cache_bytes > CACHE_BUDGET and len(self._cache) > 1:
                 _, (_, dropped) = self._cache.popitem(last=False)
@@ -1397,7 +1725,7 @@ class Engine:
             return data
         with self._cache_lock:
             hit = self._cache.get((sid.split(":")[0], rate))
-        return hit[1] if hit and hit[0] is data else None
+        return hit[1] if hit and hit[0]() is data else None
 
     def _resample_soon(self, sid: str, data: np.ndarray, rate: int, src_rate: int):
         """Make data_for's copy on a thread (once per sound and rate at a time)."""
@@ -1422,22 +1750,46 @@ class Engine:
         """destination.cut_shares of a sound, worked out once (~12 ms for a song)."""
         key = sid.split(":")[0]
         hit = self._shares.get(key)
-        if hit is not None and hit[0] is data and hit[1] == src_rate:
+        if hit is not None and hit[0]() is data and hit[1] == src_rate:
             return hit[2]
+        self._sweep()
         gen = self._forgets.get(key, 0)
-        shares = destination.cut_shares(data, src_rate)
+        shares = sharestore.lookup(data, src_rate)   # a long song's, from the last start
+        if shares is None:
+            shares = destination.cut_shares(data, src_rate)
+            sharestore.remember(data, src_rate, shares)   # (does nothing unless mapped)
         with self._cache_lock:
             if self._forgets.get(key, 0) == gen:   # not forgotten meanwhile
-                self._shares[key] = (data, src_rate, shares)
+                self._shares[key] = (self._ref(data), src_rate, shares)
         return shares
+
+    def _ref(self, data: np.ndarray) -> weakref.ref:
+        dead = self._dead   # not self: the ref mustn't keep the engine alive
+        return weakref.ref(data, lambda _r: dead.append(None))
+
+    def _sweep(self):
+        """Drop the cache and shares entries whose source array is gone."""
+        if not self._dead:
+            return
+        with self._cache_lock:
+            self._dead.clear()
+            for k in [k for k, v in self._shares.items() if v[0]() is None]:
+                del self._shares[k]
+            for k in [k for k, v in self._cache.items() if v[0]() is None]:
+                self._cache_bytes -= self._cache.pop(k)[1].nbytes
 
     def prepare(self, sid: str, data: np.ndarray):
         """Pre-resample for the currently open outputs (call off the UI thread), as
         long as the copies fit in CACHE_BUDGET. Past it, each new copy would only push
         out an earlier one: a big board on a 44.1 kHz headset resampled every song at
         every start and threw most of them away. Those are made when pressed instead
-        (play reads the source at the device's rate meanwhile)."""
+        (play reads the source at the device's rate meanwhile).
+        Long sounds on disk (mapped) aren't copied here at all: a copy reads the whole
+        file and keeps it in RAM, which undoes mapping it (8 songs cost 242 MB and
+        1.8 s at every start on a 44.1 kHz headset). Their copy is made on first press."""
         self.cut_shares(sid, data)
+        if mapped.is_mapped(data):
+            return
         for o in self.active_outputs():
             rate = self.rates[o]
             if self._cached(sid, data, rate, SR) is None:
@@ -1448,10 +1800,11 @@ class Engine:
 
     def forget(self, sid: str):
         with self._cache_lock:
-            self._forgets[sid] = self._forgets.get(sid, 0) + 1
-            self._shares.pop(sid, None)
-            for k in [k for k in self._cache if k[0] == sid]:
-                self._cache_bytes -= self._cache.pop(k)[1].nbytes
+            for s in (sid, sid + "~fx"):   # and its effects preview
+                self._forgets[s] = self._forgets.get(s, 0) + 1
+                self._shares.pop(s, None)
+                for k in [k for k in self._cache if k[0] == s]:
+                    self._cache_bytes -= self._cache.pop(k)[1].nbytes
 
     # ----------------------------------------------------------------- playback
     def play(self, sid: str, data: np.ndarray, gain: float, loop=False, mode="restart",
@@ -1578,6 +1931,7 @@ class Engine:
     def playing(self) -> dict[str, tuple[float, bool]]:
         """sid -> (progress 0..1, paused) of the newest voice for that sound."""
         res = {}
+        self._sweep()   # the UI polls this: a finished preview's audio goes here
         with self.lock:
             self.voices = tuple(v for v in self.voices if not v.finished)
             for v in self.voices:
@@ -1634,6 +1988,43 @@ class Engine:
     @property
     def recording(self) -> bool:
         return self._rec_buf is not None
+
+    def start_mic_take(self, processed: bool = False) -> list[np.ndarray]:
+        """Record a sound with the mic: from now on every mic block (the raw mic, or with
+        `processed` the mic after the voice changer) is appended, as a copy at the mic's
+        rate (`rates["mic"]`), to the list returned. The caller takes blocks off its
+        front as it goes (`del blocks[:n]`: safe against the audio thread's append) and
+        ends it with stop_mic_take(). A test recording running meanwhile is untouched."""
+        self._take_fx = processed
+        self._take = blocks = []
+        return blocks
+
+    def stop_mic_take(self) -> list[np.ndarray]:
+        """End the take; returns its list (with any blocks not yet taken off it)."""
+        blocks, self._take = self._take, None
+        return blocks if blocks is not None else []
+
+    @property
+    def taking(self) -> bool:
+        return self._take is not None
+
+    def start_play_take(self) -> list[np.ndarray]:
+        """Record a sound from what's playing: from now on every block of your sounds
+        (web results and the link bar's too) and the radio, as you hear them and
+        without your mic, is appended at the main output's rate (`rates["main"]`) to
+        the list returned, like start_mic_take. With no send device open it's taken from
+        your headphones instead (`play_take_out`, at that rate)."""
+        self.play_take_out = "main" if self.main_stream is not None else "mon"
+        self._play_take = blocks = []
+        return blocks
+
+    def stop_play_take(self) -> list[np.ndarray]:
+        blocks, self._play_take = self._play_take, None
+        return blocks if blocks is not None else []
+
+    @property
+    def play_taking(self) -> bool:
+        return self._play_take is not None
 
     # ----------------------------------------------------------------- callbacks
     def _render(self, out: str, frames: int, previews_only=False,
@@ -1788,30 +2179,55 @@ class Engine:
             mix += self._render(out, frames, previews_only, fixed=True, makeup=makeup)
         return mix
 
-    def _pitch(self, out: str, x: np.ndarray) -> np.ndarray:
-        """Live pitch on the sounds bus: the user's shift, plus the correction that
-        undoes the speed's pitch change when keep-pitch is on."""
+    def _sound_st(self) -> float:
+        """The live pitch's shift in semitones (see _pitch)."""
         st = float(self.sound_pitch)
         if self.sound_keep_pitch and abs(self.sound_speed - 1.0) >= 1e-4:
             st -= 12.0 * float(np.log2(max(self.sound_speed, 1e-3)))
+        return st
+
+    def _pitch(self, out: str, x: np.ndarray) -> np.ndarray:
+        """Live pitch on the sounds bus: the user's shift, plus the correction that
+        undoes the speed's pitch change when keep-pitch is on."""
+        st = self._sound_st()
         f = self._spitch.get(out)
         if f is None or f.rate != self.rates[out]:   # made at 0 st too: it needs the history
             f = self._spitch[out] = LivePitch(self.rates[out])
         return f.process(x, st)   # at 0 st it only keeps its history fresh
 
-    def _fx(self, out: str, x: np.ndarray) -> np.ndarray:
-        """Live effects on the sounds bus (livefx). Made when a knob comes off 0 and
-        dropped once they're all back at 0 and the last change has faded out."""
-        fx = self.sound_fx
-        f = self._sfx.get(out)
+    def _fx(self, out: str, x: np.ndarray, fx: dict | None = None, key=None) -> np.ndarray:
+        """Live effects on the sounds bus (livefx), or on another bus with its own
+        `fx` and `key`. Made when a knob comes off 0 and dropped once they're all back
+        at 0 and the last change has faded out."""
+        if fx is None:
+            fx = self.sound_fx
+        key = out if key is None else key
+        f = self._sfx.get(key)
         if f is None or f.rate != self.rates[out]:
             if not fx:
                 return x
-            f = self._sfx[out] = livefx.LiveFx(self.rates[out])
+            f = self._sfx[key] = livefx.LiveFx(self.rates[out])
         y = f.process(x, fx)
         if not fx and f.idle:
-            self._sfx.pop(out, None)
+            self._sfx.pop(key, None)
         return y
+
+    def _live(self, out: str, bus: str, x: np.ndarray) -> np.ndarray:
+        """The radio's ('radio') or the programs' ('apps') live pitch and effects.
+        The pitch shifter is made the first time it's off 0 and kept from then on
+        (at 0 st it only keeps its history fresh), so going back to 0 doesn't click."""
+        st, fx = ((self.radio_pitch, self.radio_fx) if bus == "radio"
+                  else (self.apps_pitch, self.apps_fx))
+        key = (out, bus)
+        f = self._lpitch.get(key)
+        if f is None or f.rate != self.rates[out]:
+            if not st:
+                f = None
+            else:
+                f = self._lpitch[key] = LivePitch(self.rates[out])
+        if f is not None:
+            x = f.process(x, float(st))
+        return self._fx(out, x, fx, key)
 
     def _eq(self, out: str, part: str, x: np.ndarray) -> np.ndarray:
         """Run x through the EQ if it's on and aimed at `part` ('sounds' / 'voice')."""
@@ -1913,38 +2329,76 @@ class Engine:
             self._guard("mic", e)
 
     def _main(self, outdata, frames):
-        mix = self._vol("main", "sounds", self._sounds("main", frames), self.sound_vol)
-        play = peak(mix)
+        idle = self._bus_idle("main", frames)   # nothing to mix: the sounds bus is silence
+        if idle:
+            mix = np.zeros((frames, CH), np.float32)
+            self._glides[("main", "sounds")] = float(self.sound_vol)
+            play = 0.0
+        else:
+            self._wake_bus("main")
+            mix = self._vol("main", "sounds", self._sounds("main", frames), self.sound_vol)
+            play = peak(mix)
+        take = self._play_take   # read once: the UI may end it meanwhile
+        took = mix.copy() if take is not None and self.play_take_out == "main" else None
         r = self.ring_rmain.read(frames)
         if r is not None:
+            r = self._live("main", "radio", r)
+            idle = False
             play = max(play, peak(r) * self.radio_vol)
             mix += self._vol("main", "radio", r, self.radio_vol if self.radio_live else 0.0)
+            if took is not None:   # the radio as you hear it, sent out or not
+                took += r * np.float32(self.radio_vol)
+        if took is not None:
+            take.append(took)
         lowcut = self._lowcut()
+        apps = None
         for a in self.aux:
             x = a.ring_main.read(frames)
             if x is not None:
+                idle = False
                 play = max(play, peak(x) * a.vol)
                 g = a.gain("main", lowcut) if a.live else 0.0
-                mix += self._vol("main", ("aux", a.key), x, g)
+                apps = _add(apps, self._vol("main", ("aux", a.key), x, g))
+        if apps is not None:
+            mix += self._live("main", "apps", apps)
         self.level_play = max(play, self.level_play * 0.85)
+        if not idle:
+            finite(mix)
         if self.main_direct:
-            mic = self.fifo_direct.read(frames)
-            mix = self._send_bus("main", finite(mix), mic,
-                                 add_mic=self.direct_mode == directmic.MODE_REPLACE)
-            if self.direct_mode == directmic.MODE_ADD:   # the effect keeps the real mic
-                self._direct_mic_gain()
+            m = self.fifo_direct.read(frames)
+            add = self.direct_mode == directmic.MODE_REPLACE
+            mix = self._send_bus("main", mix, m, add_mic=add, silent=idle)
+            self._direct_mic_gain()
         else:
-            mix = self._send_bus("main", finite(mix), self.ring_main.read(frames))
+            m, add = self.ring_main.read(frames), True
+            mix = self._send_bus("main", mix, m, silent=idle)
+        # still silence unless the mic went in: every stage below would only pass zeros
+        silent = idle and not (add and m is not None and self.mic_enabled and not self.mic_muted)
         # muted: others get silence (faded, not cut), nothing else changes
-        mix = self._vol("main", "send", mix, 1.0 if self.sending else 0.0)
+        if silent:
+            self._glides[("main", "send")] = 1.0 if self.sending else 0.0
+        else:
+            mix = self._vol("main", "send", mix, 1.0 if self.sending else 0.0)
         if self.limiter_on:
-            mix = self._stage("main", Limiter).process(mix)
-        soft_limit(mix)
-        outdata[:] = mix
-        self.level_main = max(peak(mix), self.level_main * 0.85)
+            lim = self._stage("main", Limiter)
+            if not silent:
+                mix = lim.process(mix)
+            else:
+                y = lim.silence(frames)   # None: at rest, zeros out
+                if y is not None:
+                    mix, silent = y, False
+        if silent:
+            outdata.fill(0)
+            self.level_main *= 0.85
+        else:
+            soft_limit(mix)
+            outdata[:] = mix
+            self.level_main = max(peak(mix), self.level_main * 0.85)
         cable = self.tap
         if cable is not None and self.main_direct:
             cable.write(mix)
+        for c in self.copies:   # Also send to
+            c.write(mix)
         tap = self.main_tap
         if tap is not None:
             tap.append(mix.copy())
@@ -1965,32 +2419,64 @@ class Engine:
             return
         # in mic check you hear the real output mix: sounds at their outgoing
         # level plus your mic, so you can judge the balance while a song plays
-        mix = self._sounds("mon", frames, previews_only=not (check or self.monitor_sounds))
+        idle = not check and self._bus_idle("mon", frames)
+        if idle:
+            mix = np.zeros((frames, CH), np.float32)
+            self._glides[("mon", "sounds")] = 1.0
+            play = 0.0
+        else:
+            self._wake_bus("mon")
+            mix = self._sounds("mon", frames, previews_only=not (check or self.monitor_sounds))
         m = self.ring_mon.read(frames)
-        mix = self._vol("mon", "sounds", mix, self.sound_vol if check else 1.0)
-        play = peak(mix)   # the main output sees the rest; this one counts with no send device too
+        if not idle:
+            mix = self._vol("mon", "sounds", mix, self.sound_vol if check else 1.0)
+            # the main output sees the rest; this one counts with no send device too
+            play = peak(mix)
+        take = self._play_take   # no send device: what's playing is recorded from here
+        took = mix.copy() if take is not None and self.play_take_out == "mon" else None
         r = self.ring_rmon.read(frames)
         if r is not None:
+            r = self._live("mon", "radio", r)
+            idle = False
             play = max(play, peak(r) * self.radio_vol)
             on = self.radio_monitor or (check and self.radio_live)
             mix += self._vol("mon", "radio", r, self.radio_vol if on else 0.0)
+            if took is not None:
+                took += r * np.float32(self.radio_vol)
+        if took is not None:
+            take.append(took)
         lowcut = self._lowcut()   # the headphones get the mode's shaping too (_dest)
+        apps = None
         for a in self.aux:
             x = a.ring_mon.read(frames)
             if x is not None:
+                idle = False
                 play = max(play, peak(x) * a.vol)
                 on = a.monitor or (check and a.live)
-                mix += self._vol("mon", ("aux", a.key), x, a.gain("mon", lowcut) if on else 0.0)
+                apps = _add(apps, self._vol("mon", ("aux", a.key), x,
+                                            a.gain("mon", lowcut) if on else 0.0))
+        if apps is not None:
+            mix += self._live("mon", "apps", apps)
         self.level_play = max(play, self.level_play)   # _main decays it; no main: the UI does
-        finite(mix)
-        if check:   # you hear what others get: the same send stage, your mic in it
-            mix = self._send_bus("mon", mix, m)
-            if self.limiter_on:
-                mix = self._stage("mon", Limiter).process(mix)
-        elif not self._bus_quiet("mon", mix):
-            mix = self._dest("mon", self._eq("mon", "sounds", mix))
-        mix = self._vol("mon", "out", mix, self.mon_vol)
-        mix = self._stage("mon", SafetyLimiter).process(mix)
+        if idle:   # silence all the way: only the volume's glide and the limiter to keep
+            self._bus_quiet("mon", mix, silent=True)
+            self._glides[("mon", "out")] = float(self.mon_vol)
+            y = self._stage("mon", SafetyLimiter).silence(frames)
+            if y is None:
+                outdata.fill(0)
+                self.level_mon *= 0.85
+                return
+            mix = y
+        else:
+            finite(mix)
+            if check:   # you hear what others get: the same send stage, your mic in it
+                mix = self._send_bus("mon", mix, m)
+                if self.limiter_on:
+                    mix = self._stage("mon", Limiter).process(mix)
+            elif not self._bus_quiet("mon", mix):
+                mix = self._dest("mon", self._eq("mon", "sounds", mix))
+            mix = self._vol("mon", "out", mix, self.mon_vol)
+            mix = self._stage("mon", SafetyLimiter).process(mix)
         outdata[:] = mix
         self.level_mon = max(peak(mix), self.level_mon * 0.85)
 
@@ -2028,11 +2514,16 @@ class Engine:
         mix = self._vol("obs", "sounds", mix, self.sound_vol)
         r = self.ring_robs.read(frames)
         if r is not None:
+            r = self._live("obs", "radio", r)
             mix += self._vol("obs", "radio", r, self.radio_vol if self.radio_live else 0.0)
+        apps = None
         for a in self.aux:
             x = a.ring_obs.read(frames)
             if x is not None:
-                mix += self._vol("obs", ("aux", a.key), x, a.vol if a.stream else 0.0)
+                apps = _add(apps, self._vol("obs", ("aux", a.key), x,
+                                            a.vol if a.stream else 0.0))
+        if apps is not None:
+            mix += self._live("obs", "apps", apps)
         mix = self._eq("obs", "sounds", finite(mix))
         m = self.ring_obs.read(frames)
         if m is None:
@@ -2051,17 +2542,18 @@ class Engine:
         self.level_obs = max(peak(mix), self.level_obs * 0.85)
 
     def _send_bus(self, out: str, mix: np.ndarray, m: np.ndarray | None,
-                  add_mic: bool = True) -> np.ndarray:
+                  add_mic: bool = True, silent: bool = False) -> np.ndarray:
         """The sounds bus shaped for voice chat (EQ, destination mode, ducking under
         your voice, phase-aware mono), with the mic block `m` added on top (unless not
-        `add_mic`: the mic effect's add mode, where Windows keeps the mic itself)."""
+        `add_mic`: the mic effect's add mode, where Windows keeps the mic itself).
+        `silent`: the bus is known to be zeros (_bus_idle), so there's nothing to shape."""
         mic_on = m is not None and self.mic_enabled and not self.mic_muted
-        quiet = self._bus_quiet(out, mix)
+        quiet = self._bus_quiet(out, mix, silent)
         if not quiet:
             mix = self._dest(out, self._eq(out, "sounds", mix))
         if self.duck_db < 0 or (out, "Ducker") in self._send:
             g = self._stage(out, Ducker).process(m if mic_on else None, len(mix), self.duck_db)
-            if not isinstance(g, float):
+            if not isinstance(g, float) and not silent:
                 mix = mix * g
         # a mode that already made the bus mono (every built-in one) needs no second pass
         if self.send_mono and not quiet and not (self.dest is not None and self.dest.mono):
@@ -2074,12 +2566,17 @@ class Engine:
         return mix
 
     def _direct_mic_gain(self):
-        """Add mode: the real mic's level, applied by the mic effect (mute, mic volume,
-        the gate while a sound plays, and nothing at all while sending is off)."""
+        """The real mic's level, applied by the mic effect (mute, mic volume, the gate
+        while a sound plays, and nothing at all while sending is off). Add mode: always
+        heard. Replace mode: only when the effect fills in for a block the board was
+        late with; a changed voice then stays quiet rather than let the real one out."""
         d = self.direct_stream()
         if d is None:
             return
         on = self.mic_enabled and not self.mic_muted and self.sending
+        if self.direct_mode == directmic.MODE_REPLACE:
+            chain = self.voice_chain
+            on = on and not (chain is not None and getattr(chain, "changes_voice", True))
         d.set_mic_gain(self.mic_vol * self._gate.get("main", 1.0) if on else 0.0)
 
     def _vol(self, out: str, what, x: np.ndarray, v: float) -> np.ndarray:
@@ -2097,17 +2594,47 @@ class Engine:
 
     QUIET_S = 0.5   # this long with nothing on a sounds bus: its filters have rung out
 
-    def _bus_quiet(self, out: str, mix: np.ndarray) -> bool:
+    def _bus_quiet(self, out: str, mix: np.ndarray, silent: bool = False) -> bool:
         """True once the sounds bus of `out` has carried only zeros for QUIET_S. Its EQ,
         mode shaping and mono downmix would only be filtering silence then (~1 ms of
         every 10 ms block in a voice chat mode, with nothing playing), so they're
-        skipped; their state has long decayed, and the next sound picks them up."""
-        if mix.any():
+        skipped; their state has long decayed, and the next sound picks them up.
+        `silent`: mix is known to be zeros, so there's no need to look."""
+        if not silent and mix.any():
             self._quiet[out] = 0
             return False
         n = self._quiet.get(out, 0) + len(mix)
         self._quiet[out] = n
         return n > self.QUIET_S * self.rates[out]
+
+    IDLE_FAST = True   # _bus_idle may skip the mixer (False: every block mixes, as before)
+
+    def _bus_idle(self, out: str, frames: int) -> bool:
+        """True when this block of out's sounds bus is sure to be silence that changes
+        nothing: no sound live on it, no live effect or pitch at work, and its filters
+        long rung out (_bus_quiet). The callback then skips the mixer, which with
+        nothing playing was most of the engine's CPU. _wake_bus catches up after."""
+        if not self.IDLE_FAST or self._quiet.get(out, 0) <= self.QUIET_S * self.rates[out]:
+            return False
+        if self.sound_fx or out in self._sfx or abs(self._sound_st()) >= 0.01:
+            return False
+        f = self._spitch.get(out)
+        if f is not None and f.shift.running:   # still fading out
+            return False
+        for v in self.voices:
+            if out in v.data and out not in v.done:
+                return False
+        self._idle_n[out] = self._idle_n.get(out, 0) + frames
+        return True
+
+    def _wake_bus(self, out: str):
+        """Before the mixer runs again after idle blocks: the live pitch gets the
+        silence it would have kept meanwhile, so switching it on starts as before."""
+        n = self._idle_n.pop(out, 0)
+        if n:
+            f = self._spitch.get(out)
+            if f is not None:
+                f.skip_silence(n)
 
     GATE_S = 0.04    # how fast the mic fades out / back in around a sound
 
@@ -2160,11 +2687,16 @@ class Engine:
         self.level_mic = max(peak(x), self.level_mic * 0.85)
         rec = self._mic_rec
         raw = x[:, 0].copy() if rec is not None and self._rec_buf is not None else None
+        take = self._take   # Record a sound: one copy and one append, nothing more
+        if take is not None and not self._take_fx:
+            take.append(x.copy())
         chain = self.voice_chain
         if chain is not None:   # after the meter: that judges the real mic
             x = chain.process(x, self.rates["mic"])
         if raw is not None:     # a test: the real mic (did you talk?) and what's sent
             rec.append(np.stack([raw, x[:, 0]], 1))
+        if take is not None and self._take_fx:
+            take.append(x.copy())
         if self.main_stream is not None:
             if not self.main_direct:
                 self.ring_main.write(self._rs_main(x))

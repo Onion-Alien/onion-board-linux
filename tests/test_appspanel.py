@@ -52,7 +52,7 @@ class FakeCapture:
 @pytest.fixture
 def tab(qapp, monkeypatch):
     monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
-    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False: [])
+    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False, **_: [])
     FakeCapture.made = []
     FakeCapture.fail = FakeCapture.slow = False
     cfg = Config()
@@ -242,7 +242,7 @@ def test_remembered_programs_start_from_the_config_and_auto_send(qapp, monkeypat
 
 def test_a_damaged_remembered_volume_does_not_stop_the_app_starting(qapp, monkeypatch):
     """A hand-edited or damaged config ("loud", NaN, huge) used to crash the window."""
-    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False: [])
+    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False, **_: [])
     cfg = Config()
     cfg.apps = {"a.exe": {"vol": "loud"}, "b.exe": {"vol": float("nan")},
                 "c.exe": {"vol": 1e9}, "d.exe": {"vol": -2}, "e.exe": {"vol": None},
@@ -377,9 +377,12 @@ def test_level_watcher_pauses_behind_a_game(qapp, monkeypatch):
 
         def peak(self, pid):
             return None
+
+        def list_for(self, done):
+            return False
     monkeypatch.setattr(appaudio, "PeakWatcher", Watcher)
     monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
-    monkeypatch.setattr(appaudio, "list_apps", lambda: [])
+    monkeypatch.setattr(appaudio, "list_apps", lambda **_: [])
     monkeypatch.setattr(appspanel.appstate, "active", lambda: True)
     t = AppsTab(Engine(), Config(), lambda: None, Meter)
     try:
@@ -436,7 +439,7 @@ def test_windows_only_warning(qapp, monkeypatch):
 
 
 def test_lister_hands_results_to_the_ui_thread(qapp, monkeypatch):
-    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False: [music()])
+    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False, **_: [music()])
     got = []
     lister = appspanel._Lister()
     lister.ready.connect(got.append)
@@ -451,8 +454,71 @@ def test_lister_hands_results_to_the_ui_thread(qapp, monkeypatch):
     lister.stop()
 
 
+def test_a_listing_that_finishes_after_the_panel_is_gone_is_dropped(qapp, monkeypatch):
+    """The Apps tab switched off (or the app quitting) while a listing runs: its
+    thread finishing afterwards must not emit from a deleted object (an access
+    violation that took the whole process down)."""
+    from PySide6.QtCore import QEvent
+    monkeypatch.setattr(appaudio, "AppCapture", FakeCapture)
+    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False, **_: [])
+    t = AppsTab(Engine(), Config(), lambda: None, Meter)
+    shown = []
+    monkeypatch.setattr(t, "_on_apps", lambda *a: shown.append(a))
+    lister = t.lister
+    t.peaks.stop()
+    t.deleteLater()   # gone without shutdown(): the listing is still "running"
+    qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+    lister._listed([music()], {100: "music.exe"})   # the worker thread finishing late
+    qapp.processEvents()
+    assert shown == []
+    lister.stop()
+
+
+def test_stop_waits_out_a_listing_being_handed_over(qapp):
+    """The worker mid-way through handing a listing over when the tab goes: stop()
+    waits for it, and nothing is handed over after (the object may be freed next)."""
+    import threading
+    import time
+    lister = appspanel._Lister()
+    inside, release, sent = threading.Event(), threading.Event(), []
+
+    def slow_emit(x):
+        inside.set()
+        release.wait(5)
+        sent.append(x)
+    lister.ready = type("Ready", (), {"emit": staticmethod(slow_emit)})()
+    t = threading.Thread(target=lister._listed, args=([music()], {}))
+    t.start()
+    assert inside.wait(5)
+    threading.Timer(0.2, release.set).start()
+    t0 = time.monotonic()
+    lister.stop()
+    assert time.monotonic() - t0 > 0.15 and len(sent) == 1
+    lister._listed([music()], {})
+    t.join(5)
+    assert len(sent) == 1
+
+
+def test_lister_takes_the_list_from_the_level_watcher_while_it_runs(qapp, monkeypatch):
+    def walked(**_):
+        raise AssertionError("listed again on a thread of its own")
+    monkeypatch.setattr(appaudio, "list_apps", walked)
+
+    class Watcher:
+        def list_for(self, done):
+            done([music()], {100: "music.exe"})   # (on the watcher's thread, really)
+            return True
+    got = []
+    lister = appspanel._Lister(peaks=Watcher())
+    lister.ready.connect(got.append)
+    lister.refresh()
+    qapp.processEvents()
+    assert got == [([music()], {100: "music.exe"})] and not lister._busy
+    lister.stop()
+
+
 def test_a_listing_failure_skips_the_update(qapp, monkeypatch):
-    def boom(strict=False):
+    def boom(strict=False, **_):
         raise appaudio.ComError("COM hiccup")
     monkeypatch.setattr(appaudio, "list_apps", boom)
     got = []
@@ -462,6 +528,92 @@ def test_a_listing_failure_skips_the_update(qapp, monkeypatch):
     qapp.processEvents()
     assert got == [] and not lister._busy
     lister.stop()
+
+
+def _wait(qapp, until, timeout=3.0):
+    import time
+    end = time.monotonic() + timeout
+    while not until() and time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.01)
+    return until()
+
+
+def test_lister_uses_one_worker_thread_for_every_listing(qapp, monkeypatch):
+    """It started a new thread for each listing: 720 an hour in the tray."""
+    import threading
+    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False, **_: [music()])
+    got = []
+    lister = appspanel._Lister()
+    lister.ready.connect(got.append)
+    for n in range(1, 4):
+        lister.refresh()
+        assert _wait(qapp, lambda n=n: len(got) == n and not lister._busy)
+    workers = [t for t in threading.enumerate() if t.name == "applist"]
+    assert lister._thread in workers and lister._thread.is_alive()
+    first = lister._thread
+    lister.refresh()
+    assert _wait(qapp, lambda: len(got) == 4)
+    assert lister._thread is first
+    lister.stop()
+    first.join(2)
+    assert not first.is_alive()                  # stop() ends it
+
+
+def test_hidden_tab_lists_programs_only_when_one_it_watches_starts_or_closes(qapp, monkeypatch):
+    """Hidden, a 5 s check walks only the processes (~4 ms) and lists the programs
+    (~20 ms) when one of the tab's started or closed, one not picked up yet runs, or
+    HIDDEN_FULL_S went by."""
+    import time
+    procs = {1: "explorer.exe", 100: "music.exe"}
+    monkeypatch.setattr(appaudio, "running", lambda: dict(procs))
+    lister = appspanel._Lister()
+    watch = frozenset({"music.exe", "chat.exe"})
+    assert lister._due(watch, frozenset())         # the first look: listed
+    lister._listed_at = time.monotonic()
+    assert not lister._due(watch, frozenset())     # nothing changed: only the walk
+    procs[7] = "game.exe"
+    assert not lister._due(watch, frozenset())     # not one of the tab's programs
+    procs[200] = "chat.exe"
+    assert lister._due(watch, frozenset())         # a watched one started
+    assert not lister._due(watch, frozenset())
+    assert lister._due(watch, frozenset({"chat.exe"}))   # remembered, not picked up yet
+    del procs[100]
+    assert lister._due(watch, frozenset())         # one closed
+    assert not lister._due(watch, frozenset())
+    lister._listed_at = time.monotonic() - appspanel.HIDDEN_FULL_S
+    assert lister._due(watch, frozenset())         # now and then anyway
+    lister.stop()
+
+
+def test_hidden_tab_picks_up_a_remembered_program_on_the_next_check(tab, qapp, monkeypatch):
+    """The feature the hidden re-read is for: a remembered program that starts is
+    sent again within one check, with the cheap process walk in between."""
+    procs = {1: "explorer.exe"}
+    listed = []
+    monkeypatch.setattr(appaudio, "running", lambda: dict(procs))
+    monkeypatch.setattr(appaudio, "list_apps",
+                        lambda strict=False, **_: (listed.append(1),
+                                                   [music()] if 100 in procs else [])[1])
+    tab.peaks.stop()
+    tab._on_apps([music()])
+    tab.rows["music.exe"].btn_send.setChecked(True)
+    tab._on_apps([])                               # it closed: still remembered
+    assert tab.rows["music.exe"].app is None
+    tab.hide()
+
+    def check():
+        n = len(listed)
+        tab._refresh()
+        _wait(qapp, lambda: not tab.lister._busy)
+        qapp.processEvents()
+        return len(listed) - n
+    check()                                        # the first look lists them
+    assert check() == 0                            # nothing new: no listing
+    procs[100] = "music.exe"                       # it starts again
+    assert check() == 1
+    assert tab.rows["music.exe"].sending and tab.rows["music.exe"].app is not None
+    assert check() == 0                            # picked up: back to the walk only
 
 
 def test_record_waits_for_sound_then_adds_a_clip_without_sending(tab, monkeypatch, tmp_path):
@@ -558,7 +710,7 @@ def test_cards_tighten_when_narrow_and_keep_the_meter(qapp):
 def test_programs_are_cards_several_across(tab, qapp, monkeypatch):
     """A wide window shows the programs side by side, an equal-width card each."""
     apps = [music(), App(200, "game.exe"), App(300, "call.exe")]
-    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False: apps)   # running when shown
+    monkeypatch.setattr(appaudio, "list_apps", lambda **_: apps)   # running when shown
     tab._on_apps(apps)
     tab.resize(1200, 600)
     tab.show()
@@ -582,7 +734,7 @@ def test_cards_settle_instead_of_jumping(tab, qapp, monkeypatch):
     from PySide6.QtCore import QEvent, QObject
 
     apps = [music(), App(200, "game.exe"), App(300, "call.exe")]
-    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False: apps)
+    monkeypatch.setattr(appaudio, "list_apps", lambda strict=False, **_: apps)
     tab._on_apps(apps)
     cards = [tab.rows[k] for k in ("music.exe", "game.exe", "call.exe")]
 
@@ -708,3 +860,9 @@ def test_card_buttons_say_which_program_they_are_for(qapp):
     assert row.btn_rec.accessibleName() == f"Record {name}"
     assert row.btn_forget.accessibleName() == f"Forget {name}"
     assert row.btn_clip.accessibleName() == f"Clip editor for {name}"
+
+
+def test_effects_and_card_size_wait_for_a_program(tab, qapp):
+    """Over the empty page the effects button and the card-size slider are hidden:
+    nothing to apply them to."""
+    assert tab.fx_btn.isHidden() and tab.card_size.isHidden() and tab.size_label.isHidden()

@@ -50,7 +50,9 @@ LINUX_VOICE_APPS = {
 }
 _up = __import__("sys").modules.get("soundboard.voicesdk")   # this runs at its end
 if _up is not None:
-    _up.VOICE_APPS.update(LINUX_VOICE_APPS)
+    # 1.9.4+: VOICE_APPS translates the names each time it's read, from _VOICE_APPS
+    raw = getattr(_up, "_VOICE_APPS", None)
+    (raw if isinstance(raw, dict) else _up.VOICE_APPS).update(LINUX_VOICE_APPS)
 
 
 def _display() -> x11.Display | None:

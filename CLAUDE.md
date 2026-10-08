@@ -25,10 +25,47 @@ published. Before writing or committing anything:
 - New network access must be added to the table in `SECURITY.md`. No telemetry beyond the opt-out anonymous usage count (`soundboard/usage.py`).
 - Loopback sockets bind `127.0.0.1` and verify a secret with `secrets.compare_digest`
   (a per-launch one; the opt-in remote control API checks the key shown in Settings);
-  never log the secret.
+  never log the secret. The opt-in server for remote add-ons (Onion Pocket) is the one
+  exception: local-network addresses only, its own key.
 
 Run `python scripts/check_sensitive.py` before proposing a commit and fix anything it
 reports. Don't add `# sensitive-scan: allow` to silence it without telling the user why.
+
+## Text the app shows: every language, in the same change
+
+Onion Board ships in every language in `assets/lang/` (the same set as Onion Watch). So any change
+that adds or edits text a user can see (labels, buttons, tooltips, dialogs, toasts,
+errors) does all of this **before committing**, not "later":
+
+1. Wrap it: `_("…")` / `ngettext("…", "…", n)` from `soundboard.i18n`. Whole sentences with
+   `{placeholders}`: never an f-string, `+`, or an English word passed into a
+   placeholder ("{what}" = "sounds" can't be translated).
+2. `python scripts/i18n_extract.py --update`: adds the new texts (empty) to every
+   catalog and drops the unused ones.
+3. Translate every text you added or changed into **every** catalog: plain, short,
+   friendly words for gamers, the same words the catalog already uses (and Onion Watch
+   uses, for shared things), every `{placeholder}`, `<b>…</b>`, `&amp;` and line break
+   kept, and the language's number of plural forms (`i18n.FORMS`). Lots of text: one
+   subagent per language.
+4. `ruff`, the i18n tests, and check that `i18n_extract.py` lists none of your texts as
+   missing.
+
+Never wrap log messages, settings keys, file names, the control API's JSON or the changelog. A new language goes into
+both apps at once. Details: [docs/TRANSLATING.md](docs/TRANSLATING.md).
+
+## New UI: narrow by default
+
+The author has had to shrink nearly every new control, card and window by hand. New UI
+is **as narrow as its content**, never stretched to fill the space:
+
+- Buttons, drop-downs and boxes are as wide as their text (`QSizePolicy.Maximum` /
+  `AdjustToContents`, a `addStretch(1)` after them in the row). No stretch factor on a
+  control unless it really holds long text (a search box, a slider, a path).
+- Dialogs and pop-ups get a fixed or capped width that fits their content (about
+  ≤ 620 px), not the parent's width or the screen's. Grids: few columns of fixed-size
+  tiles, scroll down instead of spreading out.
+- Long text wraps (`setWordWrap`) or goes on two lines; don't widen the layout for it.
+- Before sending pictures, look at them for empty horizontal space and fix it first.
 
 ## Working in the code
 
@@ -39,10 +76,14 @@ or installing anything. The short version:
 - Checks: `.venv\Scripts\ruff check .` and `.venv\Scripts\python -m pytest`
   (tests use Qt's offscreen platform — no windows, devices or hotkeys).
 - Build: `powershell -ExecutionPolicy Bypass -File build.ps1` → `dist\OnionBoard\`
-  and `dist\OnionBoardSetup.exe`. Rebuild after changing anything the app ships.
+  and `dist\OnionBoardSetup.exe` (needs MinGW-w64's g++ for the mic effect in
+  `native\directmic\`). Rebuild after changing anything the app ships.
 - Reinstall headless: `dist\OnionBoardSetup.exe /VERYSILENT /SUPPRESSMSGBOXES
   /NORESTART /CLOSEAPPLICATIONS` (a UAC prompt appears only if VB-Cable is missing
   and its box is ticked).
+- *Straight into my mic*'s set-up, `OnionBoard.exe --direct-mic …` and uninstalling
+  (when the mic effect is on a mic) ask for admin, change the mic's Windows audio settings and restart Windows' audio:
+  never run them without asking.
 - A `.venv` breaks if moved; recreate it instead.
 - Don't launch the GUI or anything that opens windows / grabs global hotkeys without
   asking first; the author may be mid-game.

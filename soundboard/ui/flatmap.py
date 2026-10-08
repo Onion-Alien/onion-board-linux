@@ -1,4 +1,4 @@
-"""The Radio tab's flat world map: the default view, painted by Qt itself.
+"""The Radio tab's world map, painted by Qt itself.
 
 A plain map (land outlines, country names, a dot per station and, zoomed in, the
 names of the cities and towns in view that have stations) costs nothing while
@@ -6,11 +6,14 @@ it sits there: it only repaints when you drag, zoom, hover over a different dot 
 stations change, and it needs no web engine. The world is drawn in tiles (TILE device
 pixels square), each once per zoom: a drag or a repaint only copies the tiles in view,
 at any zoom. Tiles not drawn yet (a new zoom, a drag onto new ground) are drawn a
-slice at a time while the last zoom's tiles, stretched, stand in for them. The 3D globe
-(radio.globe_html) is the HD view, one click away on the map's HD button.
+slice at a time while the last whole view, put together into one picture and
+stretched, stands in for them (tiles stretched one by one showed their seams, a grid
+over the map); a new zoom shows only once all of it is drawn. Under that, the land of
+the whole world, small. The country names show first, then (NAMES_FIRST_S on) the
+first stations pop in a few at a time (REVEAL_S); Bun waits on the map till they come.
 
-Stations arrive as radio.globe_points() dicts, like the globe's, so the tab can
-feed either view the same way.
+Stations arrive as radio.globe_points() dicts (the name is from the 3D globe this map
+replaced).
 """
 from __future__ import annotations
 
@@ -21,10 +24,12 @@ import time
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen,
-                           QPixmap, QRegion, QTransform)
-from PySide6.QtWidgets import QPushButton, QToolTip, QVBoxLayout, QWidget
+                           QPixmap, QTransform)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QToolTip,
+                               QVBoxLayout, QWidget)
 
 from soundboard import theme
+from soundboard.i18n import _, ngettext
 
 LAT_TOP, LAT_BOTTOM = 84.0, -58.0   # the inhabited world: no polar wastes
 ZOOM_MAX = 250.0                    # about street level: a city's stations come apart
@@ -35,7 +40,7 @@ FILL_PX = 1_000_000                 # device pixels per filled band (_fill)
 # drawing the map again, which took 10-20 ms a frame zoomed in and made it lag.
 TILE = 512                          # device pixels a side
 TILE_RING = 1                       # tiles drawn ahead (and kept) round the view
-BASE_ZOOM = 0.5                     # the whole world, small: what shows till a tile's drawn
+BASE_ZOOM = 1.0                     # the whole world's land, zoomed out: under everything
 # New tiles (zoom, new dots, theme, a drag onto new ground) are drawn a slice at a time
 # while stand-ins show: Qt keeps Python's lock through each draw call, and the audio
 # threads wait out one call per numpy step, so 20-40 ms of drawing in one go made the
@@ -48,6 +53,10 @@ TOWN_ZOOM = 2.0                     # city and town names show from this zoom in
 TOWNS_IN_VIEW = 40                  # ...at most this many at once, only those in view
 SPREAD_ZOOM = 4.0                   # stations on the very same spot fan out from here...
 SPREAD_PX = 2.4                     # ...this far apart (a spiral round the spot)
+NAMES_FIRST_S = 0.35                # the country names alone, before the dots...
+REVEAL_S = 1.4                      # ...then the first stations pop in over this long...
+POP_S = 0.3                         # ...each growing in over this (a little overshoot)
+LOADING_TEXT = _("Tuning in to radio stations around the world…")
 
 
 def _fill(p: QPainter, rect: QRectF, colour: QColor):
@@ -71,16 +80,61 @@ def _mix(a: str, b: str, t: float) -> QColor:
                            ca.blueF() + (cb.blueF() - ca.blueF()) * t)
 
 
+def _pop(x: np.ndarray) -> np.ndarray:
+    """0..1 -> a dot's size while it pops in: grows a little past full, then settles."""
+    x = np.clip(x, 0.0, 1.0) - 1
+    return 1 + 2.7 * x ** 3 + 1.7 * x ** 2
+
+
+class _Loading(QFrame):
+    """Bun with his headphones on, tuning in, music notes floating up: on the map
+    (which can be dragged and zoomed meanwhile) until the stations come."""
+
+    def __init__(self, parent: QWidget):
+        from soundboard.ui.bunnywidget import BunnyWidget
+        super().__init__(parent)
+        self.setObjectName("maploader")
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        box = QHBoxLayout(self)
+        box.setContentsMargins(6, 4, 18, 4)
+        box.setSpacing(4)
+        self.bun = BunnyWidget("headphones", height=64, pad=14)
+        box.addWidget(self.bun)
+        text = LOADING_TEXT
+        self.label = QLabel(text)
+        self.label.setObjectName("maploadertext")
+        # two lines in any language: wrap at about half the text's width
+        self.label.setWordWrap(True)
+        self.label.setFixedWidth(max(150, self.label.fontMetrics().horizontalAdvance(text)
+                                     * 55 // 100))
+        box.addWidget(self.label)
+        self._notes = QTimer(self)
+        self._notes.setInterval(700)
+        self._notes.timeout.connect(lambda: self.bun.burst(2))
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.bun.burst(3)
+        self._notes.start()
+
+    def hideEvent(self, e):
+        self._notes.stop()
+        super().hideEvent(e)
+
+
 def _fan_out(lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
     """For dots on the same spot (to ~100 m), an offset each in a sunflower spiral
     round it, in steps of one: the last of them (the most listened, drawn on top)
     keeps the middle. Dots alone on their spot get (0, 0)."""
     fan = np.zeros((len(lon), 2))
     groups: dict[tuple, list[int]] = {}
-    for i, key in enumerate(zip(np.round(lon, 3), np.round(lat, 3))):
+    # plain floats: grouping 3000 numpy numbers one by one took ~3 ms a filter change
+    for i, key in enumerate(zip(np.round(lon, 3).tolist(), np.round(lat, 3).tolist())):
         groups.setdefault(key, []).append(i)
     golden = np.pi * (3 - np.sqrt(5))
     for idx in groups.values():
+        if len(idx) < 2:
+            continue   # alone on its spot: stays (0, 0)
         for n, i in enumerate(reversed(idx)):
             r = np.sqrt(n)
             fan[i] = (r * np.cos(n * golden), r * np.sin(n * golden))
@@ -89,7 +143,6 @@ def _fan_out(lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
 
 class FlatMap(QWidget):
     clicked = Signal(str)       # a station's uuid
-    hd_requested = Signal()     # the HD (3D globe) button
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -111,15 +164,27 @@ class FlatMap(QWidget):
         self._fan = np.zeros((0, 2))    # where a stacked dot goes round its spot (SPREAD_PX)
         self._current: str | None = None
         self._hover = -1
-        self._msg = "Finding stations…"
+        self._msg = ""
         self.zoom = 1.0
         self.cx, self.cy = 10.0, (LAT_TOP + LAT_BOTTOM) / 2   # the view's centre (lon, lat)
         self._drag: QPointF | None = None
         self._dragged = False
         self._ver = 0                     # bumped when what's drawn changes
+        self._land_ver = 0                # ...and when the land (or its colours) does
         self._tiles: dict[tuple, QPixmap] = {}   # (level, i, j): see _level
-        self._stable: tuple | None = None # the last level drawn all over the view
+        # the last view drawn all over: (level, its slots), put together on demand into
+        # one picture (_pics) that stands in, stretched, while a new one is drawn
+        self._stable: tuple | None = None
+        self._pics: dict[tuple, tuple] = {}      # (level, slots): (picture, x, y)
         self._placed: dict[float, list] = {}     # country names' places, per scale
+        self._reveal_t0: float | None = None     # when the first stations pop in (REVEAL_S)
+        self._reveal_wait = False                # ...stations came before the land did
+        self._land_set = False
+        self._names_pic: tuple | None = None     # (view, picture): the names over the pop-in
+        self._delay = np.zeros(0)                # ...and each one's turn to pop in
+        self._reveal = QTimer(self)
+        self._reveal.setInterval(16)
+        self._reveal.timeout.connect(self._reveal_step)
         self._settle = QTimer(self)       # running while the wheel is still zooming
         self._settle.setSingleShot(True)
         self._settle.setInterval(SETTLE_MS)
@@ -140,10 +205,8 @@ class FlatMap(QWidget):
         box.setContentsMargins(0, 0, 10, 10)
         box.addStretch(1)
         self._buttons = []
-        for text, tip, slot in (("+", "Zoom in", lambda: self._zoom_by(1.5)),
-                                ("−", "Zoom out", lambda: self._zoom_by(1 / 1.5)),
-                                ("HD", "Show the 3D globe (uses more memory and graphics "
-                                       "power than this map)", self.hd_requested.emit)):
+        for text, tip, slot in (("+", _("Zoom in"), lambda: self._zoom_by(1.5)),
+                                ("−", _("Zoom out"), lambda: self._zoom_by(1 / 1.5))):
             b = QPushButton(text)
             b.setObjectName("mapbtn")
             b.setToolTip(tip)
@@ -152,6 +215,7 @@ class FlatMap(QWidget):
             b.clicked.connect(slot)
             box.addWidget(b, 0, Qt.AlignRight)
             self._buttons.append(b)
+        self._loading = _Loading(self)   # until the stations come (set_points)
         self.set_theme()
 
     # ------------------------------------------------------------------ what's shown
@@ -176,11 +240,16 @@ class FlatMap(QWidget):
             path.closeSubpath()
             n += len(ring)
         self._land_box = [part.boundingRect() for part in self._land]
+        self._land_ver += 1
+        self._land_set = True
+        if self._reveal_wait:   # the stations came first: their pop-in waited for this
+            self._start_reveal()
         self._redraw()
 
     def set_points(self, points: list[dict]):
         # the least listened first, so the popular dots are drawn on top
         pts = sorted(points, key=lambda d: d.get("k", 0))
+        first = bool(pts) and not self._points
         self._points = pts
         self._index = {d["id"]: i for i, d in enumerate(pts)}
         self._lon = np.array([d["lo"] for d in pts], float)
@@ -192,7 +261,37 @@ class FlatMap(QWidget):
         self._hover = -1
         if pts:
             self._msg = ""
+            self._loading.hide()
+        if first:
+            # the map fills up: the most listened first, the rest in a shuffled wave
+            n = len(pts)
+            rank = (n - 1 - np.arange(n)) / max(1, n)
+            jitter = np.random.default_rng(7).random(n) * 0.25
+            self._delay = (REVEAL_S - POP_S) * np.clip(rank * 0.8 + jitter, 0, 1)
+            if self._land_set:
+                self._start_reveal()
+            else:   # the land and its names first, then the dots
+                self._reveal_wait = True
+        elif self.revealing():
+            self._delay = np.zeros(len(pts))   # changed mid-way: the rest at once
         self._redraw()
+
+    def _start_reveal(self):
+        """The country names show on their own for NAMES_FIRST_S, then the dots pop in."""
+        self._reveal_wait = False
+        self._reveal_t0 = time.monotonic() + NAMES_FIRST_S
+        self._reveal.start()
+
+    def revealing(self) -> bool:
+        """The first stations still to pop in, or popping in (REVEAL_S)."""
+        return self._reveal_t0 is not None or self._reveal_wait
+
+    def _reveal_step(self):
+        if self._reveal_t0 is None or time.monotonic() - self._reveal_t0 >= REVEAL_S:
+            self._reveal_t0 = None
+            self._names_pic = None
+            self._reveal.stop()
+        self.update()
 
     def set_towns(self, towns: list[dict]):
         """City and town names (radio.town_labels(), most stations first), shown once
@@ -222,15 +321,39 @@ class FlatMap(QWidget):
 
     def show_message(self, text: str):
         self._msg = text
+        if text:
+            self._loading.hide()
         self.update()
+
+    def set_loading(self, on: bool):
+        """Bun waiting on the map for the stations (on from the start; the first
+        stations or a message take him away)."""
+        self._loading.setVisible(on and not self._points and not self._msg)
+        self._place_loading()
 
     def set_theme(self, *_):
         t = theme.T
         self.setStyleSheet(
             f"QPushButton#mapbtn {{ border-radius:8px; border:1px solid {t['border']};"
             f" background:{t['card']}; color:{t['text']}; font-weight:600; padding:0; }}"
-            f" QPushButton#mapbtn:hover {{ border-color:{t['accent']}; }}")
+            f" QPushButton#mapbtn:hover {{ border-color:{t['accent']}; }}"
+            f" QFrame#maploader {{ border-radius:14px; border:1px solid {t['border']};"
+            f" background:{t['card']}; }}"
+            f" QLabel#maploadertext {{ color:{t['text']}; font-weight:600;"
+            f" background:transparent; }}")
+        self._land_ver += 1
         self._redraw()
+
+    def _place_loading(self):
+        w = self._loading
+        size = w.sizeHint()
+        width = min(size.width(), max(120, self.width() - 32))
+        w.setGeometry((self.width() - width) // 2, (self.height() - size.height()) // 2,
+                      width, size.height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_loading()
 
     # ------------------------------------------------------------------ the projection
     def _scale(self) -> float:
@@ -286,9 +409,9 @@ class FlatMap(QWidget):
         self.update()
 
     def hideEvent(self, e):
-        """Off screen (another tab, the Radio tab's globe instead): after FORGET_MS let
-        the tiles go (tens of MB zoomed in). Not at once: flicking between tabs would
-        draw them all again on every return, a freeze each time."""
+        """Off screen (another tab): after FORGET_MS let the tiles go (tens of MB
+        zoomed in). Not at once: flicking between tabs would draw them all again on
+        every return, a freeze each time."""
         self._stop_build()
         self._forget.start()
         super().hideEvent(e)
@@ -301,7 +424,9 @@ class FlatMap(QWidget):
         if self.isVisible():
             return
         self._stop_build()
-        self._tiles.clear()
+        base = self._base_level()   # a few MB: kept, so there's a map the moment it's back
+        self._tiles = {key: pm for key, pm in self._tiles.items() if key[0] == base}
+        self._pics = {key: pic for key, pic in self._pics.items() if key[0] == base}
         self._stable = None
         self._town_pm.clear()
 
@@ -309,21 +434,18 @@ class FlatMap(QWidget):
     def _grow(self) -> float:
         return min(2.0, 1 + (self.zoom - 1) * 0.15)   # dots get a little bigger zoomed in
 
-    def _map_steps(self, p: QPainter, tr: QTransform, s: float, rect: QRectF):
-        """The sea, grid, land, names and dots, through `tr` ((lon, -lat) degrees to
-        pixels), a draw call or so per step; only what falls in `rect` (pixels) is drawn."""
+    def _map_steps(self, p: QPainter, tr: QTransform, s: float, rect: QRectF,
+                   land_only: bool = False):
+        """The sea, grid, land, names and dots (just the sea and land if `land_only`),
+        through `tr` ((lon, -lat) degrees to pixels), a draw call or so per step; only
+        what falls in `rect` (pixels) is drawn."""
         t = theme.T
         world = tr.mapRect(QRectF(-180, -LAT_TOP, 360, LAT_TOP - LAT_BOTTOM))
+        # no lines of latitude and longitude: stretched while zooming they read as a
+        # grid laid over the map
         yield from _fill(p, world.intersected(rect), _mix(t["bg"], t["accent"], 0.06))
         p.save()
         p.setClipRect(world.intersected(rect))
-        p.setPen(QPen(_mix(t["bg"], t["text"], 0.07), 1))
-        for lon in range(-150, 180, 30):
-            x = tr.map(QPointF(lon, 0)).x()
-            p.drawLine(QPointF(x, world.top()), QPointF(x, world.bottom()))
-        for lat in (-30, 0, 30, 60):
-            y = tr.map(QPointF(0, -lat)).y()
-            p.drawLine(QPointF(world.left(), y), QPointF(world.right(), y))
         if self._land:
             seen = tr.inverted()[0].mapRect(rect.adjusted(-2, -2, 2, 2))   # in degrees
             p.save()
@@ -335,6 +457,9 @@ class FlatMap(QWidget):
                     p.drawPath(part)
                     yield
             p.restore()
+        if land_only:
+            p.restore()
+            return
         if len(self._points):
             o = tr.map(QPointF(0, 0))
             dx, dy = self._spread()
@@ -494,6 +619,11 @@ class FlatMap(QWidget):
         s = self._scale() if zoom is None else self._scale() / self.zoom * zoom
         return (round(s, 6), self.devicePixelRatioF(), self._ver)
 
+    def _base_level(self) -> tuple:
+        """The whole world's land, small (BASE_ZOOM): the last stand-in, under all."""
+        s = self._scale() / self.zoom * BASE_ZOOM
+        return (round(s, 6), self.devicePixelRatioF(), self._land_ver, "land")
+
     @staticmethod
     def _grid(level: tuple) -> tuple[int, int, int, int]:
         """The whole world at `level` in device pixels, and in tiles: (w, h, nx, ny)."""
@@ -544,56 +674,96 @@ class FlatMap(QWidget):
                 tr = QTransform()
                 tr.translate(180 * s - i * TILE / dpr, LAT_TOP * s - j * TILE / dpr)
                 tr.scale(s, s)
-                yield from self._map_steps(p, tr, s, QRectF(0, 0, w / dpr, h / dpr))
+                yield from self._map_steps(p, tr, s, QRectF(0, 0, w / dpr, h / dpr),
+                                           land_only=len(level) > 3)
             finally:
                 p.end()
         return pm, steps()
 
     def _tile_now(self, key: tuple):
         pm, steps = self._tile_steps(*key)
-        for _ in steps:
+        for _step in steps:
             pass
         self._tiles[key] = pm
 
-    def _stand_in(self, p: QPainter, missing: QRegion, cur: tuple):
-        """Over the tiles not drawn yet: the other levels' tiles, stretched, the
-        coarsest first (the whole world zoomed out, BASE_ZOOM) and the sharpest on top."""
-        p.save()
-        p.setClipRegion(missing)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
+    def _picture(self, level: tuple, slots: tuple) -> tuple | None:
+        """The tiles of `level` at `slots` ((copy, i, j)) put together into one picture,
+        once: (picture, x, y), x and y its corner in device pixels from the world's
+        corner (copy 0). Gaps (a tile not drawn) stay see-through. Stretched as one
+        picture it has no seams; tiles stretched one by one each blurred into the
+        background at their edges and drew a grid over the map."""
+        w = self._grid(level)[0]
+        parts = [(round(k / 360 * w) + i * TILE, j * TILE, pm) for k, i, j in slots
+                 if (pm := self._tiles.get((level, i, j))) is not None]
+        if not parts:
+            return None
+        key = (level, slots, len(parts))   # put together again as more are drawn
+        got = self._pics.get(key)
+        if got is not None:
+            return got
+        x0 = min(x for x, _y, _pm in parts)
+        y0 = min(y for _x, y, _pm in parts)
+        x1 = max(x + pm.width() for x, _y, pm in parts)
+        y1 = max(y + pm.height() for _x, y, pm in parts)
+        pic = QPixmap(x1 - x0, y1 - y0)
+        pic.fill(Qt.transparent)
+        q = QPainter(pic)
+        for x, y, pm in parts:   # device pixel for device pixel
+            q.drawPixmap(QRectF(x - x0, y - y0, pm.width(), pm.height()), pm,
+                         QRectF(0, 0, pm.width(), pm.height()))
+        q.end()
+        for old in [old for old in self._pics if old[:2] == key[:2]]:
+            del self._pics[old]
+        got = self._pics[key] = (pic, x0, y0)
+        return got
+
+    def _draw_picture(self, p: QPainter, level: tuple, got: tuple, copies):
+        """A _picture of `level`, stretched to the view's scale, for each copy shown."""
+        pic, x0, y0 = got
+        s = self._scale()
+        f = s / level[0] / level[1]                # its device pixels to screen pixels
         view = QRectF(self.rect())
-        for level in sorted({key[0] for key in self._tiles} - {cur},
-                            key=lambda lv: (lv[1] == cur[1], lv[0], lv[2])):
-            for k, i, j in self._slots(level):
-                pm = self._tiles.get((level, i, j))
-                if pm is None:
-                    continue
-                target = self._tile_rect(level, k, i, j)
-                shown = target.intersected(view)
-                if shown.isEmpty():
-                    continue
-                fx, fy = pm.width() / target.width(), pm.height() / target.height()
-                p.drawPixmap(shown, pm, QRectF((shown.left() - target.left()) * fx,
-                                               (shown.top() - target.top()) * fy,
-                                               shown.width() * fx, shown.height() * fy))
+        for k in copies:
+            o = self._origin(k, s)
+            target = QRectF(o.x() + x0 * f, o.y() + y0 * f, pic.width() * f,
+                            pic.height() * f)
+            if target.intersects(view):
+                p.drawPixmap(target, pic, QRectF(pic.rect()))
+
+    def _stand_in(self, p: QPainter):
+        """What shows while the view's tiles are drawn: the land of the whole world
+        (small, so a little soft), and over it the last whole view, each one picture."""
+        p.save()
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        base = self._base_level()
+        got = self._picture(base, tuple((0, i, j) for i, j in self._all_tiles(base)))
+        if got is not None:
+            self._draw_picture(p, base, got, self._copies())
+        if self._stable is not None:
+            level, slots = self._stable
+            got = self._picture(level, slots)
+            if got is not None:   # it's in copies already: shifted a world either way
+                self._draw_picture(p, level, got, (-360, 0, 360))
         p.restore()
 
-    def _plan(self, cur: tuple, complete: bool):
+    def _plan(self, cur: tuple, slots: list, complete: bool):
         """After a paint: let go of the tiles no longer needed, and line up the ones
-        to draw next (the view's, middle first; the whole world zoomed out, the
-        stand-in for the rest; the ring round the view, ready for a drag)."""
+        to draw next (the view's, middle first; the whole world's land; the ring round
+        the view, ready for a drag). With nothing at all to show yet, the land first:
+        it's small, so there's a map to look at (and drag) in a moment."""
         if complete:
-            self._stable = cur
-        base = self._level(BASE_ZOOM)
-        base_done = all((base, i, j) in self._tiles for i, j in self._all_tiles(base))
+            self._stable = (cur, tuple(slots))
+        base = self._base_level()
         ahead = self._slots(cur, TILE_RING)
         keep = {(cur, i, j) for _k, i, j in ahead}
+        if self._stable is not None:
+            keep |= {(self._stable[0], i, j) for _k, i, j in self._stable[1]}
         for key in list(self._tiles):
-            level = key[0]
-            if (key in keep or level == base or level == self._stable
-                    or (not base_done and level[0] == base[0])):   # the old stand-in
-                continue
-            del self._tiles[key]
+            if key not in keep and key[0] != base:
+                del self._tiles[key]
+        levels = {base, self._stable[0] if self._stable else None}
+        for key in [key for key in self._pics if key[0] not in levels]:
+            del self._pics[key]
         if self._settle.isActive() or not self.isVisible():
             self._queue = []   # still zooming: nothing's drawn till it stops
             return
@@ -603,8 +773,9 @@ class FlatMap(QWidget):
             c = self._tile_rect(cur, *slot).center() - mid
             return abs(c.x()) + abs(c.y())
 
-        want = [(cur, i, j) for _k, i, j in sorted(self._slots(cur), key=far)]
-        want += [(base, i, j) for i, j in self._all_tiles(base)]
+        view = [(cur, i, j) for _k, i, j in sorted(slots, key=far)]
+        land = [(base, i, j) for i, j in self._all_tiles(base)]
+        want = view + land if self._stable is not None else land + view
         want += [(cur, i, j) for _k, i, j in sorted(ahead, key=far)]
         self._queue = [key for key in dict.fromkeys(want) if key not in self._tiles]
         if self._queue and not self._slice.isActive():
@@ -619,7 +790,7 @@ class FlatMap(QWidget):
         if not self.isVisible():   # off screen: drawn afresh when it shows
             self._stop_build()
             return
-        live = (self._level(), self._level(BASE_ZOOM))
+        live = (self._level(), self._base_level())
         end = time.perf_counter() + SLICE_S
         drew = False
         while time.perf_counter() < end:
@@ -657,6 +828,61 @@ class FlatMap(QWidget):
         """Tiles still to draw (tests, benches)."""
         return self._build is not None or bool(self._queue)
 
+    def _paint_reveal(self, p: QPainter):
+        """The first stations popping in, drawn live over the map (the tiles with
+        them on wait till all are in): just the ones in view, each its turn."""
+        if self._reveal_t0 is None:   # waiting on the land: no dots yet
+            return
+        t = time.monotonic() - self._reveal_t0
+        size = _pop((t - self._delay) / POP_S) if len(self._delay) == len(self._r) else 1.0
+        xs, ys = self._screen()
+        on = np.flatnonzero((size > 0.05) & (xs > -8) & (xs < self.width() + 8)
+                            & (ys > -8) & (ys < self.height() + 8))
+        accent = QColor(theme.T["accent"])
+        accent.setAlphaF(0.85)
+        p.setPen(Qt.NoPen)
+        p.setBrush(accent)
+        r = self._r * self._grow() * size
+        for i in on.tolist():
+            p.drawEllipse(QPointF(xs[i], ys[i]), r[i], r[i])
+
+    def _paint_names(self, p: QPainter):
+        """The country names over the pop-in (the stand-in under it is just land), so
+        they're there before the dots: drawn once for the view, then copied."""
+        if not self._labels:
+            return
+        dpr = self.devicePixelRatioF()
+        s = self._scale()
+        view = (round(s, 6), self.cx, self.cy, self.width(), self.height(), dpr,
+                self._ver)
+        if self._names_pic is None or self._names_pic[0] != view:
+            pic = QPixmap(max(1, round(self.width() * dpr)),
+                          max(1, round(self.height() * dpr)))
+            pic.setDevicePixelRatio(dpr)
+            pic.fill(Qt.transparent)
+            q = QPainter(pic)
+            q.setRenderHint(QPainter.Antialiasing)
+            t = theme.T
+            font, colour = self._label_style()
+            fm = QFontMetricsF(font)
+            halo = QPen(_mix(t["bg"], t["text"], 0.14), 3)
+            halo.setJoinStyle(Qt.RoundJoin)
+            rect = QRectF(self.rect())
+            placed = self._place_labels(s)
+            for k in self._copies():
+                corner = self._origin(k, s)
+                for box, name in placed:
+                    box = box.translated(corner)
+                    if not box.adjusted(-3, -3, 3, 3).intersects(rect):
+                        continue
+                    path = QPainterPath()
+                    path.addText(box.left(), box.top() + fm.ascent(), font, name)
+                    q.strokePath(path, halo)
+                    q.fillPath(path, colour)
+            q.end()
+            self._names_pic = (view, pic)
+        p.drawPixmap(0, 0, self._names_pic[1])
+
     def paintEvent(self, _e):
         self._clamp()
         dpr = self.devicePixelRatioF()
@@ -665,23 +891,27 @@ class FlatMap(QWidget):
         p.fillRect(self.rect(), QColor(t["bg"]))
         cur = self._level()
         slots = self._slots(cur)
-        # nothing to stand in (the first time): just the sea and the dots, the land
-        # comes in a slice at a time a moment later; nothing waits for all of it
-        shown, missing = [], QRegion()
-        for k, i, j in slots:
-            pm = self._tiles.get((cur, i, j))
-            r = self._tile_rect(cur, k, i, j)
-            if pm is None:
-                missing += r.toAlignedRect()
-            else:
-                shown.append((r.topLeft(), pm))
-        if not missing.isEmpty():
-            self._stand_in(p, missing, cur)
-        for at, pm in shown:
-            p.drawPixmap(at, pm)
-        self._plan(cur, missing.isEmpty())
-        self._paint_towns(p, dpr)
+        shown = [(self._tile_rect(cur, k, i, j).topLeft(), self._tiles.get((cur, i, j)))
+                 for k, i, j in slots]
+        complete = all(pm is not None for _at, pm in shown)
+        revealing = self.revealing()
+        if complete and not revealing:
+            for at, pm in shown:
+                p.drawPixmap(at, pm)
+        else:
+            # a new zoom (or new dots) shows all at once when it's all drawn, never a
+            # patchwork of sharp and stretched squares; till then the last view
+            self._stand_in(p)
+            if not revealing and self._stable is not None and self._stable[0] == cur:
+                for at, pm in shown:   # the same zoom, dragged: the tiles there are
+                    if pm is not None:
+                        p.drawPixmap(at, pm)
+        self._plan(cur, slots, complete and not revealing)
         p.setRenderHint(QPainter.Antialiasing)
+        if revealing:
+            self._paint_reveal(p)
+            self._paint_names(p)   # on top, as the tiles have them
+        self._paint_towns(p, dpr)
         hover, cur_i = self._hover, self._index.get(self._current, -1)
         if (0 <= hover < len(self._points)) or cur_i >= 0:
             xs, ys = self._screen()
@@ -802,7 +1032,9 @@ class FlatMap(QWidget):
         if audio:
             lines.append(audio)
         if d.get("k"):
-            lines.append(f"{int(d['k']):,} plays today")
-        lines.append("▶ Playing now" if d.get("id") == self._current else "Click to play")
+            lines.append(ngettext("{n} play today", "{n} plays today", int(d["k"]),
+                                  n=f"{int(d['k']):,}"))
+        lines.append("▶ " + _("Playing now") if d.get("id") == self._current
+                     else _("Click to play"))
         return "<br>".join(lines)
 

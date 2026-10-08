@@ -1,5 +1,5 @@
 """The mic effect: what others hear goes straight into your real mic, no virtual cable.
-Setup -> Devices -> Send to others through -> "Straight into my mic".
+Setup -> Devices -> Send my sounds to -> "My mic".
 
 How: a small Windows audio effect (native/directmic/obmic.cpp, an "APO" like Equalizer
 APO's) runs inside Windows' audio engine on one microphone, in front of every app that
@@ -33,8 +33,10 @@ changer never hear its own sounds come back. Each block of clean mic in, the boa
 renders the same stretch of what others hear and writes it out: it runs on the mic's
 clock, so the two never drift apart. In replace mode (the default) that is the whole
 send mix, your processed voice included, and the effect puts it in place of the mic
-(about 20 ms later); add mode adds only the sounds on top of the mic. Whenever the
-board is quiet or late, the effect crossfades back to the plain mic. Nobody recording
+(about 20 ms later); add mode adds only the sounds on top of the mic. The board late
+with a block: the effect fills in with the clean mic from the moment that block was
+to be made from (`set_sync`), so the voice carries on. The board gone: the effect
+crossfades back to the plain mic. Nobody recording
 the mic: the effect doesn't run, and the board keeps time on its own clock.
 
 Installing needs admin once (Windows' prompt): `install()` runs this app again as admin
@@ -66,13 +68,15 @@ except ImportError:   # Linux: soundboard/linux/directmic.py, at the end
 
 import numpy as np
 
+from soundboard.i18n import _
+
 log = logging.getLogger(__name__)
 
 FLAG = "--direct-mic"
 CLSID = "{C55E76FE-6667-4828-81FD-05B393FD649E}"   # obmic.cpp CLSID_OnionMic
 DEVICE = "Your mic (no cable)"         # the send "device" for the engine
 DLL_NAME = "obmic.dll"
-EFFECT_VERSION = 2                                  # obmic.cpp EFFECT_VERSION
+EFFECT_VERSION = 5                                  # obmic.cpp EFFECT_VERSION
 
 RATE = 48000
 CAPACITY = 1 << 16          # ~1.4 s at 48 kHz
@@ -87,16 +91,21 @@ LEAD_S = 0.02               # how far behind the board the effect reads (its add
 BLOCK = 480                 # frames rendered per engine call (10 ms)
 ALIVE_MS = 250              # effect heard from this recently: it's running
 MIC_LIVE_MS = 150           # the clean mic arrived this recently: the board runs on it
-POLL_S = 0.002
+POLL_S = 0.002              # how often the feed looks while a block is due (or overdue)
+EARLY_S = 0.002             # the feed itself takes the mic: it looks again this long before
+                            # the next block is due (blocks come a bit early now and then)
+BLOCK_S = BLOCK / RATE
 OTHER_BOARD_MS = 1000       # another board wrote this recently: it's still running
 
 HEAD = np.dtype({
     "names": ["magic", "version", "rate", "capacity", "write_pos", "board_tick", "enabled",
               "mode", "gain", "mic_gain", "mic_capacity", "publisher", "mic_write_pos",
-              "mic_rate", "lead", "mic_tick", "effect_version", "board_pid"],
+              "mic_rate", "lead", "mic_tick", "effect_version", "board_pid", "sync_seq",
+              "sync_wp", "sync_mic"],
     "formats": ["<u4", "<u4", "<u4", "<u4", "<u8", "<u8", "<u4", "<u4", "<f4", "<f4", "<u4",
-                "<i4", "<u8", "<u4", "<u4", "<u8", "<u4", "<u4"],
-    "offsets": [0, 4, 8, 12, 16, 24, 32, 36, 40, 44, 48, 52, 56, 64, 68, 72, 80, 84],
+                "<i4", "<u8", "<u4", "<u4", "<u8", "<u4", "<u4", "<u4", "<u8", "<u8"],
+    "offsets": [0, 4, 8, 12, 16, 24, 32, 36, 40, 44, 48, 52, 56, 64, 68, 72, 80, 84, 88, 96,
+                104],
     "itemsize": SLOT_OFFSET})
 SLOT = np.dtype({
     "names": ["owner", "rate", "channels", "flags", "tick", "read_pos", "lead", "underruns",
@@ -284,8 +293,8 @@ class RingWriter:
         pid, me = int(self._get("board_pid")), os.getpid()
         if pid and pid != me and self._get("enabled") \
                 and _tick() - int(self._btick[0]) < OTHER_BOARD_MS and _pid_alive(pid):
-            raise RuntimeError("Another Onion Board is already sending into your mic. "
-                               "Close it, and this one takes over.")
+            raise RuntimeError(_("Another Onion Board is already sending into your mic. "
+                                 "Close it, and this one takes over."))
         self._set("board_pid", me)
 
     def set_enabled(self, on: bool):
@@ -303,6 +312,23 @@ class RingWriter:
 
     def heartbeat(self):
         self._btick[0] = _tick()
+
+    def set_sync(self, wp: int, mic: int):
+        """Ring frame `wp` is the board's audio for clean-mic frame `mic`: a board late
+        with a block, the effect fills in with the mic from the same moment (no skip or
+        repeat in the voice). Odd sync_seq while it changes: the effect reads it then."""
+        seq = int(self._get("sync_seq"))
+        self._set("sync_seq", (seq + 1) & 0xFFFFFFFF)
+        self._set("sync_wp", wp)
+        self._set("sync_mic", mic)
+        self._set("sync_seq", (seq + 2) & 0xFFFFFFFE)
+
+    def clear_sync(self):
+        seq = int(self._get("sync_seq"))
+        self._set("sync_seq", (seq + 1) & 0xFFFFFFFF)
+        self._set("sync_wp", 0)
+        self._set("sync_mic", 0)
+        self._set("sync_seq", (seq + 2) & 0xFFFFFFFE)
 
     def jump(self, pos: int):
         """Start writing at `pos`."""
@@ -358,17 +384,23 @@ class DirectMicStream:
     effect. Each stretch of clean mic the effect publishes is handed to `mic_callback`
     (frames x 2, rate) and the same stretch of the board's output is rendered with
     `callback` (the engine's) and written into the ring, downmixed to mono (voice chat
-    is mono anyway). That's a thread polling every POLL_S, plus `pump()` from the
-    board's own mic callback, which fires right after the effect ran on its block.
-    Without the effect (nobody records the mic) the thread keeps time itself, so
-    sounds still play at the right speed."""
+    is mono anyway). That's a thread, plus `pump()` from the board's own mic callback,
+    which fires right after the effect ran on its block. The thread sleeps until the
+    next block is due (it used to look every POLL_S, 500 times a second): when it
+    takes the mic itself, it looks every POLL_S from just before then; when the mic
+    callback takes it, the thread only steps in if that's late. Without the effect
+    (nobody records the mic) the thread keeps time itself, a whole block at a time,
+    so sounds still play at the right speed."""
 
     samplerate = RATE
 
     def __init__(self, callback, path: Path | None = None, mic_callback=None,
-                 mode: int = MODE_REPLACE, lead_s: float = LEAD_S):
+                 mode: int = MODE_REPLACE, lead_s: float = LEAD_S, voice_delay=None):
         self._callback = callback
         self._mic_callback = mic_callback
+        # () -> frames (at RATE) the voice in what was just rendered is behind the mic
+        # handed over (see Engine._direct_voice_delay); None = none
+        self._voice_delay = voice_delay
         if path is None:
             make_ring()
         self._ring = RingWriter(path)
@@ -392,6 +424,13 @@ class DirectMicStream:
         self._start = time.perf_counter()
         self._made = 0
         self._buf = np.zeros((BLOCK, 2), np.float32)
+        # when the thread looks next (see _wait): the last clean mic taken (perf_counter),
+        # how long a block of it lasts, and whether the thread took it (or the mic
+        # callback did); on its own clock, when the next whole block is due
+        self._fed_at: float | None = None
+        self._fed_period = BLOCK_S
+        self._fed_here = True
+        self._due_at: float | None = None
 
     def start(self):
         self._ring.set_enabled(True)
@@ -453,6 +492,15 @@ class DirectMicStream:
         finally:
             self._lock.release()
 
+    def _delay(self) -> float:
+        if self._voice_delay is None:
+            return 0.0
+        try:
+            return max(0.0, float(self._voice_delay()))
+        except Exception:  # noqa: BLE001 - only the fill-in's timing is off by it
+            log.debug("voice delay", exc_info=True)
+            return 0.0
+
     def _render(self, n: int):
         buf = self._buf
         while n > 0:
@@ -478,32 +526,62 @@ class DirectMicStream:
                 return
             x = ring.read_mic(self._mic_pos, gap)
             self._mic_pos = wp
+            # (never counted as more than a block: after a hiccup two can come at once,
+            # and the next one is still only a block away)
+            self._fed_at, self._fed_period = time.perf_counter(), min(gap / rate, BLOCK_S)
+            self._fed_here = threading.current_thread() is self._thread
             if self._mic_callback is not None:
                 self._mic_callback(x, rate)
             self._acc += gap * RATE / rate
             k = int(self._acc)
             self._acc -= k
             self._render(k)
+            ring.set_sync(ring.write_pos, max(0, wp - int(round(self._delay() * rate / RATE))))
             self._start, self._made = time.perf_counter(), 0
             return
         if self.mic_live:   # the mic stopped: keep time from here on our own
             self.mic_live = False
+            self._fed_at = None
+            ring.clear_sync()
             self._start, self._made = time.perf_counter(), 0
         due = int((time.perf_counter() - self._start) * RATE)
         if due - self._made > RATE // 5:   # stalled (sleep, a hang): don't catch up
             self._made = due - BLOCK
         need = due - self._made
+        if ring.effect_alive(now):
+            # the effect reads the ring on its own clock (no clean mic from it): keep
+            # the ring as full as it can be, in small steps
+            self._due_at = None
+        else:
+            # nobody listens: render whole blocks as they come due, and sleep between
+            need -= need % BLOCK
+            self._due_at = self._start + (self._made + need + BLOCK) / RATE
         if need > 0:
             self._made += need
             self._render(need)
         else:
             ring.heartbeat()
 
+    def _wait(self) -> float:
+        """How long the thread sleeps before it looks again."""
+        now = time.perf_counter()
+        if self.mic_live:
+            if self._fed_at is None:
+                return POLL_S
+            # the thread takes the mic: look from just before the next block is due.
+            # The mic callback does: step in only if it's late with the next one.
+            nxt = self._fed_at + self._fed_period + (-EARLY_S if self._fed_here else POLL_S)
+        elif self._due_at is not None:
+            nxt = self._due_at
+        else:
+            return POLL_S
+        return min(max(nxt - now, POLL_S if self.mic_live else 0.0005), BLOCK_S + POLL_S)
+
     def _run(self):
         try:
             while not self._stop.is_set():
                 self.pump()
-                time.sleep(POLL_S)
+                time.sleep(self._wait())
         except Exception:  # noqa: BLE001 - the engine's watchdog reopens a stalled stream
             log.exception("mic effect feed stopped")
 
@@ -597,11 +675,16 @@ def installed_on() -> list[str]:
 
 
 _status_cache: dict = {}
+_status_gen = [0]          # forget_status() bumps it: a refresh started before is dropped
+_status_busy: set = set()  # mic names being re-checked on a thread
+_status_lock = threading.Lock()
 STATUS_S = 2.0
 
 
 def forget_status():
-    _status_cache.clear()
+    with _status_lock:
+        _status_cache.clear()
+        _status_gen[0] += 1
 
 
 def status(mic_name: str | None = None) -> str:
@@ -611,15 +694,44 @@ def status(mic_name: str | None = None) -> str:
       'wiped'     attached, but Windows (a driver or Windows update) took the effect off
       'outdated'  attached, but with another version of the effect than this app's
       'ready'     attached and working
-    'wiped' and 'outdated' need the one-click repair (attaching again). Cached for
-    STATUS_S."""
-    hit = _status_cache.get(mic_name)
-    now = time.monotonic()
-    if hit and now - hit[0] < STATUS_S:
-        return hit[1]
+    'wiped' and 'outdated' need the one-click repair (attaching again).
+
+    The first answer is worked out at once; after that it's re-checked every STATUS_S
+    on a thread, and the last answer comes back meanwhile. The check reads the
+    registry and the ring file, and the window asks every second: on a busy disk the
+    stat alone froze it for 6 s (1.9.7)."""
+    with _status_lock:
+        hit = _status_cache.get(mic_name)
+        now = time.monotonic()
+        if hit and now - hit[0] < STATUS_S:
+            return hit[1]
+        if hit:
+            if mic_name not in _status_busy:
+                _status_busy.add(mic_name)
+                threading.Thread(target=_refresh_status, args=(mic_name, _status_gen[0]),
+                                 daemon=True, name="mic-effect-status").start()
+            return hit[1]
+        gen = _status_gen[0]
     result = _status(mic_name)
-    _status_cache[mic_name] = (now, result)
+    with _status_lock:
+        if gen == _status_gen[0]:
+            _status_cache[mic_name] = (time.monotonic(), result)
     return result
+
+
+def _refresh_status(mic_name: str | None, gen: int):
+    try:
+        result = _status(mic_name)
+    except Exception:  # noqa: BLE001 - keep the last answer; tried again later
+        log.warning("couldn't check the mic effect", exc_info=True)
+        result = None
+    with _status_lock:
+        _status_busy.discard(mic_name)
+        if gen != _status_gen[0]:
+            return
+        hit = _status_cache.get(mic_name)
+        _status_cache[mic_name] = (time.monotonic(),
+                                   result if result is not None else hit[1] if hit else "missing")
 
 
 def needs_repair(state: str) -> bool:
@@ -1145,6 +1257,12 @@ def relaunch_params(args: list[str]) -> str:
 def _elevated(args: list[str], wait_s: float = 90.0) -> int | None:
     """Run this app's admin copy with `args` (Windows asks first). Its exit code, or
     None if the prompt was turned down or it didn't finish."""
+    return run_elevated(sys.executable, relaunch_params(args), wait_s)
+
+
+def run_elevated(exe: str, params: str, wait_s: float = 90.0) -> int | None:
+    """Run `exe` as admin, hidden (Windows asks first). Its exit code, or None if the
+    prompt was turned down or it didn't finish in `wait_s`."""
     from ctypes import wintypes
 
     class SHELLEXECUTEINFOW(ctypes.Structure):
@@ -1158,8 +1276,7 @@ def _elevated(args: list[str], wait_s: float = 90.0) -> int | None:
                     ("hProcess", wintypes.HANDLE)]
 
     info = SHELLEXECUTEINFOW(cbSize=ctypes.sizeof(SHELLEXECUTEINFOW), fMask=0x40,
-                             lpVerb="runas", lpFile=sys.executable,
-                             lpParameters=relaunch_params(args), nShow=0)
+                             lpVerb="runas", lpFile=exe, lpParameters=params, nShow=0)
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
@@ -1167,7 +1284,8 @@ def _elevated(args: list[str], wait_s: float = 90.0) -> int | None:
     kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     if not shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
-        log.info("mic effect %s not run (error %s)", args[:1], ctypes.get_last_error())
+        log.info("%s %s not run (error %s)", Path(exe).name, params[-40:],
+                 ctypes.get_last_error())
         return None
     try:
         if kernel32.WaitForSingleObject(info.hProcess, int(wait_s * 1000)) != 0:
@@ -1184,22 +1302,23 @@ def install(mic_name: str | None) -> str | None:
     done, else what went wrong, in plain words."""
     guid = endpoint_for(mic_name)
     if guid is None:
-        return "That mic isn't plugged in (or Windows doesn't list it)."
+        return _("That mic isn't plugged in (or Windows doesn't list it).")
     if not bundled_dll().is_file():
-        return "This copy of Onion Board has no mic effect in it."
+        return _("This copy of Onion Board has no mic effect in it.")
     code = _elevated(["install", guid])
     if code is None:
-        return "Windows' admin prompt was turned down (or didn't finish)."
+        return _("Windows' admin prompt was turned down (or didn't finish).")
     if code:
-        return f"Installing failed (code {code}). The log is in {data_dir().parent}."
+        return _("Installing failed (code {code}). The log is in {folder}.",
+                 code=code, folder=data_dir().parent)
     return None
 
 
 def uninstall() -> str | None:
     code = _elevated(["uninstall"])
     if code is None:
-        return "Windows' admin prompt was turned down (or didn't finish)."
-    return f"Removing failed (code {code})." if code else None
+        return _("Windows' admin prompt was turned down (or didn't finish).")
+    return _("Removing failed (code {code}).", code=code) if code else None
 
 
 if sys.platform != "win32":   # Linux: not on the mic yet, the cable is the route

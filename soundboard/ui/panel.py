@@ -18,6 +18,7 @@ from soundboard.eq import PRESETS as EQ_PRESETS
 from soundboard.ui import icons
 from soundboard.ui.widgets import EqCurve, Meter
 from soundboard.wheelguard import no_wheel
+from soundboard.i18n import _
 
 
 def section_label(text: str) -> QLabel:
@@ -106,7 +107,17 @@ class Flow(QLayout):
         return size
 
     def _place(self, rect: QRect, move: bool) -> int:
+        """Each item is centred on its line's height: a label beside taller chips
+        ("Now playing" before the sounds' ■ chips) sat at their top edge instead."""
         x, y, line = rect.x(), rect.y(), 0
+        row: list = []   # (item, x, hint) of the line being filled
+
+        def put():
+            if move:
+                for it, ix, hint in row:
+                    it.setGeometry(QRect(QPoint(ix, y + (line - hint.height()) // 2), hint))
+            row.clear()
+
         for it in self._items:
             if it.isEmpty():
                 continue
@@ -114,23 +125,27 @@ class Flow(QLayout):
             if hint.width() > rect.width() > 0:   # wider than the whole row: as narrow
                 hint.setWidth(max(rect.width(), it.minimumSize().width()))   # as it goes
             if line and x + hint.width() > rect.right() + 1:
+                put()
                 x, y, line = rect.x(), y + line + self._gap, 0
-            if move:
-                it.setGeometry(QRect(QPoint(x, y), hint))
+            row.append((it, x, hint))
             x += hint.width() + self._gap
             line = max(line, hint.height())
+        put()
         return y + line - rect.y()
 
 
 class CardGrid(QLayout):
     """Lays its widgets out as a grid of equal-width cards, as many across as fit
     at `min_w` each (at most `max_cols`), stretched to fill the row. Each row is as
-    tall as its tallest card (the search results, the Apps tab)."""
+    tall as its tallest card; the cards in it too, unless `even` is off (the Apps
+    tab: one card's open clip editor mustn't stretch its neighbours)."""
 
-    def __init__(self, parent=None, min_w: int = 240, gap: int = 10, max_cols: int = 0):
+    def __init__(self, parent=None, min_w: int = 240, gap: int = 10, max_cols: int = 0,
+                 even: bool = True):
         super().__init__(parent)
         self._items, self._gap = [], gap
         self.min_w, self.max_cols = min_w, max_cols
+        self.even = even   # False: each card keeps its own height, top-aligned in its row
         self.setContentsMargins(0, 0, 0, 0)
 
     def addItem(self, item):
@@ -178,12 +193,13 @@ class CardGrid(QLayout):
         y = rect.y()
         for i in range(0, len(shown), cols):
             line = shown[i:i + cols]
-            h = max(it.heightForWidth(cw) if it.hasHeightForWidth() else it.sizeHint().height()
-                    for it in line)
-            h = max(h, *(it.minimumSize().height() for it in line))
+            hs = [max(it.heightForWidth(cw) if it.hasHeightForWidth() else it.sizeHint().height(),
+                      it.minimumSize().height()) for it in line]
+            h = max(hs)
             if move:
                 for j, it in enumerate(line):
-                    it.setGeometry(QRect(rect.x() + j * (cw + self._gap), y, cw, h))
+                    it.setGeometry(QRect(rect.x() + j * (cw + self._gap), y, cw,
+                                         h if self.even else hs[j]))
             y += h + self._gap
         return y - self._gap - rect.y()
 
@@ -213,13 +229,33 @@ class HoverCard(QFrame):
         super().leaveEvent(event)
 
 
+# the widest the Setup and Voice pages' cards get: on a full-screen window they
+# spread to half the screen each, every button and list a bar ~900 px long
+PAGE_MAX_W = 1180
+
+
+def capped(body: QWidget, outer: QWidget | None = None, *,
+           margins: tuple[int, int, int, int] = (0, 0, 0, 0)) -> QWidget:
+    """`body` no wider than PAGE_MAX_W, centred in `outer` (a new QWidget if None)."""
+    outer = outer if outer is not None else QWidget()
+    body.setMaximumWidth(PAGE_MAX_W)
+    h = QHBoxLayout(outer)
+    h.setContentsMargins(*margins)
+    h.setSpacing(0)
+    h.addStretch(1)
+    h.addWidget(body, 1000)   # takes everything up to its cap, the sides the rest
+    h.addStretch(1)
+    return outer
+
+
 def card(title: str = "", hint: str = "", *, roomy: bool = False) -> tuple[QFrame, QVBoxLayout]:
     """A titled card, the building block of the Voice and Setup pages."""
     f = QFrame()
     f.setObjectName("card")
     v = QVBoxLayout(f)
     f.setProperty("roomy", roomy)
-    v.setContentsMargins(*((18, 18, 18, 18) if roomy else (14, 8, 14, 14)))
+    # the title label adds 8 px of its own above, so the top margin is 8 less
+    v.setContentsMargins(*((18, 10, 18, 18) if roomy else (14, 8, 14, 14)))
     v.setSpacing(12 if roomy else 6)
     if title:
         v.addWidget(section_label(title))
@@ -243,8 +279,8 @@ class _LevelDot(Meter):
     def __init__(self):
         super().__init__()
         self.setFixedSize(6, 6)
-        self.setAccessibleName("Audio activity")
-        self.setToolTip("Audio activity: green is signal, amber is loud, red is near clipping")
+        self.setAccessibleName(_("Audio activity"))
+        self.setToolTip(_("Audio activity: green is signal, amber is loud, red is near clipping"))
 
     def paintEvent(self, e):
         frac, color = self._bar()
@@ -299,7 +335,7 @@ class VolumeControl(QWidget):
         self.spin.setSuffix(" %")
         self.spin.setFixedWidth(58)   # until it's styled (_Pct)
         self.spin.setAlignment(Qt.AlignRight)
-        self.spin.setToolTip(f"Type an exact volume (0–{typed_max}%)")
+        self.spin.setToolTip(_("Type an exact volume (0–{typed_max}%)", typed_max=typed_max))
         if tip:
             self.slider.setToolTip(tip)
         h.addWidget(self.slider, 1)
@@ -347,15 +383,16 @@ class EqPanel(QWidget):
         pv = QVBoxLayout(self)
         pv.setContentsMargins(0, 0, 0, 0)
         pv.setSpacing(8)
-        pv.addWidget(section_label("EQUALIZER"))
+        pv.addWidget(section_label(_("EQUALIZER")))
         row = QHBoxLayout()
-        self.chk_on = QCheckBox("EQ on")
+        self.chk_on = QCheckBox(_("EQ on"))
         self.chk_on.setChecked(enabled)
         row.addWidget(self.chk_on)
-        self.lbl_for = QLabel("for")
+        self.lbl_for = QLabel(_("for"))
         row.addWidget(self.lbl_for)
         self.cb_target = QComboBox()
-        for label, key in (("My voice", "voice"), ("My sounds", "sounds"), ("Both", "all")):
+        for label, key in ((_("My voice"), "voice"), (_("My sounds"), "sounds"),
+                           (_("Both"), "all")):
             self.cb_target.addItem(label, key)
         icons.set_item_icons(self.cb_target, ["mic", "volume", "wave"])
         self.cb_target.setCurrentIndex(max(0, self.cb_target.findData(target)))
@@ -363,8 +400,9 @@ class EqPanel(QWidget):
         pv.addLayout(row)
 
         self.cb_preset = QComboBox()
-        self.cb_preset.addItems(list(EQ_PRESETS))
-        self.cb_preset.addItem("Custom")
+        for name in EQ_PRESETS:   # the item data is the preset's key, "Custom" for none
+            self.cb_preset.addItem(name, name)
+        self.cb_preset.addItem(_("Custom"), "Custom")
         pv.addWidget(self.cb_preset)
         no_wheel(self.cb_target, self.cb_preset)
 
@@ -382,7 +420,7 @@ class EqPanel(QWidget):
             s = QSlider(Qt.Vertical)
             s.setRange(-EQ_MAX_DB * 2, EQ_MAX_DB * 2)   # half-dB steps
             s.setFixedHeight(96)
-            s.setToolTip(f"{lab} Hz")
+            s.setToolTip(_("{lab} Hz", lab=lab))
             f = QLabel(lab)
             f.setAlignment(Qt.AlignCenter)
             f.setObjectName("eqlabel")
@@ -394,14 +432,15 @@ class EqPanel(QWidget):
             self.vals.append(val)
         no_wheel(*self.sliders)
         pv.addLayout(grid)
-        pv.addWidget(hint_label("Low = bass (left) · high = treble (right). Drag up to boost, "
-                                "down to cut. Double-click the curve to reset."))
+        pv.addWidget(hint_label(_("Low = bass (left) · high = treble (right). Drag up to boost, "
+                                  "down to cut. Double-click the curve to reset.")))
 
         self._set_sliders(gains)
-        self.cb_preset.setCurrentText(preset if preset in EQ_PRESETS else "Custom")
+        self._show_preset(preset)
         self.chk_on.toggled.connect(lambda _on: self._emit())
         self.cb_target.currentIndexChanged.connect(lambda _i: self._emit())
-        self.cb_preset.currentTextChanged.connect(self._on_preset)
+        self.cb_preset.currentIndexChanged.connect(
+            lambda _i: self._on_preset(self.cb_preset.currentData()))
         self.curve.reset.connect(self._reset)
         self._refresh(emit=False)
 
@@ -413,7 +452,7 @@ class EqPanel(QWidget):
         """Load gains, turning the EQ on unless they're flat. Emits `changed`."""
         self._set_sliders(gains)
         self.cb_preset.blockSignals(True)
-        self.cb_preset.setCurrentText(preset if preset in EQ_PRESETS else "Custom")
+        self._show_preset(preset)
         self.cb_preset.blockSignals(False)
         self.chk_on.blockSignals(True)
         self.chk_on.setChecked(any(abs(g) >= 0.05 for g in self.gains()))
@@ -422,9 +461,14 @@ class EqPanel(QWidget):
 
     def state(self) -> tuple[list[float], bool, str, str]:
         return (self.gains(), self.chk_on.isChecked(), self.cb_target.currentData(),
-                self.cb_preset.currentText())
+                self.cb_preset.currentData())
 
     # ---- internals
+    def _show_preset(self, preset: str):
+        """Select `preset` (a key of EQ_PRESETS) in the box, or Custom."""
+        key = preset if preset in EQ_PRESETS else "Custom"
+        self.cb_preset.setCurrentIndex(max(0, self.cb_preset.findData(key)))
+
     def _set_sliders(self, gains):
         # a damaged config can hand us anything: a band that isn't a finite number, or
         # a list of the wrong length, is flat (0 dB) instead of an error
@@ -445,7 +489,7 @@ class EqPanel(QWidget):
     def _on_slider(self, _v):
         self._refresh_labels()
         self.cb_preset.blockSignals(True)
-        self.cb_preset.setCurrentText("Custom")
+        self._show_preset("Custom")
         self.cb_preset.blockSignals(False)
         if not self.chk_on.isChecked():
             self.chk_on.setChecked(True)   # touching the EQ means you want it on (emits)
@@ -455,7 +499,7 @@ class EqPanel(QWidget):
     def _reset(self):
         """Double-click on the curve: flat and off, even if it already says Flat."""
         self.cb_preset.blockSignals(True)
-        self.cb_preset.setCurrentText("Flat (off)")
+        self._show_preset("Flat (off)")
         self.cb_preset.blockSignals(False)
         self._on_preset("Flat (off)")
 
@@ -491,7 +535,7 @@ class UndoBar(QFrame):
     dismissed, or showing something else calls `done` (if given) instead."""
     SECONDS = 10
 
-    def __init__(self, tip: str = "Put it back, exactly as it was"):
+    def __init__(self, tip: str = ""):
         super().__init__()
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QPushButton
@@ -501,14 +545,14 @@ class UndoBar(QFrame):
         self.label = QLabel()
         self.label.setTextFormat(Qt.PlainText)   # names are user / web text
         h.addWidget(self.label, 1)
-        self.btn_undo = QPushButton("Undo")
+        self.btn_undo = QPushButton(_("Undo"))
         self.btn_undo.setObjectName("primary")
-        self.btn_undo.setToolTip(tip)
+        self.btn_undo.setToolTip(tip or _("Put it back, exactly as it was"))
         self.btn_undo.clicked.connect(self.undo)
         h.addWidget(self.btn_undo)
         dismiss = QPushButton()
         dismiss.setObjectName("chipstop")
-        dismiss.setToolTip("Dismiss")
+        dismiss.setToolTip(_("Dismiss"))
         dismiss.setFixedSize(24, 24)
         icons.set_icon(dismiss, "stop", size=10)
         dismiss.clicked.connect(self.finish)

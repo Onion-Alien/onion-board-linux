@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 from soundboard.dsp import (SmoothSos, butter, hermite, lfilter, matched_biquad, sosfilt,
                              sosfilt_bank)
+from soundboard.i18n import _
 from soundboard.voicefx import Effect, Param, register
 
 F32 = np.float32
@@ -345,8 +346,10 @@ class PitchShift(Effect):
     Natural sound and Voice size move the formants on their own (_envelope_shift,
     one more ~20 ms frame): Natural 100% puts them back where your own voice has
     them, so a pitch change sounds like another person rather than a cartoon, and
-    Voice size makes the throat behind the voice bigger or smaller. Both at 0 (the
-    default, and what sounds and music use) skip that stage entirely.
+    Voice size makes the throat behind the voice bigger or smaller (below 100% Mix,
+    "Voice size on my voice too" reshapes the blended-in own voice as well, in its own
+    frame; off for saves from before it). Both at 0 (the default, and what sounds and
+    music use) skip that stage entirely.
 
     Autotune snaps the voice to the nearest note: a pitch tracker on the input picks
     the correction, which glides in (slow: natural tuning) or jumps (100%: the hard
@@ -365,7 +368,11 @@ class PitchShift(Effect):
               Param("natural", "Natural sound", 0, 1, 0, "", 0, ("cartoon", "real person")),
               Param("size", "Voice size", -12, 12, 0, "", 0.5, ("smaller", "bigger")),
               Param("tune", "Autotune", 0, 1, 0, "", 0, ("off", "robotic")),
-              Param("mix", "Mix", 0, 1, 1))
+              Param("mix", "Mix", 0, 1, 1),
+              Param("gap", "Gap between voices", 0, 1, 1, "", 0, ("together", "echo")),
+              Param("blur", "Blur on the new voice", 0, 1, 0, "", 0, ("clear", "blurry")),
+              Param("under", "Voice size on my voice too", 0, 1, 0, "", 0,
+                    ("new voice only", "mine too")))
 
     SEQ_MS = 30.0       # one sequence of voice, copied to the output
     SEEK_MS = 10.0      # how far the splice point may move to line up
@@ -374,6 +381,10 @@ class PitchShift(Effect):
     HIST_S = 0.35       # input kept while bypassed (enough to prime it at -24 st)
     FORMANT_S = 0.02    # the formant stage's frame (its added latency)
     LIFTER_S = 0.0011   # cepstrum kept as the envelope: shorter than any voice's period
+    GAP_MAX_S = 0.15    # longest the blended-in voice can be held back to line up
+    GAP_PER_OCTAVE_S = 0.0073   # the shifted voice's extra delay per octave down
+    BLUR_SIZE, BLUR_TONE = 0.0, 9000.0   # the room Blur puts round the shifted voice: small
+    BLUR_SCOOP_HZ, BLUR_SCOOP_DB = 500.0, 20.0   # ...minus its middle
 
     def __init__(self, rate, values=None, channels: int = 0):
         """channels: 0 for a mono voice ((n,) blocks); 2 for stereo (n, 2) blocks, cut
@@ -397,6 +408,9 @@ class PitchShift(Effect):
         self.ratio, self.mix = 1.0, 1.0
         self.formant = 1.0      # formant correction applied after the shift (1 = none)
         self.fstage: _Stft | None = None
+        self.dstage: _Stft | None = None   # Voice size on the unshifted voice (Mix < 100%)
+        self.dhist = np.zeros(int(rate * self.GAP_MAX_S), F32)   # blended-in voice, held back
+        self.verb: Reverb | None = None     # Blur: a reverb on the shifted voice only
         self.lifter = max(8, int(rate * self.LIFTER_S))
         self.tracker: _PitchTracker | None = None
         self.tune_st = 0.0      # autotune's correction right now, in semitones
@@ -544,6 +558,22 @@ class PitchShift(Effect):
             s += n / self.rate
         return s
 
+    def _hold_back(self, dry, rate):
+        """The shifted voice comes out ~40-80 ms after your own: below 100% Mix that
+        is a slapback echo under the voice. Gap between voices at 0 holds your own
+        voice back by the difference so the two line up; 1 (old saves) leaves it."""
+        h, n = self.dhist, len(dry)
+        buf = np.concatenate([h, dry])
+        self.dhist = buf[-len(h):]
+        # (lower pitches come out a little later than latency(), higher ones earlier:
+        # each stretched sequence plays slower or faster than it was said, ~7 ms/octave)
+        lag = ((self.latency() + self.GAP_PER_OCTAVE_S * np.log2(1.0 / self.ratio)) * rate
+               - (self.dstage.n if self.dstage is not None else 0))
+        k = min(int(round((1.0 - self.p.get("gap", 1.0)) * max(lag, 0.0))), len(h))
+        if k <= 0:
+            return dry
+        return buf[len(buf) - n - k:len(buf) - k]
+
     def run(self, x, rate):
         p = self.p
         mix = p["mix"]
@@ -571,8 +601,28 @@ class PitchShift(Effect):
             c = self.formant
             wet = self.fstage.run(wet, lambda spec: spec if abs(np.log2(c)) <= 1e-3
                                   else _envelope_shift(spec, c, self.lifter))
+        blur = p.get("blur", 0.0)
+        if self.verb is None and blur > 0:
+            self.verb = Reverb(rate, {"size": self.BLUR_SIZE, "tone": self.BLUR_TONE, "mix": 1})
+            self.verb_eq = _Filter()
+        if self.verb is not None:     # once on, it stays on: its tail mustn't cut off
+            # the room alone (Reverb at full Mix gives 0.4 dry + 0.8 room), with its
+            # middle scooped out so the words stay clear and only lows and highs smear
+            room = (self.verb.run(wet, rate) - F32(0.4) * wet) * F32(1.25)
+            room = self.verb_eq.run(room, "scoop", lambda: _biquad(
+                "peak", self.BLUR_SCOOP_HZ, rate, -self.BLUR_SCOOP_DB, 0.7))
+            wet = wet + room * F32(blur)
         if mix < 1:
-            wet = x * F32(1 - mix) + wet * F32(mix)
+            # "Voice size on my voice too" reshapes the blended-in voice as well, or your
+            # own voice stays recognisable under the effect (no key: old saves, as before)
+            dry, d = x, 2.0 ** (-p.get("size", 0.0) * p.get("under", 0.0) / 12.0)
+            if self.dstage is None and abs(np.log2(d)) > 1e-3:
+                self.dstage = _Stft(_stft_size(rate, self.FORMANT_S))
+            if self.dstage is not None:
+                dry = self.dstage.run(x, lambda spec: spec if abs(np.log2(d)) <= 1e-3
+                                      else _envelope_shift(spec, d, self.lifter))
+            dry = self._hold_back(dry, rate)
+            wet = dry * F32(1 - mix) + wet * F32(mix)
         g0, target = self.wet_g, 1.0 if on else 0.0
         if g0 == target:
             return wet
@@ -583,7 +633,8 @@ class PitchShift(Effect):
             env = env[:, None]
         if not on and self.wet_g <= 0.0:
             self.running = False
-            self.fstage = None
+            self.fstage = self.dstage = self.verb = None
+            self.dhist[:] = 0
             self.tune_st = 0.0
         return x + (wet - x) * env
 
@@ -729,8 +780,9 @@ class Compressor(Effect):
 class Tone(Effect):
     type = "tone"
     name = "Tone"
-    description = "Bass, presence and treble, like the EQ on a mixer."
+    description = "Bass, mid, presence and treble, like the EQ on a mixer."
     params = (Param("bass", "Bass", -12, 12, 0, " dB", 1),
+              Param("mid", "Mid", -12, 12, 0, " dB", 1),
               Param("presence", "Presence", -12, 12, 0, " dB", 1),
               Param("treble", "Treble", -12, 12, 0, " dB", 1))
 
@@ -739,14 +791,14 @@ class Tone(Effect):
         self.f = _Filter()
 
     def run(self, x, rate):
-        b, p, t = self.p["bass"], self.p["presence"], self.p["treble"]
-        if not (b or p or t) and self.f.f.idle:
+        b, m, p, t = self.p["bass"], self.p["mid"], self.p["presence"], self.p["treble"]
+        if not (b or m or p or t) and self.f.f.idle:
             return x
         # all at 0: fade out to straight through (then, once the fade has run its
         # course, the line above skips it; cutting it short would strand the fade)
-        return self.f.run(x, (b, p, t), lambda: None if not (b or p or t) else np.vstack([
-            _biquad("lowshelf", 160, rate, b), _biquad("peak", 2500, rate, p, 1.0),
-            _biquad("highshelf", 6000, rate, t)]))
+        return self.f.run(x, (b, m, p, t), lambda: None if not (b or m or p or t) else np.vstack([
+            _biquad("lowshelf", 160, rate, b), _biquad("peak", 1000, rate, m, 1.0),
+            _biquad("peak", 2500, rate, p, 1.0), _biquad("highshelf", 6000, rate, t)]))
 
 
 # --------------------------------------------------------------------------- tone
@@ -1117,6 +1169,16 @@ PRESETS: dict[str, dict[str, dict]] = {
     "Anonymous":         {"pitch": {"semitones": -4, "natural": 1, "size": -4},
                           "compressor": {"threshold": -24, "ratio": 3, "boost": 6},
                           "chorus": {"rate": 0.2, "depth": 2, "mix": 0.2}},
+    # the hidden detective talking through a TV, matched line by line to the show:
+    # the voice and a copy 7 st down blended (deep and high at once, no one clear
+    # pitch), both with a much smaller throat so it isn't your voice any more, thin
+    # on bass and top, strong in the mids, and a metallic ring over it
+    "Secret detective":  {"pitch": {"semitones": -7, "size": -6, "mix": 0.45, "gap": 0,
+                                    "under": 1},
+                          "compressor": {"threshold": -26, "ratio": 5, "boost": 9},
+                          "tone": {"bass": -7, "mid": 6, "presence": 3, "treble": -11},
+                          "radio": {"low": 150, "high": 6700, "drive": 0, "noise": 0.0},
+                          "helmet": {"size": 1.8, "ring": 0.49, "mix": 0.84}},
     "Dark lord":         {"pitch": {"semitones": -3, "natural": 1, "size": 3},
                           "compressor": {"threshold": -26, "ratio": 4, "boost": 8},
                           "tone": {"bass": 4, "presence": 1, "treble": -3},
@@ -1155,7 +1217,138 @@ PRESETS: dict[str, dict[str, dict]] = {
 
 PRESET_ICONS = {"Chipmunk": "🐿️", "Deep voice": "🐻", "Female voice": "👩", "Male voice": "👨",
                 "Demon": "👹", "Robot": "🤖", "Talkbox": "🎹", "Autotune": "🎤",
-                "Masked caller": "🔪", "Anonymous": "🕶️", "Dark lord": "⛑️",
+                "Masked caller": "🔪", "Anonymous": "🕶️", "Secret detective": "🕵️",
+                "Dark lord": "⛑️",
                 "Hothead": "😡", "Alien": "👽", "Ghost": "👻", "Walkie-talkie": "📻",
                 "Old telephone": "☎️", "Megaphone": "📢", "Stadium announcer": "🏟️",
                 "Cave": "🦇", "Podcast voice": "🎙️"}
+
+
+# --------------------------------------------------------------------------- shown text
+
+def shown_texts() -> dict[str, str]:
+    """The built-in effects' names, descriptions, settings and slider-end words, and
+    the built-in voices' names: English (what the code and saved settings use) -> the
+    app's language. Built when asked, not at import: this module loads before the
+    language is set."""
+    return {
+        # effects
+        "Clean up my mic": _("Clean up my mic"),
+        "Removes hum, hiss and room noise before the other effects.":
+            _("Removes hum, hiss and room noise before the other effects."),
+        "Pitch": _("Pitch"),
+        "Higher or lower; a cartoon or a real-sounding person; a bigger or smaller throat; "
+        "autotune.": _("Higher or lower; a cartoon or a real-sounding person; a bigger or "
+                       "smaller throat; autotune."),
+        "Monster growl": _("Monster growl"),
+        "Adds a rough voice an octave below yours.":
+            _("Adds a rough voice an octave below yours."),
+        "Robot": _("Robot"),
+        "Your words spoken by a buzzing synthesizer (vocoder).":
+            _("Your words spoken by a buzzing synthesizer (vocoder)."),
+        "Compressor": _("Compressor"),
+        "Evens out your volume: quiet words louder, shouting tamed.":
+            _("Evens out your volume: quiet words louder, shouting tamed."),
+        "Tone": _("Tone"),
+        "Bass, mid, presence and treble, like the EQ on a mixer.":
+            _("Bass, mid, presence and treble, like the EQ on a mixer."),
+        "Radio": _("Radio"),
+        "Walkie-talkie, telephone or megaphone band-limiting.":
+            _("Walkie-talkie, telephone or megaphone band-limiting."),
+        "Distortion": _("Distortion"),
+        "Overdriven, crunchy voice.": _("Overdriven, crunchy voice."),
+        "Shout blowout": _("Shout blowout"),
+        "Shout and your voice blows out like a megaphone.":
+            _("Shout and your voice blows out like a megaphone."),
+        "Helmet": _("Helmet"),
+        "Talking inside a helmet, mask or metal box.":
+            _("Talking inside a helmet, mask or metal box."),
+        "Chorus": _("Chorus"),
+        "Doubled, wobbling voice: subtle shimmer to full alien warble.":
+            _("Doubled, wobbling voice: subtle shimmer to full alien warble."),
+        "Echo": _("Echo"),
+        "Repeating echo, from slapback to canyon.":
+            _("Repeating echo, from slapback to canyon."),
+        "Reverb": _("Reverb"),
+        "Room, hall or cave.": _("Room, hall or cave."),
+        # settings
+        "Noise gate": _("Noise gate"),
+        "Hiss removal": _("Hiss removal"),
+        "Natural sound": _("Natural sound"),
+        "Voice size": _("Voice size"),
+        "Autotune": _("Autotune"),
+        "Mix": _("Mix"),
+        "Gap between voices": _("Gap between voices"),
+        "Blur on the new voice": _("Blur on the new voice"),
+        "Voice size on my voice too": _("Voice size on my voice too"),
+        "Growl": _("Growl"),
+        "Buzz pitch": _("Buzz pitch"),
+        "Follow my pitch": _("Follow my pitch"),
+        "Breath": _("Breath"),
+        "Kicks in at": _("Kicks in at"),
+        "Squash": _("Squash"),
+        "Boost": _("Boost"),
+        "Bass": _("Bass"),
+        "Mid": _("Mid"),
+        "Presence": _("Presence"),
+        "Treble": _("Treble"),
+        "Low cut": _("Low cut"),
+        "High cut": _("High cut"),
+        "Crunch": _("Crunch"),
+        "Static": _("Static"),
+        "Click when I talk": _("Click when I talk"),
+        "Drive": _("Drive"),
+        "Volume": _("Volume"),
+        "Helmet size": _("Helmet size"),
+        "Metal ring": _("Metal ring"),
+        "Speed": _("Speed"),
+        "Depth": _("Depth"),
+        "Delay": _("Delay"),
+        "Repeats": _("Repeats"),
+        "Size": _("Size"),
+        "Brightness": _("Brightness"),
+        # the words under a slider's two ends
+        "off": _("off"),
+        "strong": _("strong"),
+        "lower": _("lower"),
+        "higher": _("higher"),
+        "cartoon": _("cartoon"),
+        "real person": _("real person"),
+        "smaller": _("smaller"),
+        "bigger": _("bigger"),
+        "robotic": _("robotic"),
+        "together": _("together"),
+        "echo": _("echo"),
+        "clear": _("clear"),
+        "blurry": _("blurry"),
+        "new voice only": _("new voice only"),
+        "mine too": _("mine too"),
+        "subtle": _("subtle"),
+        "monster": _("monster"),
+        "dark": _("dark"),
+        "raspy": _("raspy"),
+        "whisper": _("whisper"),
+        "yell": _("yell"),
+        "tin can": _("tin can"),
+        "big helmet": _("big helmet"),
+        # voices (PRESETS: their English names are what settings and share codes keep)
+        "Chipmunk": _("Chipmunk"),
+        "Deep voice": _("Deep voice"),
+        "Female voice": _("Female voice"),
+        "Male voice": _("Male voice"),
+        "Demon": _("Demon"),
+        "Talkbox": _("Talkbox"),
+        "Masked caller": _("Masked caller"),
+        "Anonymous": _("Anonymous"),
+        "Secret detective": _("Secret detective"),
+        "Dark lord": _("Dark lord"),
+        "Hothead": _("Hothead"),
+        "Alien": _("Alien"),
+        "Ghost": _("Ghost"),
+        "Walkie-talkie": _("Walkie-talkie"),
+        "Old telephone": _("Old telephone"),
+        "Megaphone": _("Megaphone"),
+        "Stadium announcer": _("Stadium announcer"),
+        "Cave": _("Cave"),
+        "Podcast voice": _("Podcast voice"),
+    }

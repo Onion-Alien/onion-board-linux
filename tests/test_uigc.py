@@ -22,13 +22,13 @@ def dropped_cycle():
 
 def test_a_cycle_is_never_collected_on_another_thread(qapp):
     assert not gc.isenabled()                  # the app's UiCollector; conftest for tests
-    # every generation past (1, 1, 1) whatever ran before: the older counts only grow
-    # when the younger generation is collected, and the test before may have left
-    # (n, 0, 0) (a full collection), so collect_due found only generation 0 due
-    for g in (1, 1, 0, 0):
-        gc.collect(g)
-    assert all(n > 1 for n in gc.get_count()[1:])
+    # the older generations' counts go up only as younger ones are collected: set them
+    # here, not by whatever the tests before this one happened to collect
+    for gen in (1, 1, 0, 0):
+        gc.collect(gen)
     held = dropped_cycle()
+
+    kept = []
 
     def busy():                                # allocates far past every threshold
         junk = []
@@ -36,6 +36,9 @@ def test_a_cycle_is_never_collected_on_another_thread(qapp):
             junk.append([])
             if len(junk) > 1000:
                 junk.clear()
+        # ...and keeps some: the count is of objects made minus freed, and with all of
+        # them freed again it could end at 0 (nothing due: the test failed, now and then)
+        kept.extend([] for _ in range(5000))
     t = threading.Thread(target=busy)
     t.start()
     t.join(30)

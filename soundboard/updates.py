@@ -1,6 +1,16 @@
 """Is there a newer Onion Board, and installing it. The app asks the project's latest
-GitHub release once a day (Settings → Updates; on unless unticked), plus a "Check now"
-button.
+GitHub release every 6 hours (Settings → Updates; on unless unticked), plus a "Check
+now" button.
+
+A release whose notes have a line starting "Urgent:" ("Urgent: fixes sounds cutting
+out") is an urgent fix: the app shows it as a banner across the window instead of only
+the small Update pill, and "Skip this version" doesn't hide it. Only the newest release
+is looked at, so keep that line in the next release's notes while the fix still matters.
+
+Any other release settles for SETTLE_S before the app offers it: a fix that follows it
+the same day replaces it, so people get one prompt instead of several. While the
+newest one settles, the newest settled release newer than this copy is offered
+instead. "Check now" always offers the newest.
 
 A newer version is only announced. Nothing is downloaded until the user presses
 *Update now*: then the release's OnionBoardSetup.exe is fetched from the project's own
@@ -22,17 +32,20 @@ import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from soundboard import __version__, net
 from soundboard.library import APP_DIR
 from soundboard import errors
+from soundboard.i18n import _
 
 log = logging.getLogger(__name__)
 
 REPO = "Onion-Alien/onion-board"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES = f"https://github.com/{REPO}/releases/latest"
+RECENT = f"https://api.github.com/repos/{REPO}/releases?per_page=10"
 ASSET = "OnionBoardSetup.exe"
 # the same file uploaded a second time for *Update now* to fetch, so GitHub's download
 # counts tell updates apart from downloads off the website; releases without it: ASSET
@@ -43,7 +56,8 @@ DOWNLOADS = f"https://github.com/{REPO}/releases/download/"
 OLD_DOWNLOADS = "https://github.com/Onion-Alien/onionboard/releases/download/"
 UPDATES_DIR = APP_DIR / "updates"
 INSTALL_LOG = UPDATES_DIR / "install.log"
-EVERY_S = 24 * 3600
+EVERY_S = 6 * 3600       # so an urgent fix reaches people the same day
+SETTLE_S = 24 * 3600     # how long any other release is out before it's offered
 LIMIT = 1 << 20          # the API's answer is a few KB
 MAX_SIZE = 400 << 20     # the installer is ~180 MB
 CHUNK = 1 << 20
@@ -63,6 +77,8 @@ class Release:
     asset_url: str = ""   # its OnionBoardSetup.exe; "" = nothing to install
     sha256: str = ""      # that file's SHA-256 (lowercase hex), as GitHub lists it
     size: int = 0
+    urgent: str = ""      # why it's an urgent fix (its "Urgent: …" line); "" = it isn't
+    published: float = 0.0   # when it came out (epoch seconds); 0 = unknown
 
 
 def parse_version(text: str) -> tuple[int, ...] | None:
@@ -99,7 +115,7 @@ def _get(url: str, feature: str = FEATURE,
             if attempt or e.code not in (502, 503, 504):
                 raise
             if cancelled is not None and cancelled():
-                raise UpdateError("cancelled") from e
+                raise UpdateError(_("cancelled")) from e
     raise AssertionError("release lookup exhausted without a result")
 
 
@@ -136,6 +152,22 @@ def find_asset(data: dict, name: str, trusted: tuple[str, ...]) -> tuple[str, st
     return "", "", 0
 
 
+# "Urgent: …" at the start of a line, also as **Urgent:**, "> Urgent -", "- Urgent:"
+URGENT_RE = re.compile(r"^[\s>*_#-]*urgent[*_]*\s*[:\-–—]\s*(.+)$",
+                       re.IGNORECASE | re.MULTILINE)
+
+
+def urgent(body: str) -> str:
+    """The reason in a release's "Urgent: …" line, as plain text (Markdown marks taken
+    out, at most 160 characters), or "" when it has none: not an urgent fix."""
+    m = URGENT_RE.search(body.replace("\r\n", "\n"))
+    if not m:
+        return ""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(1))
+    text = re.sub(r"\*\*|__|`", "", text).strip(" *_")
+    return text if len(text) <= 160 else text[:159].rsplit(" ", 1)[0] + "…"
+
+
 def summary(body: str, limit: int = 420) -> str:
     """The start of a release's notes as plain text for the dialog: Markdown marks
     (**bold**, `code`, [links](…)) taken out, and whole paragraphs only, as many as
@@ -146,7 +178,8 @@ def summary(body: str, limit: int = 420) -> str:
     text = re.sub(r"\*\*|__|`", "", text)
     paras = [" ".join(line.strip() for line in p.splitlines())
              for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
-    paras = [p for p in paras if not p.startswith("⬇")]
+    paras = [p for p in paras if not p.startswith("⬇")
+             and not URGENT_RE.match(p)]   # the banner says that one
     out: list[str] = []
     for p in paras:
         if out and len("\n\n".join(out + [p])) > limit:
@@ -160,9 +193,36 @@ def summary(body: str, limit: int = 420) -> str:
     return "\n\n".join(out)
 
 
+def _published(data: dict) -> float:
+    """A release's published_at ("2026-10-06T20:39:15Z") as epoch seconds; 0 if none."""
+    try:
+        return datetime.fromisoformat(
+            str(data.get("published_at") or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def settled(rel: Release, now: float | None = None) -> bool:
+    """Out long enough to offer: urgent fixes and releases of unknown age right away."""
+    return (bool(rel.urgent) or not rel.published
+            or (time.time() if now is None else now) - rel.published >= SETTLE_S)
+
+
 def latest() -> Release | None:
     """The newest published release (drafts and pre-releases aren't 'latest')."""
-    data = _get(API)
+    return _release(_get(API))
+
+
+def latest_settled() -> Release | None:
+    """The newest release that has settled (see SETTLE_S), from the last few."""
+    data = _get(RECENT)
+    found = [r for d in (data if isinstance(data, list) else [])
+             if isinstance(d, dict) and not d.get("draft") and not d.get("prerelease")
+             and (r := _release(d)) is not None and settled(r)]
+    return max(found, key=lambda r: parse_version(r.version), default=None)
+
+
+def _release(data: dict) -> Release | None:
     tag = str(data.get("tag_name") or data.get("name") or "")
     ver = parse_version(tag)
     if ver is None:
@@ -170,13 +230,15 @@ def latest() -> Release | None:
     url = str(data.get("html_url") or RELEASES)
     if not url.startswith("https://github.com/"):
         url = RELEASES   # only ever open the project's own page
-    notes = summary(str(data.get("body") or ""))
-    return Release(".".join(map(str, ver)), url, notes, *_installer(data))
+    body = str(data.get("body") or "")
+    return Release(".".join(map(str, ver)), url, summary(body), *_installer(data),
+                   urgent=urgent(body), published=_published(data))
 
 
 def check(cfg, force: bool = False) -> Release | None:
     """A newer release than this one, or None. Without `force` it only asks if the
-    box is ticked, once a day, and stays quiet about a version they skipped.
+    box is ticked, at most every EVERY_S, and stays quiet about a version they
+    skipped (unless it's an urgent fix), or about one still settling (SETTLE_S).
     Network errors are logged and read as 'nothing new'. Switched off in Settings >
     Privacy & security, the daily check skips itself silently (a forced one raises
     net.FeatureOff). Call off the UI thread."""
@@ -185,6 +247,9 @@ def check(cfg, force: bool = False) -> Release | None:
         return None
     try:
         rel = latest()
+        if not force and rel is not None and newer(rel.version) and not settled(rel):
+            log.info("%s is still settling: looking for an older one", rel.version)
+            rel = latest_settled()
     except Exception as e:  # noqa: BLE001 - offline, rate-limited, GitHub down…
         log.info("update check failed: %s", e)
         if force:
@@ -193,7 +258,7 @@ def check(cfg, force: bool = False) -> Release | None:
     cfg.update_checked = time.time()
     if rel is None or not newer(rel.version):
         return None
-    if not force and rel.version == cfg.update_skip:
+    if not force and rel.version == cfg.update_skip and not rel.urgent:
         return None
     log.info("a newer version is out: %s", rel.version)
     return rel
@@ -230,10 +295,10 @@ def download(rel: Release, progress: Callable[[int, int], None] | None = None,
     lists (SHA-256); its path. `progress(done, total)` is called as it arrives. Raises
     UpdateError with a message for the user. Call off the UI thread."""
     if not rel.asset_url.startswith((DOWNLOADS, OLD_DOWNLOADS)) or not SHA_RE.fullmatch(rel.sha256):
-        raise UpdateError("this release has no installer the app can check, "
-                          "so it can only be downloaded from its page")
+        raise UpdateError(_("this release has no installer the app can check, "
+                            "so it can only be downloaded from its page"))
     dest = fetch(rel.asset_url, rel.sha256, installer_path(rel), (DOWNLOADS, OLD_DOWNLOADS),
-                 MAX_SIZE, "an installer", rel.size, progress, cancelled)
+                 MAX_SIZE, "installer", rel.size, progress, cancelled)
     log.info("downloaded update %s (SHA-256 checked)", rel.version)
     return dest
 
@@ -252,12 +317,22 @@ def fetch(url: str, sha256: str, dest: Path, trusted: tuple[str, ...], max_size:
     """Download a release file to `dest` (via dest + ".part", so a failed download
     never leaves a half file under its name) and prove it's the one GitHub lists
     (`sha256`); returns `dest`. Only from a link under `trusted`, only over HTTPS,
-    and never more than `max_size` bytes (`what` it is, for the message). A file
+    and never more than `max_size` bytes (`what` it is, for the message: "installer",
+    "add-on", or anything else for a plain file). A file
     already there with the right checksum isn't fetched again. `feature` is whose
     download it is (soundboard.net). Raises UpdateError with a message for the user.
     Call off the UI thread."""
+    if what == "installer":
+        no_file = _("there's no installer here the app can check")
+        too_big = _("the download is far bigger than an installer")
+    elif what == "add-on":
+        no_file = _("there's no add-on here the app can check")
+        too_big = _("the download is far bigger than an add-on")
+    else:
+        no_file = _("there's no file here the app can check")
+        too_big = _("the download is far bigger than it should be")
     if not url.startswith(trusted) or not SHA_RE.fullmatch(sha256):
-        raise UpdateError(f"there's no {what.split(' ', 1)[-1]} here the app can check")
+        raise UpdateError(no_file)
     if dest.is_file() and _sha256(dest) == sha256:
         return dest   # downloaded earlier, never used
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -267,26 +342,26 @@ def fetch(url: str, sha256: str, dest: Path, trusted: tuple[str, ...], max_size:
     try:
         with _open(url, feature) as r, open(part, "wb") as f:
             if not r.geturl().startswith("https://"):
-                raise UpdateError("the download was redirected off HTTPS")
+                raise UpdateError(_("the download was redirected off HTTPS"))
             total = _length(r.headers.get("Content-Length")) or size or 0
             if total > max_size:
-                raise UpdateError(f"the download is far bigger than {what}")
+                raise UpdateError(too_big)
             while chunk := r.read(CHUNK):
                 if cancelled is not None and cancelled():
-                    raise UpdateError("cancelled")
+                    raise UpdateError(_("cancelled"))
                 if not net.allowed(feature):   # switched off (or Offline) meanwhile
                     raise UpdateError(net.off_message(feature))
                 done += len(chunk)
                 if done > max_size:
-                    raise UpdateError(f"the download is far bigger than {what}")
+                    raise UpdateError(too_big)
                 h.update(chunk)
                 f.write(chunk)
                 if progress is not None:
                     progress(done, total)
         if h.hexdigest() != sha256:
             log.warning("%s: SHA-256 %s, expected %s", dest.name, h.hexdigest(), sha256)
-            raise UpdateError("the downloaded file isn't the one GitHub lists "
-                              "(its checksum doesn't match), so it wasn't kept")
+            raise UpdateError(_("the downloaded file isn't the one GitHub lists "
+                                "(its checksum doesn't match), so it wasn't kept"))
         os.replace(part, dest)
     except UpdateError:
         part.unlink(missing_ok=True)
@@ -296,7 +371,7 @@ def fetch(url: str, sha256: str, dest: Path, trusted: tuple[str, ...], max_size:
         raise UpdateError(str(e)) from e
     except OSError as e:   # offline, disk full, connection dropped…
         part.unlink(missing_ok=True)
-        raise UpdateError(f"the download failed ({errors.plain(e)})") from e
+        raise UpdateError(_("the download failed ({error})", error=errors.plain(e))) from e
     log.info("downloaded %s (%d bytes, SHA-256 checked)", dest.name, done)
     return dest
 
@@ -359,13 +434,16 @@ def finished(pending: str, current: str = __version__) -> bool:
 
 
 def cleanup() -> None:
-    """Remove downloaded installers (and half-downloads). One still running, just
-    after it reopened the app, is locked: it goes next time."""
-    for p in UPDATES_DIR.glob("OnionBoardSetup-*"):
-        try:
-            p.unlink()
-        except OSError:
-            pass
+    """Remove downloaded installers and add-on zips (and half-downloads), so updates
+    never pile up on the disk. An add-on zip is normally deleted once it's installed;
+    this catches one cut off by a crash or a closed app. One still running or still
+    being written is locked: it goes next time. install.log stays."""
+    for pattern in ("OnionBoardSetup-*", "*-module-*.zip", "*-module-*.zip.part"):
+        for p in UPDATES_DIR.glob(pattern):
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 if sys.platform != "win32":   # Linux: the AppImage updates itself

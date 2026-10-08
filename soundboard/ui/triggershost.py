@@ -24,6 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from soundboard import library, theme
+from soundboard.i18n import _
 from soundboard.modules import TRIGGERS_API
 
 log = logging.getLogger(__name__)
@@ -68,8 +69,12 @@ class BoardHost:
         """Optional detail for newer trigger cards; keeps the existing host API."""
         meta = self.win.meta(sid)
         if meta is None:
-            return "Sound unavailable"
-        return f"{meta.name}: {meta.volume:.0%} · Hotkey: {meta.hotkey or 'none'}"
+            return _("Sound unavailable")
+        volume = f"{meta.volume:.0%}"
+        if meta.hotkey:
+            return _("{name}: {volume} · Hotkey: {hotkey}", name=meta.name, volume=volume,
+                     hotkey=meta.hotkey)
+        return _("{name}: {volume} · Hotkey: none", name=meta.name, volume=volume)
 
     def sounds(self) -> list[tuple[str, str]]:
         return [(m.id, m.name) for m in self.win.cfg.sounds]
@@ -142,9 +147,26 @@ class BoardHost:
     def ringing(self) -> list[str]:
         return [sid.split(RING, 1)[1] for sid in self._ring_voices()]
 
+    def playing(self) -> list[str]:
+        """The tags of every trigger sound playing now (Onion Watch's Playing now
+        bar; optional in the add-on API): rings, card previews, and the pads its
+        one-shots pressed while they still play."""
+        now = set(self.win.engine.playing())
+        tags = [sid.split(RING, 1)[1] for sid in now if RING in sid]
+        tags += [sid.split(HEAR, 1)[1] for sid in now if HEAR in sid]
+        tags += [tag for tag, sids in self._pressed.items() if now & set(sids)]
+        return tags
+
     # ------------------------------------------------------------------ the rest
     def palette(self) -> dict[str, str]:
         return dict(theme.T)
+
+    def language(self) -> str:
+        """The board's language ("en", "de", "pt-BR", the pseudo-language "xx"…), so the
+        add-on can show in it too. Optional: an add-on asks with getattr (older boards
+        don't have it), so the api version stays the same."""
+        from soundboard import i18n
+        return i18n.current()
 
     def notify(self, title: str, body: str):
         """A tray notification, only while the board isn't in front (hidden in the

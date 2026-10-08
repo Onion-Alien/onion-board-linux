@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 import weakref
 
+import shiboken6
+
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (QColor, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap,
                            QTransform)
@@ -89,6 +91,15 @@ def _stop(p, fill):
     path = QPainterPath()
     path.addRoundedRect(QRectF(6, 6, 12, 12), 2, 2)
     fill(path)
+
+
+def _expand(p, fill):
+    """Four corners pointing out: make it big."""
+    for x, y, dx, dy in ((4, 4, 1, 1), (20, 4, -1, 1), (4, 20, 1, -1), (20, 20, -1, -1)):
+        path = QPainterPath(QPointF(x + 6 * dx, y))
+        path.lineTo(x, y)
+        path.lineTo(x, y + 6 * dy)
+        p.drawPath(path)
 
 
 def _record(p, fill):
@@ -450,6 +461,20 @@ def _like(p, fill):
     p.drawPath(path)
 
 
+def _sort(p, fill):
+    """Lines getting shorter, an arrow pointing down beside them."""
+    for y, w in ((6, 10), (12, 7), (18, 4)):
+        p.drawLine(QPointF(3, y), QPointF(3 + w, y))
+    p.drawLine(QPointF(18, 4), QPointF(18, 20))
+    p.drawPolyline([QPointF(14.5, 16.5), QPointF(18, 20), QPointF(21.5, 16.5)])
+
+
+def _list(p, fill):
+    for y in (6, 12, 18):
+        fill(QPainterPath(), lambda pp, y=y: pp.addEllipse(QPointF(4.5, y), 1.6, 1.6))
+        p.drawLine(QPointF(9, y), QPointF(21, y))
+
+
 def _copy(p, fill):
     p.drawRoundedRect(QRectF(8, 8, 12, 13), 2, 2)
     path = QPainterPath(QPointF(5, 16))
@@ -461,10 +486,12 @@ def _copy(p, fill):
 SHAPES = {
     "shuffle": _shuffle, "star": _star,
     "star_filled": lambda p, fill: _star(p, fill, True), "like": _like, "copy": _copy,
+    "sort": _sort, "list": _list,
     "sounds": _grid, "browser": _globe, "voice": _mask, "setup": _sliders,
     "sliders": _sliders, "wave": _wave,
     "mic": _mic, "headphones": _headphones, "volume": _volume, "ear": _ear,
     "play": _play, "pause": _pause, "stop": _stop, "record": _record, "plus": _plus,
+    "expand": _expand,
     "settings": _gear, "history": _history, "leaf": _leaf, "live": _live,
     "back": _arrow("back"), "forward": _arrow("forward"), "reload": _reload,
     "speech": _speech, "cable": _cable, "check": _check, "warn": _warn, "folder": _folder,
@@ -592,6 +619,13 @@ def icon(name: str, color: str | None = None, checked_color: str | None = None,
 
 # --------------------------------------------------------------------------- live retheme
 
+def _gone(ref: weakref.ref) -> bool:
+    """The widget an entry below is for was deleted (its Python side may still be
+    around, pointing at nothing)."""
+    w = ref()
+    return w is None or not shiboken6.isValid(w)
+
+
 _applied: list[tuple[weakref.ref, str, str | None, str | None]] = []
 _tabs: list[tuple[weakref.ref, int, str, str | None, bool]] = []
 
@@ -616,6 +650,9 @@ def set_label_icon(label, name: str, color: str = "muted", size: int = 18):
     dpr = label.devicePixelRatioF() or 1.0
     pm = icon(name, color).pixmap(QSize(size, size), dpr)
     label.setPixmap(pm)
+    # one entry per label, and none for deleted ones: a dialog's labels went on the
+    # list each time it was opened
+    _labels[:] = [e for e in _labels if not _gone(e[0]) and e[0]() is not label]
     _labels.append((weakref.ref(label), name, color, size))
 
 
@@ -696,7 +733,8 @@ def set_tab_icon(tabs, index: int, name: str, tint: str | None = None, badge: bo
     # time a sound started or stopped); the bar asks for a layout only if it changed
     # size, and widgets.SteadyTabs lets that through
     tabs.tabBar().setTabIcon(index, _tab_icon(name, tint, badge))
-    _tabs[:] = [e for e in _tabs if not (e[0]() is tabs and e[1] == index)]
+    # ...and none for deleted tab widgets: Settings' tabs added 12 each time it opened
+    _tabs[:] = [e for e in _tabs if not _gone(e[0]) and not (e[0]() is tabs and e[1] == index)]
     _tabs.append((weakref.ref(tabs), index, name, tint, badge))
 
 

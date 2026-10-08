@@ -5,7 +5,24 @@ The full list. The [README](../README.md) has the short version and how to get s
 - **Pads:** add by button, drag-and-drop (files or folders), or by dropping files into
   the sounds folder (**Sounds folder** opens it; they join the board by themselves). Plays mp3, wav, ogg,
   flac, m4a and more, and pulls the audio out of video files. Search, reorder,
-  resize, set colours.
+  resize, set colours. **Pictures on pads:** right-click → *Add picture…*, or drop or
+  paste (Ctrl+V) a picture onto a pad; a link's thumbnail or a file's cover art is
+  used by itself. **Pads from videos** have a *Video* button that shows the video in
+  step with the sound (only you see it). **Pick several pads** with Ctrl+click,
+  Shift+click or Ctrl+A to change their colour, volume, fades or categories, export
+  them or remove them together (one Undo). **From the keyboard:** arrows move
+  between pads, Enter or Space plays, F2 renames, Alt+Enter opens Edit, Delete
+  removes (the picked pads, or the one you're on) and Ctrl+F jumps to the search box.
+  Right-click a pad for *Rename…*, *Duplicate* (a second pad with its own file, for
+  its own effects or hotkey) and *Show the file in its folder*.
+- **Record a sound with your mic, or from what's playing:** the **Record** button next
+  to *Add sounds*. Record your own voice, your voice through the voice changer while
+  it's on, or *What's playing*: a bit of a sound, a web search result or the radio as
+  you hear it (the window stays out of the way, so you can play it while it records);
+  after *Stop* the quiet ends are already cut off, drag the start and end to cut
+  more, *Preview* plays it in your headphones only, then name it and *Save* to add
+  the pad (it joins the category showing). Up to 15 minutes, spooled to disk as it
+  records; nobody hears you while you record.
 - **Categories:** the tabs above the pads (the *+* after the last tab makes one). Right-click a
   pad → *Categories* to put it in any number of them; right-click a category to
   rename, export or delete it. The in-game overlay shows the same category, and
@@ -13,6 +30,16 @@ The full list. The [README](../README.md) has the short version and how to get s
   give it a random-sound hotkey, or to *Play them all* (in order or shuffled). With
   *Use hotkeys per category* (Settings → Hotkeys) each category is its own set of
   keys: one key, a different sound per category.
+- **Switch category when a program is in front:** right-click a category →
+  *Show this when a program is in front…* lists the programs open now (with their
+  icons) and *Browse for a program…*. When one of them comes to the front, the board
+  and the overlay switch to that category (with the category beep, if beeps are on);
+  when it closes, the board goes back to the category it showed before. Alt-tabbing
+  away changes nothing; a category you pick by hand while it's in front stays. Rules
+  match the program's file name (`game.exe`), so they survive a reinstall and go
+  into backups. The tab's tooltip lists its programs; *Stop showing this for…* in the
+  same menu, or *Settings → General → Switch category by program* (every rule, a
+  *Remove* each, and *Switch by itself* to turn it all off).
 - **Remove can be undone:** *Removed “…” · Undo* stays up for 10 seconds. After that
   the sound waits in **Recently deleted** (the *Backup* menu, or the bin button that
   shows while it holds sounds) for 30 days, and *Bring back* returns it exactly as it
@@ -29,47 +56,54 @@ The full list. The [README](../README.md) has the short version and how to get s
   pressing again does (restart / overlap / toggle), **Solo** (stops every other
   sound first), **Queue** (waits for the sounds playing to finish; right-click any
   pad → *Play next* does it once), **Only others hear it** (not in your
-  headphones), a **wait** before it plays, a **cooldown** against spamming and
-  **Hold to play** (plays only while you hold its key or pad down, like an air horn).
+  headphones), a **wait** before it plays, a **cooldown** against spamming, **fade in /
+  fade out**, and **Hold to play** (plays only while you hold its key or pad down, like
+  an air horn).
 - **Effects on any sound** (right-click a pad → **Effects…**, or the *Effects* tab
   of **Edit…**): speed and pitch (separately, or together like a record player
   with *Tape mode*), **trim** (drag the start and end on the sound's waveform, or
   type exact times — keep one line out of a 4-minute video), a 7-band EQ, a boost
   up to +36 dB that clips on purpose,
   play backwards, and every voice effect (echo, reverb, distortion, radio, robot,
-  add-on effects too). One-click presets: **Ear rape**, Bass boosted,
+  add-on effects too). One-click presets: **Deep fried**, Bass boosted,
   Slowed + reverb, Nightcore, Chipmunk, Demon, Fast / Slow-mo (same pitch), Old
   radio, Reversed. *Preview* plays it to you only; **Save** changes that pad,
   **Save as new sound** keeps the original and adds the edited version as its own
   pad. Pads with effects show **FX**; *Reset* goes back to the original. The
   original file is never changed.
 - **Your mic on or off:** send your voice with the sounds, or sounds only.
-- **Where your sounds go** (Setup → Devices → *Send to others through*, also in
-  Settings → Audio): **straight into your mic** (new users start here: one click and
-  one Windows permission prompt, then Discord and games hear your sounds through the
-  mic they already use, with nothing to pick there; voice changer, mic volume, gate,
-  ducking and mute all still work, and the Setup tab offers a one-click repair if a
-  Windows update takes it off), **the virtual cable** (the fallback; the Setup tab
-  and the installer offer it, unticked, and Discord or the game uses its *CABLE Output* as a mic), **another device** (any output
+- **Where your sounds go** (Setup → Devices → *Send my sounds to*, also in
+  Settings → Audio): **straight into your mic** (the default for everyone, and
+  updating from the cable moves you here once: one click and one Windows permission
+  prompt, then Discord and games hear your sounds through the mic they already use,
+  with nothing to pick there; voice changer, mic volume, gate, ducking and mute all
+  still work, and the Setup tab offers a one-click repair if a Windows update takes it
+  off), **the virtual cable** (the backup: *Use the virtual cable instead* on the
+  Setup tab, or the installer's box, unticked; Discord or the game uses its *CABLE
+  Output* as a mic. Once your sounds are in your mic, the Setup tab offers to remove
+  the cable), **another device** (any output
   but your headphones: Voicemeeter, a mixer, a capture card, a second sound card, any
   output OBS captures as an *Audio Output Capture*) or **nowhere** (only you hear your
   sounds, and the stream output if you set one). With another device the app never puts
-  the cable back, never asks you to install it, and the header pill turns green once
+  the cable back, never asks you to install it, and the header pill gets a tick once
   it's sending. With nowhere nothing nags. The choice is per PC and isn't in backups.
-- **Stream output for OBS** (Settings → Audio → *Stream output*): what others hear,
+- **Stream output for OBS** (Setup → Devices → *Also send to* → a device set to *Clean,
+  for streaming*; one at a time, with its volume and *Include my voice* under it): what others hear,
   without the voice chat shaping, on a device of its own (a second virtual cable such
   as VB-Cable A+B, or any output you don't listen on). In OBS add it as an *Audio
   Output Capture* (or, for a cable, *Audio Input Capture* of its Output end) and your
   sounds and screen triggers are their own track, with their own volume. Your voice
   goes with them unless you untick it.
-- **Transport bar:** play/pause, stop, a seek slider, and **speed & pitch while
-  it plays** (the `1x` button: 0.25×–2×, ±12 semitones, keep the pitch or not).
-  That's for listening and isn't saved; use Effects to keep a version.
+- **Transport bar:** play/pause, stop, a seek slider, and **speed, pitch and live
+  effects while it plays** (the `1x` button: 0.25×–2×, ±12 semitones, keep the pitch
+  or not, plus bass, treble, muffle, reverb, echo, distortion and presets on every
+  sound playing). That's for listening and isn't saved; use Effects to keep a version.
 - **Any window size:** less important controls tuck away as it gets smaller and come
   back when it grows. Small enough (below roughly 440 × 380) it becomes a mini
   player with your pads and the play / stop controls, down to 260 × 120.
 - **Global hotkeys** (set in **⚙ Settings → Hotkeys**, the overlay key in
-  **⚙ Settings → Overlay**; all work in-game):
+  **⚙ Settings → Overlay**, the most-used ones from the keyboard button on the Sounds
+  tab; all work in-game):
   - Stop all, and pause/resume all.
   - A random sound (from the category showing), the last sound again, next /
     previous category (beeps tell you which), sounds louder / quieter, your mic on /
@@ -78,40 +112,65 @@ The full list. The [README](../README.md) has the short version and how to get s
   - **In-game overlay** (by default the key left of <kbd>1</kbd>: <kbd>`</kbd> on a
     US keyboard; where that key types a letter, like ö or ñ, it's Alt + that key):
     a small panel of your sounds over the game. Number keys play them, and the game keeps your mouse
-    and keyboard.
+    and keyboard. Settings → Overlay: tap to open or hold to show, number row or
+    numpad, hide after picking or after a while, which monitor and where (or drag
+    it), its size and background, and *Show preview*.
   - Auto push-to-talk: holds your game's PTT key while a sound plays.
   - **Instant replay:** set its key and the last 30 seconds of everything your PC
     plays (a friend in Discord, the game, a video; not Onion Board's own sounds)
     are kept in memory. Press it after something funny and it becomes a pad.
     Nothing is saved or sent anywhere until you press it; clear the key to switch
-    it off. Needs Windows 11 or Windows 10 build 20348+.
+    it off. Needs Windows 11, or Windows 10 version 2004 or newer.
   - Hotkeys can beep in your headphones (only you hear it), so you know they
     worked.
 - **Radio tab:** internet radio from all over the world, from the free
   [Radio Browser](https://www.radio-browser.info) directory. Click a dot on the
   world map to tune in (hover one for its country, genres, quality and how popular
   it is; drag to move, scroll to zoom: zoomed in, the cities and towns with stations
-  are named), or search by name, genre, country or city. The
-  map's **HD** button swaps it for a 3D globe you can spin (heavier: it runs a web
-  engine); **2D** on the globe goes back. Star stations for
-  *★ Favorites*. It plays in your headphones, goes out through
-  your mic when you press **LIVE**, and can *Record* or save the *Last 15s* as a pad.
-- **Voice tab:** voice changer (20 ready voices, from Female / Male voice and Demon to
+  are named), or search by name, genre, country or city. Star stations for
+  *★ Favorites*; *Popular* and *Recent* list the most played and the ones you had on. One click plays a station; it plays in your headphones, goes out through
+  your mic when you press **Send**, and can *Record* or save the *Last 15s* as a pad.
+  The bar's live controls change the pitch (up to ±36 semitones with *Redline*) and
+  add bass, treble, muffle, reverb, echo, distortion or a preset.
+- **Apps tab:** send one program's sound (a music player, a browser, a video, a
+  call in another app) to whoever's listening, without touching any other program.
+  Each program is a card with its level, a **Send** switch, its own volume, *Hear it
+  myself* and **Record** (waits for the program to make a sound, then adds it to your
+  Sounds as a pad). Programs you switched on are picked up again next time they run.
+  Under each card, the **Clip editor** keeps that program's last minute as a live
+  waveform: freeze it, drag across the bit you want, Space to hear it, **Send** to
+  play it to others, or **Save** to keep it in *Saved clips* at the bottom of the tab
+  (double-click plays, F2 renames, right-click adds it to your Sounds, sends, copies
+  or deletes it with Undo). Cut, copy, paste, fades, louder / quieter, reverse and
+  undo are in its *Edit* menu; Ctrl+C there and Ctrl+V on the Sounds tab makes a new
+  sound; the big-view button gives one program the whole tab. The tab's live
+  controls change the pitch and effects of every program you send. A closed editor
+  doesn't listen or keep anything. A program you removed comes back, settings and
+  all, from *Forgotten programs…*.
+- **Voice tab:** voice changer (21 ready voices, from Female / Male voice and Demon to
   Autotune, Talkbox, Masked caller and Dark lord; pitch with a natural-sound mode and a
   voice-size control, autotune, mic clean-up (noise gate + hiss removal), monster growl,
   robot / talkbox, helmet, shout blowout, radio with walkie-talkie clicks, echo, reverb,
-  distortion, 8-bit bitcrusher, plus add-on effects; it shows how much delay the voice
-  adds, starts off every time the app opens, and a big ON / OFF button shows which it
-  is), text-to-speech with Windows' built-in
+  distortion, 8-bit bitcrusher, plus add-on effects; *Save as a voice…* keeps your own
+  mix as a voice button (*Make it yours…* tweaks it, a share code copies it to a
+  friend and *Import a code…* adds theirs; removed ones wait in *Recently deleted*),
+  and the dice picks a random one; it shows how much delay the
+  voice adds, starts off every time the app opens, and a big ON / OFF button shows
+  which it is), **AI voices** (optional: *Get AI voices* downloads about 55 MB, needs
+  Python 3.12+; 12 characters turn your voice into someone else's, live on your own
+  CPU, about 75 ms behind you. *All voices* shows each as a card with **Hear it**,
+  sorted under Men, Women and In between & fun, with chips for low, middle or high
+  voices; **Make your own voice** blends two and sets how deep and high it is;
+  *Remove AI voices* takes it all off again), text-to-speech with Windows' built-in
   voices or your own (*More options → Custom voices*: a TTS server on your PC such as
   Kokoro or AllTalk — any OpenAI-style `/v1/audio/speech` address — a TTS program, or
   Piper voice packs dropped into the voices folder), and **live voice-to-speech**:
   press *Start talking as the voice* and each sentence you say is spoken by a
   computer voice instead of yours. Speech recognition runs on your PC (the first time, the Voice tab's *Install speech
   recognition* button downloads it, about 300 MB; needs Python 3.12+).
-  *Speak in* makes the voice say it in Chinese, Spanish, French, German or
-  Russian: talk in English and it's translated on your PC. Each language is an
-  add-on you download only if you pick it (65–195 MB), and it needs that
+  *Speak in* makes the voice say it in one of 33 languages (Chinese, Spanish,
+  French, German, Japanese, Portuguese…): talk in English and it's translated on
+  your PC. Each language is an add-on you download only if you pick it (65–196 MB), and it needs that
   language's Windows voice (Settings → Speech → Add voices, free).
 - **Triggers tab:** plays a sound when a picture shows up in your game: a
   game's "YOU DIED", a rare spawn, a queue popping. It's the
@@ -122,11 +181,12 @@ The full list. The [README](../README.md) has the short version and how to get s
   a game are told apart) or a screen, cut the thing to watch for straight out of
   it (or paste a Win+Shift+S cut, or add a file), pick sounds from your board,
   and choose the wait, how soon it may play again and how close a match must be,
-  with the live match % next to it. A trigger plays once each time the picture
+  with the live match % next to it. *Test* plays a trigger's sound now (it shows in
+  *Playing now*, and its button says *Stop* while it plays). A trigger plays once each time the picture
   appears, or rings until you stop it. Its sounds play through the board like a
   pad; a ringing one loops in your headphones. Triggers from before the add-on
   (Onion Board 1.4 and older) carry over as they were. When a newer Onion Watch
-  is out, the tab offers it (only while *Check once a day* is
+  is out, the tab offers it (only while *Check for updates* is
   ticked). *Remove Onion Watch…* in its *More* menu uninstalls it (after asking);
   your triggers are kept for when you get it again.
   Everything happens on your PC: the screen is never saved or sent anywhere. If
@@ -150,26 +210,62 @@ The full list. The [README](../README.md) has the short version and how to get s
     mix sent to another device), plays it back, and reports whether your voice and
     sounds are in it and whether the balance is off. Not available when sounds go
     nowhere.
-- **Search YouTube and SoundCloud** from the Sounds tab: Enter in *Search sounds*
-  lists results (thumbnail, title, length) in place of the pads; *Play* plays one
-  once, *Add* keeps it as a pad (only the audio is downloaded, via
-  [yt-dlp](https://github.com/yt-dlp/yt-dlp)). TikTok, Instagram and most other
-  sites have no search without an account, so paste a link to the video instead.
+- **Connect your chat** (Setup tab): *Make it sound clean in Discord* (the Discord
+  settings that stop it chopping up your sounds, with a check that listens to what
+  Discord does to them), *Set up game voice chat*, *Zoom, Teams or a browser call*,
+  *Game has no microphone setting?*, and the *Step-by-step guide* with Bun (mic,
+  headphones, where your sounds go, then Discord). **Also send to** (Setup → Devices)
+  gives extra outputs a copy of what others hear, each with a − to remove it.
+- **Search the web for sounds** from the Sounds tab: Enter in *Search sounds* lists
+  results (thumbnail, title, length) in place of the pads, from YouTube, YouTube
+  Music, SoundCloud, **Myinstants** (short meme sound buttons) or TikTok sounds
+  (reposted on YouTube); *Play* plays one once, *Add* keeps it as a pad (only the
+  audio is downloaded, via [yt-dlp](https://github.com/yt-dlp/yt-dlp)). Instagram
+  and most other sites have no search without an account, so paste a link to the
+  video instead.
   YouTube's m4a/webm audio needs FFmpeg, like a dropped m4a file does. Settings →
   Updates has *Update now* and *Reset downloader* for when downloads start
   failing, and an opt-in box to update yt-dlp from PyPI automatically (off by
   default).
-- **⚙ Settings:** 31 themes in four groups — Classic (Dark, Light, true-black
+- **"Did you know?" tips:** after the setup guide, a short tip about one feature at
+  most once a day, with a *Show me* button that opens the right place. Never while a
+  game is up (the overlay open or a fullscreen program in front), each one only once;
+  *Show tips* in Settings → General turns them off.
+- **Discord check:** while it runs, Onion Board reads Discord's own voice settings
+  and shows a bar across the window when one would cut your sounds out (Noise
+  Suppression, the Studio profile on your mic, Echo Cancellation, automatic input
+  sensitivity, Advanced Voice Activity); *Fix Discord* opens the steps, each setting
+  with a ✓ or what to switch. With *Straight into my mic*, an app that opens your mic
+  in "raw" mode (and so skips your sounds) is named in a warning bar too.
+- **Your language:** Settings → Appearance → *Language* opens a searchable list of 32
+  languages, each in its own name (Arabic right to left). Windows set to one of them
+  gets a one-time offer to switch.
+- **Tabs:** a new install starts with Sounds, Voice and Setup; the rest wait under
+  **+ More tabs** and are added when clicked. Settings → Tabs switches any of Radio,
+  Apps, Triggers or Voice off so it doesn't load at all.
+- **Community:** *Join the Discord* (Settings, the tray menu, *What's new*) opens the
+  Onion Board Discord for help and news.
+- **Data & quality** (Settings): *Use less data*, download quality, the radio's
+  bitrate limit, *Slow or patchy connection* (waits longer before giving up), *Also
+  save the video* for links, and *Show pictures and like counts* in search results.
+- **Screen readers:** buttons that only show an icon are read out by name.
+- **⚙ Settings** (with a search box above the categories: type a word and only the
+  cards with it stay)**:** 31 themes in four groups — Classic (Dark, Light, true-black
   Midnight, High Contrast…), Colourful, Wild (Synthwave, Hacker, Amber Terminal…)
   and Meme (Flashbang, Deep Fried, Retro 98, Comic Sans…); they switch live —
-  plus hotkeys, overlay, window and audio options. A category sidebar keeps every
+  your own highlight colour, how live tabs show (a tint or a dot, in the highlight colour), plus hotkeys, overlay, window and audio options. A category sidebar keeps every
   page visible: **Privacy & security** groups online permissions and Offline mode;
   **Connection** holds Direct, proxy and Tor; **Data & quality** holds download
   sizes, radio quality and search extras; **Updates** holds update scheduling
-  and maintenance; **General** holds window, startup, backups and *Start over*;
+  and maintenance; **Connection** also has *Keep an app log* (off stops
+  `onionboard.log` being written and deletes it); **General** holds the window (*Keep window on top*, *Play pads with
+  one click*), tips, startup, backups and *Start over* (*Reset…* just the parts you
+  pick, with a restore point first; *Restore points…* undoes it); **Tabs** switches
+  off the Radio, Apps, Triggers or Voice tab so it doesn't load at all;
   **Add-ons & help** holds Onion Watch, feedback and support; **About** holds the
-  version and links. The other categories are Appearance, Audio, Hotkeys, Overlay
-  and Remote. Changes apply immediately.
+  version and links. The other categories are Appearance, Audio (devices, *Also
+  send to*, the stream output and buffering: Low or Safer, with a count of drop-outs),
+  Hotkeys, Overlay and Remote. Changes apply immediately.
 - **MIDI pads and macro keypads:** a pad controller (Akai LPD8 / MPD, Launchpad,
   any USB MIDI keyboard) works without extra software: set a hotkey and hit a pad
   instead of pressing a key. Pads work for sounds, stop / pause, random sounds and
@@ -181,7 +277,7 @@ The full list. The [README](../README.md) has the short version and how to get s
 - **Stream Deck and scripts (optional, off by default):** Settings → Remote →
   *Remote control* lets programs on this PC play your sounds: a Stream Deck
   (Bitfocus Companion, Touch Portal, its website buttons), AutoHotkey or a script.
-  It only listens on this PC and needs the key shown there (*Copy link* gives a
+  It only listens on this PC and needs the key shown there (*Copy an example link* gives a
   ready-made "play a random sound" link). Besides playing and stopping sounds it can
   mute you (a panic button), switch the voice changer and mic, change the volume and
   category, save the instant replay, change the live speed, pitch and effects,
@@ -198,13 +294,24 @@ The full list. The [README](../README.md) has the short version and how to get s
   can play, stop and mute sounds, never touch your mic. Meant for your home Wi-Fi,
   not public Wi-Fi. When a newer Onion Pocket is out, its card offers *Update Onion
   Pocket to …*: one click and the new one runs, phones still paired.
+- **Privacy:** Settings → Privacy & security has a switch for each thing the app
+  does online, and **Offline mode** switches them all off (the installer can set it
+  before the first start). Everything can go through a SOCKS5 / HTTP proxy or
+  **Tor** (*Get Tor* downloads the Tor Project's own, checked first), and never
+  quietly goes direct if that fails. **Network activity** (Settings → Connection)
+  lists every connection the app makes and why. By itself it only checks for updates
+  and sends an anonymous daily count (version + a random ID); each has its own switch.
 - **Runs in the background:** closing the window keeps it in the tray (hotkeys and
-  the overlay keep working; right-click the tray icon → *Quit*). Optionally
+  the overlay keep working; right-click the tray icon for *Open Onion Board*, *Stop
+  all sounds* or *Quit*). Optionally
   **starts when you sign in**, straight to the tray (Settings → General).
-- **Updates itself:** once a day it checks GitHub for a new version (untick it in
+- **Updates itself:** every few hours it checks GitHub for a new version (untick it in
   Settings → Updates). *Update now* downloads it, checks it's the file GitHub lists,
   and on *Restart now* installs it and reopens the app, keeping your sounds and
-  settings. Nothing is downloaded until you click.
+  settings. Nothing is downloaded until you click. An **important fix** (a release
+  whose notes have an `Urgent: …` line, for Onion Board or Onion Watch) shows as a
+  banner across the window with the reason and an *Update now* button; it can be
+  hidden until the next start, but not skipped for good.
 
 ## How it works
 
@@ -233,7 +340,7 @@ The virtual cable is a free audio driver that works like a pipe: Onion Board pla
 into one end, and Discord or the game uses the other end as a microphone. You hear
 the sounds in your own headphones separately.
 
-Not using the cable? Setup → Devices → **Send to others through** → *Another
-device* sends the same mix into whatever output you pick instead (Voicemeeter, a
-mixer, a capture card, OBS), or *Nowhere* keeps it to your headphones and the
+Not using the cable? Setup → Devices → **Send my sounds to** → any device by name
+sends the same mix into that output instead (Voicemeeter, a mixer, a capture card,
+OBS), *My mic* puts it in your mic, and *Nobody* keeps it to your headphones and the
 stream output.

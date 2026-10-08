@@ -1,7 +1,8 @@
 # Builds a self-contained Onion Board for PCs without Python:
 #   dist\OnionBoard\OnionBoard.exe  (one folder)
-#   dist\OnionBoardSetup.exe          (the one file to give people: installs the app,
-#                                      the virtual cable and the shortcuts)
+#   dist\OnionBoardSetup.exe          (the one file to give people: installs the app
+#                                      and the shortcuts; the virtual cable only if
+#                                      its box is ticked)
 #
 # The installer step needs Inno Setup 6 once:  winget install JRSoftware.InnoSetup
 #
@@ -47,6 +48,7 @@ if ($LASTEXITCODE -ne 0) { throw "build_directmic.py failed (is MinGW-w64's g++ 
     --add-data "assets\onionboard.ico;." `
     --add-data "assets\art;art" `
     --add-data "assets\radio;radio" `
+    --add-data "assets\lang;lang" `
     --add-binary "build\directmic\obmic.dll;directmic" `
     --copy-metadata yt-dlp --collect-all yt_dlp_ejs `
     --hidden-import scipy.fft --hidden-import scipy.ndimage `
@@ -54,6 +56,8 @@ if ($LASTEXITCODE -ne 0) { throw "build_directmic.py failed (is MinGW-w64's g++ 
     --exclude-module scipy.stats --exclude-module scipy.optimize `
     --exclude-module scipy.interpolate --exclude-module scipy.integrate `
     --exclude-module scipy.sparse --exclude-module scipy.spatial `
+    --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets `
+    --exclude-module PySide6.QtWebChannel --exclude-module PySide6.QtPdf `
     --paths . `
     main.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }

@@ -166,3 +166,191 @@ def test_a_broken_remote_add_on_never_stops_the_app(qapp, window, tmp_path,  # n
     texts = " ".join(lb.text() for lb in d.tabs.currentWidget().widget().findChildren(QLabel))
     assert "Broken" not in texts and "boom" not in texts   # optional: just left out
     d.close()
+
+
+def test_the_key_never_goes_in_the_url_on_the_wifi(qapp, loaded):
+    srv = loaded.server
+    assert srv.start(0, "add-on-key", "127.0.0.1")
+    assert call(qapp, srv, "/api/status?token=add-on-key")[0] == 401
+    assert api(qapp, srv, "/api/status", "add-on-key")[0] == 200
+    loop = remote.RemoteControl(lambda a, p: (200, {}))   # Stream Deck side unchanged
+    loop.token = "k"
+    assert loop.authorised({}, {"token": ["k"]})
+
+
+def test_a_flood_of_connections_cant_pile_up_threads(qapp, loaded, monkeypatch):
+    """A device on the Wi-Fi with no key opening connection after connection: past
+    the limit they're closed straight away, and once they go a phone gets in again."""
+    import socket
+    monkeypatch.setattr(remote, "PEER_CONNECTIONS", 3)
+    srv = loaded.server
+    assert srv.start(0, "add-on-key", "127.0.0.1")
+    before = threading.active_count()
+    held = [socket.create_connection((srv.host, srv.port), timeout=5) for _ in range(20)]
+    for s in held:
+        s.sendall(b"GET / HTTP/1.1\r\n")   # half a request: its thread waits for more
+    assert process_events(qapp, lambda: threading.active_count() - before >= 3, timeout=2)
+    process_events(qapp, lambda: False, timeout=0.3)
+    assert threading.active_count() - before <= 3
+    closed = waiting = 0
+    for s in held:
+        s.settimeout(0.2)
+        try:
+            closed += s.recv(1) == b""
+        except TimeoutError:   # one of the few let in, still waiting for its request
+            waiting += 1
+        except OSError:        # reset: closed too
+            closed += 1
+    assert waiting <= 3 and closed == 20 - waiting
+    for s in held:
+        s.close()
+    assert process_events(qapp, lambda: not srv._server._open, timeout=3)
+    assert call(qapp, srv, "/")[0] == 200
+
+
+def test_never_on_a_network_windows_calls_public(qapp, window, loaded,  # noqa: F811
+                                                 monkeypatch):
+    """A café's Wi-Fi: no server, whatever Windows Firewall would let in; and one
+    already listening stops when its network turns Public, saying so."""
+    from soundboard import netcategory
+    srv = loaded.server
+    monkeypatch.setattr(netcategory, "category", lambda ip: netcategory.PUBLIC)
+    assert not srv.start(0, "add-on-key", "127.0.0.1") and not srv.running
+    assert srv.error == remote.public_network()
+    monkeypatch.setattr(netcategory, "category", lambda ip: None)   # can't tell: on
+    assert srv.start(0, "add-on-key", "127.0.0.1")
+    asked = []
+    monkeypatch.setattr(netcategory, "category",
+                        lambda ip: asked.append(threading.current_thread())
+                        or netcategory.PRIVATE)
+    srv._check_network()
+    assert process_events(qapp, lambda: asked and not srv._net_asking, timeout=3)
+    process_events(qapp, lambda: False, timeout=0.2)
+    assert srv.running
+    assert threading.main_thread() not in asked   # asked off the UI thread
+    monkeypatch.setattr(netcategory, "category", lambda ip: netcategory.PUBLIC)
+    srv._check_network()
+    assert process_events(qapp, lambda: not srv.running, timeout=3)
+    assert srv.error == remote.public_network()
+    assert "Public" in window.status.text()
+    loop = remote.RemoteControl(lambda a, p: (200, {}))   # Stream Deck side: 127.0.0.1
+    assert loop.start(0, "k") and loop.running
+    loop.stop()
+
+
+def test_the_network_category_never_raises():
+    from soundboard import netcategory
+    assert netcategory.category("203.0.113.9") is None   # no adapter has it
+    assert netcategory.category("not an address") is None
+
+
+def _sig(key, request, ts=None, nonce=None):
+    import base64
+    import hashlib
+    import hmac
+    import secrets
+    import time
+    ts = int(time.time()) if ts is None else ts
+    nonce = nonce or secrets.token_urlsafe(16)
+    mac = hmac.new(key.encode(), f"{ts}.{nonce}.{request}".encode(), hashlib.sha256)
+    return f"{ts}.{nonce}." + base64.urlsafe_b64encode(mac.digest()).decode().rstrip("=")
+
+
+def test_a_signed_request_never_sends_the_key(qapp, loaded):
+    """What someone reading the Wi-Fi sees: a signature good for that one request,
+    once, now. Sent again, for another request, old, or made with another key: no."""
+    import time
+    srv = loaded.server
+    assert loaded.host.signed_requests
+    assert srv.start(0, "add-on-key", "127.0.0.1")
+    good = _sig("add-on-key", "POST /api/sounds")
+    assert call(qapp, srv, "/api/sounds", {"X-Sig": good}, "POST")[0] == 200
+    assert call(qapp, srv, "/api/sounds", {"X-Sig": good}, "POST")[0] == 401    # replayed
+    other = _sig("add-on-key", "POST /api/sounds")
+    assert call(qapp, srv, "/api/play?id=x", {"X-Sig": other}, "POST")[0] == 401
+    srv.succeeded("127.0.0.1")
+    old = _sig("add-on-key", "POST /api/status", ts=int(time.time()) - remote.SIG_WINDOW_S - 5)
+    status, body = call(qapp, srv, "/api/status", {"X-Sig": old}, "POST")
+    assert status == 401 and abs(json.loads(body)["now"] - time.time()) < 5
+    assert call(qapp, srv, "/api/status", {"X-Sig": _sig("guess", "POST /api/status")},
+                "POST")[0] == 401
+    srv.succeeded("127.0.0.1")
+    for junk in ("", "x", "1.2.3", "99999999999999.aaaaaaaaaaaaaaaa.x", ". . ."):
+        assert not srv.signed(junk, "POST /api/status")
+    assert api(qapp, srv, "/api/status", "add-on-key")[0] == 200   # older Pocket pages
+
+
+def test_remembered_nonces_stay_bounded(loaded, monkeypatch):
+    monkeypatch.setattr(remote, "NONCES_MAX", 3)
+    srv = loaded.server
+    srv.token = "k"
+    sigs = [_sig("k", "POST /api/status") for _ in range(4)]
+    assert all(srv.signed(s, "POST /api/status") for s in sigs[:3])
+    assert not srv.signed(sigs[3], "POST /api/status")   # full of fresh ones: refused
+    assert len(srv._nonces) == 3
+
+
+def test_onion_pocket_can_be_removed_from_its_card_and_add_ons(qapp, window,  # noqa: F811
+                                                               monkeypatch):
+    """*Remove Onion Pocket…* on its card (Settings → Remote) and on the Add-ons card:
+    asks first, stops it, deletes its folder, keeps its settings, and the card turns
+    back into *Get Onion Pocket*."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from soundboard import library, pocketaddon
+    base = library.APP_DIR / "modules"
+    info = _module(base, pocketaddon.MODULE_ID, "pocket_remove_test_addon", ADDON)
+    monkeypatch.setattr(modules, "discover", lambda dirs=None: [modules._read(info.path)])
+    monkeypatch.setattr(pocketaddon, "offered", lambda: True)
+    window.pocket_checked = 1e18          # no update check over the network
+    window.remote_addons = window._load_remote_addons()
+    (info, addon), = window.remote_addons
+    window.cfg.remote_addons[info.id] = {"token": "kept"}
+    d = SettingsDialog(window, "remote", lazy=False)
+    assert not d.pocket_remove.isHidden() and not d.pocket_remove_addons.isHidden()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+    d.pocket_remove.click()
+    assert info.path.is_dir() and window.remote_addons    # said no: nothing happens
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    d.pocket_remove_addons.click()
+    assert not info.path.exists() and window.remote_addons == []
+    assert addon.stopped == 1 and window.cfg.remote_addons[info.id] == {"token": "kept"}
+    assert d.pocket_remove_addons.isHidden()   # Add-ons: not installed
+    assert d.get_pocket.isVisibleTo(d)                     # Remote offers it again
+    d.close()
+
+
+def test_add_ons_card_checks_reinstalls_and_reports(qapp, window,  # noqa: F811
+                                                    monkeypatch):
+    """Settings → Add-ons & help, Onion Pocket's row: Check for updates turns into
+    Update to X when GitHub has a newer one, Reinstall swaps in a fresh copy, and
+    Report a problem opens a bug report naming the add-on and its version."""
+
+    from soundboard import feedback, library, net, pocketaddon
+    from soundboard.ui import busy
+    base = library.APP_DIR / "modules"
+    info = _module(base, pocketaddon.MODULE_ID, "pocket_addons_card_test", ADDON)
+    monkeypatch.setattr(modules, "discover", lambda dirs=None: [modules._read(info.path)])
+    monkeypatch.setattr(net, "allowed", lambda feature: True)
+    window.pocket_checked = 1e18
+    window.remote_addons = window._load_remote_addons()
+    d = SettingsDialog(window, "help")
+    b = d.pocket_buttons
+    assert b["get"].isHidden() and not b["check"].isHidden()
+    monkeypatch.setattr(pocketaddon, "latest",
+                        lambda cancelled=None: pocketaddon.Offer("2", "u", "s"))
+    b["check"].click()
+    assert process_events(qapp, lambda: b["check"].text() == "Update to 2", timeout=3)
+    got = []
+    monkeypatch.setattr(pocketaddon, "get", lambda offer=None, **k: got.append(offer)
+                        or modules._read(info.path))
+    b["reinstall"].click()
+    assert process_events(qapp, lambda: got and not busy.is_busy(b["reinstall"]), timeout=3)
+    assert got == [None] and len(window.remote_addons) == 1
+    opened = []
+    monkeypatch.setattr(busy, "open_url", lambda url, *a, **k: opened.append(url))
+    b["report"].click()
+    assert "title=Onion%20Pocket%3A%20" in opened[0] and "Onion%20Pocket%201" in opened[0]
+    assert "title" not in feedback.problem_url("1.0")
+    d.close()
+    window._stop_remote_addons()

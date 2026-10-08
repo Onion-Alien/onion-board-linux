@@ -2,7 +2,7 @@
 it and installing it into %APPDATA%\\OnionBoard\\modules\\onion-watch.
 
 Nothing here runs until the user asks for it: the tab's *Get Onion Watch* button,
-or its *Update* button once it's installed and the app's own daily update check
+or its *Update* button once it's installed and the app's own update check
 (only while "Tell me when a new version is out" is ticked) found a newer one. The
 file is taken only from the project's own github.com/…/releases/download/ link,
 over HTTPS, and kept only if it matches the SHA-256 GitHub lists for it
@@ -13,7 +13,9 @@ ONIONBOARD_ONION_WATCH_ZIP=<path to an OnionWatch-module.zip> makes both use tha
 file instead of GitHub, to try a build before it's released.
 
 "Get and update add-ons" switched off in Settings > Privacy & security stops all of
-it (net.FeatureOff); the daily check then skips itself without a word.
+it (net.FeatureOff); the timed check then skips itself without a word. An "Urgent: …"
+line in a release's notes makes it an urgent fix (updates.urgent): the board then shows
+a banner for it too, not only the Triggers tab's bar.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from pathlib import Path
 from soundboard import modules, net, updates
 from soundboard.modules import ModuleInfo
 from soundboard import errors
+from soundboard.i18n import _
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ class Offer:
     page: str = RELEASES   # its release page
     notes: str = ""
     local: Path | None = None   # a zip on this PC instead (LOCAL_ENV)
+    urgent: str = ""       # why it's an urgent fix; "" = it isn't (updates.urgent)
 
 
 def local_zip() -> Path | None:
@@ -93,8 +97,9 @@ def latest(cancelled: Callable[[], bool] | None = None) -> Offer | None:
     page = str(data.get("html_url") or RELEASES)
     if not page.startswith(PAGE + "/"):
         page = RELEASES     # only ever open the project's own page
-    return Offer(".".join(map(str, ver)), url, sha, size, page,
-                 updates.summary(str(data.get("body") or "")))
+    body = str(data.get("body") or "")
+    return Offer(".".join(map(str, ver)), url, sha, size, page, updates.summary(body),
+                 urgent=updates.urgent(body))
 
 
 def fetch(offer: Offer, progress: Callable[[int, int], None] | None = None,
@@ -106,7 +111,7 @@ def fetch(offer: Offer, progress: Callable[[int, int], None] | None = None,
             raise updates.UpdateError(f"{offer.local} isn't there ({LOCAL_ENV})")
         return offer.local
     dest = updates.UPDATES_DIR / f"OnionWatch-module-{offer.version}.zip"
-    return updates.fetch(offer.url, offer.sha256, dest, (DOWNLOADS,), MAX_SIZE, "an add-on",
+    return updates.fetch(offer.url, offer.sha256, dest, (DOWNLOADS,), MAX_SIZE, "add-on",
                          offer.size, progress, cancelled, FEATURE)
 
 
@@ -143,7 +148,7 @@ def remove(info: ModuleInfo, base: Path | None = None) -> None:
 def check_update(dirs: list[Path] | None = None) -> Offer | None:
     """A newer Onion Watch than the one installed, or None (also when it isn't
     installed: then nothing is asked). Errors are logged, not raised. Call off the
-    UI thread; the app calls it with its own daily update check."""
+    UI thread; the app calls it with its own update check."""
     info = installed(dirs)
     if info is None or not net.allowed(FEATURE):   # switched off: skip, silently
         return None
@@ -164,11 +169,12 @@ def friendly(e: Exception) -> str:
     if isinstance(e, net.FeatureOff):
         return text
     if getattr(e, "code", None) in (502, 503, 504):
-        return ("GitHub's download check is temporarily unavailable (gateway error). "
-                "Try Get Onion Watch again in a moment.")
+        return _("GitHub's download check is temporarily unavailable (gateway error). "
+                 "Try Get Onion Watch again in a moment.")
     if "404" in text:
-        return ("Onion Watch isn't available to download yet (GitHub says it can't find "
-                "it). Try again later.")
+        return _("Onion Watch isn't available to download yet (GitHub says it can't find "
+                 "it). Try again later.")
     if isinstance(e, OSError):          # urllib's errors: offline, DNS, timeouts
-        return f"Couldn't reach GitHub ({text}). Check your internet connection."
+        return _("Couldn't reach GitHub ({error}). Check your internet connection.",
+                 error=text)
     return text[:1].upper() + text[1:]

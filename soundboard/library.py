@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar
 
@@ -31,6 +32,7 @@ from soundboard import __version__, mapped
 from soundboard.engine import SR
 from soundboard.eq import BANDS as EQ_BANDS
 from soundboard.eq import MAX_DB as EQ_MAX_DB
+from soundboard.i18n import _
 
 log = logging.getLogger(__name__)
 
@@ -48,13 +50,15 @@ CONFIG_PATH = APP_DIR / "config.json"
 # privacy.json beside config.json: a copy of the Privacy & security settings: a version
 # from before them drops them when it saves, and the next newer start takes them back
 PRIVACY_KEYS = ("net_mode", "net_proxy", "net_off", "net_offline", "netlog_keep",
-                "tor_bridges")
+                "tor_bridges", "app_log")
 # ...and which What's new was seen, which those versions drop too (it showed again after
 # going back a version and returning). Versions that read privacy.json take only
 # PRIVACY_KEYS from it, so the extra key is safe for them.
 SIDE_KEYS = PRIVACY_KEYS + ("whats_new_seen",)
 CONFIG_VERSION = 4
 LOAD_TRIES = 12      # ~10 s of retries while config.json is locked
+# a new user's first window: Sounds, Voice and Setup; the rest wait under + More tabs
+BASIC_TABS_OFF = ("radio", "apps", "triggers")
 CONFIG_BACKUPS = 3   # config.json.1 … .3, rotated on a save that changes something...
 ROTATE_EVERY_S = 3600   # ...at most once an hour (the first change of a session always)
 # where install-vbcable.ps1 lives: installer/ in a source checkout, or the frozen
@@ -106,6 +110,17 @@ def _typed(raw: dict, defaults, what: str) -> dict:
     return out
 
 
+@lru_cache(maxsize=4096)
+def _stored_path(path: str, folder: Path, absolute: bool) -> str:
+    """`path` as config.json keeps it: just the name when it's a file in `folder` (only
+    an absolute path, with `absolute`). Remembered: every save (each drag of a pad, each
+    volume change) asked pathlib this for every sound, ~3 ms of it with 200 sounds."""
+    p = Path(path)
+    if (p.is_absolute() or not absolute) and p.parent == folder:
+        return p.name
+    return path
+
+
 # A newer version's settings, kept so this one's save writes them back (an older
 # version opening newer settings must lose nothing). Set on a loaded Config / SoundMeta
 # as plain attributes, not dataclass fields: asdict() and == never see them.
@@ -129,7 +144,7 @@ PAD_WIDTH_RANGE = (110, 240)  # the Sounds tab's pad-size slider
 # someone's backup is brought into it (Qt raises OverflowError on one past an int)
 NET_MODES = ("direct", "proxy", "tor")   # soundboard.net.MODES
 TOR_BRIDGES = ("", "snowflake", "obfs4")   # soundboard.tor.BRIDGES
-# where what others hear goes (Config.route; Setup -> Devices -> Send to others through):
+# where what others hear goes (Config.route; Setup -> Devices -> Send my sounds to):
 #   cable  - a virtual cable, whose other end Discord / the game uses as its mic
 #   device - any output picked by hand (Voicemeeter, a mixer, a second sound card, a
 #            device OBS captures): no cable needed, and none is picked in its place
@@ -140,11 +155,29 @@ TOR_BRIDGES = ("", "snowflake", "obfs4")   # soundboard.tor.BRIDGES
 ROUTES = ("cable", "device", "off", "mic")
 # settings whose unknown value (a newer version's choice) clean_setting replaces with
 # a safe one: the value as it was is still written back (see _with_raw)
-NEWER_CHOICES = ("route", "net_mode", "tor_bridges")
+NEWER_CHOICES = ("route", "net_mode", "tor_bridges", "pad_sort", "pad_view")
+# the Sounds tab's orders: as dragged, A-Z, the newest first, the most played first
+PAD_SORTS = ("custom", "name", "newest", "plays")
+PAD_VIEWS = ("grid", "list")
 SETTING_RANGES = {"sound_vol": (0.0, VOLUME_MAX), "mic_vol": (0.0, VOLUME_MAX),
                   "mon_vol": (0.0, VOLUME_MAX), "obs_vol": (0.0, VOLUME_MAX),
                   "pad_width": PAD_WIDTH_RANGE, "app_card_width": (240, 480),
                   "duck_db": (-24.0, 0.0), "replay_seconds": (5, 120)}
+
+
+def clean_programs(v) -> dict[str, str]:
+    """Config.category_programs as the app can use it: {exe file name, lower case:
+    category}; entries that aren't a plain file name and a category name are dropped."""
+    out: dict[str, str] = {}
+    if not isinstance(v, dict):
+        return out
+    for exe, cat in v.items():
+        if not isinstance(exe, str) or not isinstance(cat, str) or not cat.strip():
+            continue
+        name = exe.strip().lower()
+        if name and name not in (".", "..") and not any(c in name for c in "/\\:"):
+            out[name] = cat.strip()
+    return out
 
 
 def clean_setting(k: str, v):
@@ -153,13 +186,22 @@ def clean_setting(k: str, v):
     if k in SETTING_RANGES:
         lo, hi = SETTING_RANGES[k]
         return min(max(v, lo), hi)
+    if k == "category_programs":   # {exe file name: category}; anything else is dropped
+        return clean_programs(v)
     if k == "net_mode":   # a mode this version doesn't know (a newer one's): fail
         return v if v in NET_MODES else "proxy"   # closed, never quietly direct
-    if k == "net_off":   # feature keys (strings); unknown ones are kept, so a newer
-        # version's switch stays off after a downgrade and an upgrade
+    if k in ("net_off", "tabs_off", "tips_seen"):   # keys (strings); unknown ones kept, so a
+        # newer version's switch stays off after a downgrade and an upgrade
         return list(dict.fromkeys(x for x in v if isinstance(x, str) and x))
     if k == "route":   # a newer version's route: back to the cable, the safe default
         return v if v in ROUTES else "cable"
+    if k == "pad_sort":
+        return v if v in PAD_SORTS else "custom"
+    if k == "pad_view":
+        return v if v in PAD_VIEWS else "grid"
+    if k == "category_colors":   # {category: "#rrggbb"}; anything else is dropped
+        return {c: col for c, col in v.items() if isinstance(c, str) and isinstance(col, str)
+                and re.fullmatch(r"#[0-9a-fA-F]{6}", col)}
     if k == "tor_bridges":   # an unknown kind: still hide Tor, with the default bridge
         return v if v in TOR_BRIDGES else "snowflake"
     if k == "eq_gains":   # one finite gain per band, within the EQ's sliders
@@ -261,6 +303,8 @@ class SoundMeta:
     only_them: bool = False   # goes out to others but not into your own headphones
     delay: float = 0.0        # seconds between the press and the sound starting
     cooldown: float = 0.0     # seconds after it starts during which presses are ignored
+    plays: int = 0            # times it was played (the Sounds tab's Most played order)
+    added: float = 0.0        # time.time() it joined the board; 0 = before this was kept
 
 
 @dataclass
@@ -282,6 +326,10 @@ class Config:
     obs_device: str | None = None
     obs_vol: float = 1.0
     obs_voice: bool = True            # your mic goes to the stream output too
+    # Setup -> Devices -> Also send to: more devices that get a copy of what others hear,
+    # on top of "Send my sounds to" (streamers: Voicemeeter, OBS, a second cable...;
+    # engine.Engine.set_copy_devices)
+    also_send: list[str] = field(default_factory=list)
     sound_vol: float = 1.0
     mic_vol: float = 1.0
     mon_vol: float = 0.7
@@ -294,6 +342,8 @@ class Config:
     overlay_key_checked: bool = False   # "`" looked at against the keyboard layout once
     cue_sounds: bool = True           # beep in the headphones when a hotkey records / saves
     theme: str = "Dark"
+    # the app's language, a catalog code (assets/lang); "" = never picked (i18n.startup)
+    language: str = ""
     live_color: str = ""   # own colour for the "it's on" highlights ("" = the theme's)
     eq_enabled: bool = False
     eq_target: str = "voice"          # voice | sounds | all
@@ -310,13 +360,22 @@ class Config:
     # never picked by anyone) doesn't keep it off; older versions just ignore it
     live_tab_green: bool = True
     pad_width: int = 150
+    pad_sort: str = "custom"   # the Sounds tab's order: PAD_SORTS
+    pad_view: str = "grid"     # "grid" (cards) or "list" (one-line rows)
     app_card_width: int = 300
     tab: int = 0     # 0 = sounds, 1 = radio, 2 = apps, 3 = triggers, 4 = voice, 5 = setup
+    # Settings > Tabs: the tabs switched off ("radio", "apps", "triggers", "voice"), gone
+    # from the window and never built (a new user starts with BASIC_TABS_OFF)
+    tabs_off: list[str] = field(default_factory=list)
     # fetch newer yt-dlp versions from PyPI by itself: opt-in, since that's code the app
     # runs (named *_optin so configs saved while it defaulted to on start off again)
     ytdlp_auto_optin: bool = False
     latency: str = "low"              # audio buffering: 'low' | 'high' (safer on flaky devices)
     setup_done: bool = False          # the quick-setup guide has been completed
+    # "Did you know?" tips (soundboard.tips): on / off, the ones shown, the day of the last
+    tips_on: bool = True
+    tips_seen: list = field(default_factory=list)
+    tip_day: str = ""
     voice_discord_tip_shown: bool = False   # "Got it" on the voice changer's Studio notice
     voice_fx: dict = field(default_factory=dict)   # voice changer (see ui.voicepanel)
     speech: dict = field(default_factory=dict)     # text-to-speech / live voice settings
@@ -334,9 +393,10 @@ class Config:
     screen: dict = field(default_factory=dict)
     categories: list[str] = field(default_factory=list)   # pad categories, in tab order
     category: str = ""                # the category the Sounds tab shows; "" = all
+    category_colors: dict = field(default_factory=dict)   # category -> "#rrggbb" on its tab
     tray: bool = True                 # closing the window keeps the app in the tray
     autostart_hidden: bool = True     # started with Windows: straight to the tray
-    # look at GitHub Releases for a newer version, at most once a day (soundboard.updates).
+    # look at GitHub Releases for a newer version, at most every 6 hours (soundboard.updates).
     # Was the opt-in update_check_optin, off by default: renamed so every config starts on
     update_check: bool = True
     update_checked: float = 0.0       # time.time() of the last check
@@ -360,6 +420,10 @@ class Config:
     scoped_hotkeys: bool = False
     single_click: bool = False        # one click on a pad plays it (not a double-click)
     category_hotkeys: dict = field(default_factory=dict)   # category -> its random-sound key
+    # Switch category when a program is in front (soundboard.catswitch): {"game.exe":
+    # category}, set by the user from a category's menu; and the switch for all of it
+    category_programs: dict = field(default_factory=dict)
+    category_programs_on: bool = True
     # instant replay (soundboard.replay): while this hotkey is set, the last
     # replay_seconds of everything you hear (except Onion Board's own sounds) are kept
     # in memory, and the key saves them as a new pad
@@ -382,6 +446,8 @@ class Config:
     net_offline: bool = False
     # Network activity's "Keep a history" (soundboard.netlog.keep): off = memory only
     netlog_keep: bool = False
+    # "Keep an app log" (soundboard.applog.keep): off = onionboard.log isn't written
+    app_log: bool = True
     # "Hide that I'm using Tor": "" (off), "snowflake" or "obfs4" bridges
     tor_bridges: str = ""
     # the anonymous usage count (soundboard.usage; its switch is "usage_stats" in
@@ -389,6 +455,13 @@ class Config:
     # one went. A config without stats_id is from before the count existed.
     stats_id: str = ""
     stats_sent: float = 0.0
+    # the installer's "Where did you hear about Onion Board?", sent once with the
+    # first-start event (usage.heard_tag tidies it, or drops it)
+    stats_heard: str = ""
+    # tabs opened since the last daily count, and the newest crash / freeze report
+    # already counted (its file time)
+    stats_tabs: list[str] = field(default_factory=list)
+    stats_problems_seen: float = 0.0
     sounds: list[SoundMeta] = field(default_factory=list)
 
     # set by load() when the settings weren't read cleanly, for the window to tell the
@@ -442,21 +515,20 @@ class Config:
                 except (TypeError, ValueError, KeyError, AttributeError):
                     continue
                 cfg.read_only = True
-                cfg.load_note = (f"Your settings file was locked by another program, so the "
-                                 f"last copy ({name}) was loaded instead. Changes won't be "
-                                 "saved until you restart Onion Board.")
+                cfg.load_note = _("Your settings file was locked by another program, so "
+                                  "the last copy ({name}) was loaded instead. Changes won't "
+                                  "be saved until you restart Onion Board.", name=name)
                 return cfg
             cfg = cls()
             cfg.read_only = True
-            cfg.load_note = ("Your settings file was locked by another program, so Onion "
-                             "Board started with default settings. Changes won't be saved "
-                             "until you restart it.")
+            cfg.load_note = _("Your settings file was locked by another program, so "
+                              "Onion Board started with default settings. Changes won't be "
+                              "saved until you restart it.")
             return cfg
         log.error("config %s is unreadable: %r", CONFIG_PATH, err)
         broken = "" if missing else cls._set_aside()
-        kept = ("" if missing else
-                f" The damaged file was kept as {broken or 'config.json'}.")
-        what = "missing" if missing else "damaged"
+        kept = ("" if missing else " " + _("The damaged file was kept as {file}.",
+                                           file=broken or "config.json"))
         for name, raw in cls._backups():
             try:
                 cfg = cls.from_raw(raw)
@@ -464,13 +536,18 @@ class Config:
                 log.warning("backup %s doesn't load either", name, exc_info=True)
                 continue
             log.warning("recovered settings from backup %s", name)
-            cfg.load_note = (f"Your settings file was {what}, so the last good copy "
-                             f"({name}) was loaded instead.{kept}")
+            cfg.load_note = (_("Your settings file was missing, so the last good copy "
+                               "({name}) was loaded instead.", name=name) if missing else
+                             _("Your settings file was damaged, so the last good copy "
+                               "({name}) was loaded instead.", name=name)) + kept
             return cfg
         cfg = cls()
-        cfg.load_note = (f"Your settings file was {what} and no backup could be read, so "
-                         "Onion Board started with default settings. Your sound files are "
-                         f"still in {SOUNDS_DIR}.{kept}")
+        cfg.load_note = (_("Your settings file was missing and no backup could be read, "
+                           "so Onion Board started with default settings. Your sound files "
+                           "are still in {folder}.", folder=SOUNDS_DIR) if missing else
+                         _("Your settings file was damaged and no backup could be read, "
+                           "so Onion Board started with default settings. Your sound files "
+                           "are still in {folder}.", folder=SOUNDS_DIR)) + kept
         return cfg
 
     @classmethod
@@ -481,6 +558,7 @@ class Config:
         cfg = cls()
         cfg.route = "mic"
         cfg.mic_first = True
+        cfg.tabs_off = list(BASIC_TABS_OFF)   # a plain soundboard first; + More tabs adds them
         return cfg
 
     def _restore_privacy(self):
@@ -590,7 +668,8 @@ class Config:
                     s[k] = clean_wait(s[k], k)
             if s.get("mode") not in MODES:
                 s["mode"] = "restart"
-            for k, lo, hi in (("volume", 0.0, 2.0), ("level_gain", 0.1, 6.0)):
+            for k, lo, hi in (("volume", 0.0, 2.0), ("level_gain", 0.1, 6.0),
+                              ("plays", 0, 10**9), ("added", 0.0, 1e11)):
                 if k in s:   # the Edit dialog's slider can't take any number
                     s[k] = min(max(s[k], lo), hi)
             m = SoundMeta(**s)
@@ -644,12 +723,12 @@ class Config:
         d["version"] = CONFIG_VERSION
         for s, m in zip(d["sounds"], self.sounds):
             _with_raw(s, m)
-        for s in d["sounds"]:   # files inside the library are stored by name only, so the
-            p = Path(s["file"])  # whole %APPDATA%\OnionBoard folder can move or be restored
-            if p.is_absolute() and p.parent == SOUNDS_DIR:
-                s["file"] = p.name
-            if s["image"] and Path(s["image"]).parent == THUMBS_DIR:
-                s["image"] = Path(s["image"]).name
+        # files inside the library are stored by name only, so the whole
+        # %APPDATA%\OnionBoard folder can move or be restored
+        for s in d["sounds"]:
+            s["file"] = _stored_path(s["file"], SOUNDS_DIR, True)
+            if s["image"]:
+                s["image"] = _stored_path(s["image"], THUMBS_DIR, False)
         return d
 
     def save(self) -> bool:
@@ -666,7 +745,9 @@ class Config:
         so another thread can write it. The number orders snapshots: an older one is
         never written over a newer one."""
         global _snap_seq
-        with _write_lock:
+        # not _write_lock: the writer holds that while it's on the disk, and a slow
+        # disk would freeze the window that's only copying the settings
+        with _seq_lock:
             _snap_seq += 1
             seq = _snap_seq
         return (seq, self.to_raw(),
@@ -674,6 +755,7 @@ class Config:
 
 
 _write_lock = threading.Lock()   # one writer at a time: Saver's thread or a direct save()
+_seq_lock = threading.Lock()     # numbering snapshots (never held across disk I/O)
 _snap_seq = 0       # the last snapshot's number (Config.snapshot)
 _written_seq = 0    # ...and the newest one written
 
@@ -799,6 +881,20 @@ MAX_FADE_S = 10.0
 MAX_DELAY_S = 10.0      # a sound's "wait before playing"
 MAX_COOLDOWN_S = 60.0   # a sound's "ignore presses for"
 MODES = ("restart", "overlap", "toggle", "solo", "queue")   # SoundMeta.mode
+
+
+def sorted_sounds(sounds: list[SoundMeta], how: str) -> list[SoundMeta]:
+    """The sounds in the Sounds tab's order `how` (PAD_SORTS). Ties keep the board's
+    own order; sounds from before `added` was kept count as older than any since, and
+    among themselves the later in the board the newer (new sounds are added at the end)."""
+    if how == "name":
+        return sorted(sounds, key=lambda m: m.name.casefold())
+    if how == "plays":
+        return sorted(sounds, key=lambda m: -m.plays)
+    if how == "newest":
+        order = {id(m): i for i, m in enumerate(sounds)}
+        return sorted(sounds, key=lambda m: (-m.added, -order[id(m)]))
+    return list(sounds)
 
 
 def clean_fade(v) -> float:
@@ -932,16 +1028,18 @@ def _decode(path: str) -> tuple[np.ndarray, bool]:
         log.debug("libsndfile can't read %s (%s); trying ffmpeg", path, e)
         ff = _ffmpeg()
         if not ff:
-            raise RuntimeError("Can't decode this format (install ffmpeg for m4a/aac/video)") from e
+            raise RuntimeError(_("Can't decode this format (install ffmpeg for "
+                                 "m4a/aac/video)")) from e
         try:
             p = subprocess.run([ff, "-v", "error", "-i", path, "-vn", "-t", str(MAX_SECONDS),
                                 "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"],
                                capture_output=True, timeout=FFMPEG_TIMEOUT,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired:
-            raise RuntimeError(f"ffmpeg took longer than {FFMPEG_TIMEOUT}s") from None
+            raise RuntimeError(_("ffmpeg took longer than {seconds}s",
+                                 seconds=FFMPEG_TIMEOUT)) from None
         if p.returncode != 0 or not p.stdout:
-            msg = p.stderr.decode(errors="ignore").strip() or "ffmpeg failed"
+            msg = p.stderr.decode(errors="ignore").strip() or _("ffmpeg failed")
             raise RuntimeError(msg) from None
         data = np.frombuffer(p.stdout, np.float32).reshape(-1, 2).copy()
         sr = SR
@@ -1259,7 +1357,7 @@ def import_file(src: str, color: str) -> tuple[SoundMeta, np.ndarray]:
     those come back in from a backup (soundboard.backup)."""
     data, via_ffmpeg = _decode(src)
     if not len(data):
-        raise ValueError("this file has no audio in it")
+        raise ValueError(_("this file has no audio in it"))
     SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
     sid = uuid.uuid4().hex[:10]
     srcp = Path(src)
@@ -1276,7 +1374,8 @@ def import_file(src: str, color: str) -> tuple[SoundMeta, np.ndarray]:
             sf.write(dest, data, SR, subtype="PCM_16")
         else:
             shutil.copy2(srcp, dest)
-        meta = SoundMeta(id=sid, name=srcp.stem.replace("_", " ").strip()[:40] or "Sound",
+        meta = SoundMeta(id=sid, added=time.time(),
+                         name=srcp.stem.replace("_", " ").strip()[:40] or "Sound",
                          file=str(dest), color=color, level_gain=level_gain(data),
                          duration=len(data) / SR, fingerprint=fingerprint(src))
         return meta, store_cached(sid, data)
@@ -1284,8 +1383,8 @@ def import_file(src: str, color: str) -> tuple[SoundMeta, np.ndarray]:
         log.warning("couldn't copy %s into the library", src, exc_info=True)
         dest.unlink(missing_ok=True)
         if isinstance(e, OSError):
-            raise OSError(f"couldn't save it into your Sounds folder ({e.strerror or e}). "
-                          "Check the disk isn't full and try again.") from e
+            raise OSError(_("couldn't save it into your Sounds folder ({error}). Check "
+                            "the disk isn't full and try again.", error=e.strerror or e)) from e
         raise
 
 
@@ -1295,19 +1394,27 @@ def save_clip(data: np.ndarray, name: str, color: str) -> tuple[SoundMeta, np.nd
     sid = uuid.uuid4().hex[:10]
     dest = SOUNDS_DIR / f"{sid}_{_safe_name(name)}.flac"
     sf.write(dest, data, SR, subtype="PCM_16")
-    meta = SoundMeta(id=sid, name=name[:40], file=str(dest), color=color,
+    meta = SoundMeta(id=sid, name=name[:40], file=str(dest), color=color, added=time.time(),
                      level_gain=level_gain(data), duration=len(data) / SR,
                      fingerprint=fingerprint(str(dest)))
     return meta, store_cached(sid, data)
 
 
-def trim_silence(data: np.ndarray, threshold: float = 0.002, pad_s: float = 0.05) -> np.ndarray:
-    """Cut dead air off both ends of a recording (keeps a tiny pad so it doesn't start abruptly)."""
+def silence_bounds(data: np.ndarray, threshold: float = 0.002,
+                   pad_s: float = 0.05) -> tuple[int, int]:
+    """(start, end) frames of a recording with the dead air at both ends cut off (a
+    tiny pad kept so it doesn't start abruptly); (0, 0) if it's all quiet."""
     loud = np.flatnonzero(np.max(np.abs(data), axis=1) > threshold)
     if not len(loud):
-        return data[:0]
+        return 0, 0
     pad = int(pad_s * SR)
-    return data[max(loud[0] - pad, 0): loud[-1] + pad]
+    return max(int(loud[0]) - pad, 0), min(int(loud[-1]) + pad, len(data))
+
+
+def trim_silence(data: np.ndarray, threshold: float = 0.002, pad_s: float = 0.05) -> np.ndarray:
+    """Cut dead air off both ends of a recording (keeps a tiny pad so it doesn't start abruptly)."""
+    a, b = silence_bounds(data, threshold, pad_s)
+    return data[a:b]
 
 
 def duplicate(meta: SoundMeta, name: str) -> SoundMeta:
@@ -1334,7 +1441,8 @@ def duplicate(meta: SoundMeta, name: str) -> SoundMeta:
         except OSError:
             log.debug("couldn't copy the picture of %s", meta.id, exc_info=True)
             image = ""
-    return SoundMeta(id=sid, name=name[:40], file=str(dest), volume=meta.volume,
+    return SoundMeta(id=sid, name=name[:40], file=str(dest), added=time.time(),
+                     volume=meta.volume,
                      mode=meta.mode, loop=meta.loop, color=meta.color,
                      level_gain=meta.level_gain, duration=meta.duration,
                      fingerprint="", fx=dict(meta.fx), image=image, tags=list(meta.tags),

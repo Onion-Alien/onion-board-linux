@@ -1,6 +1,4 @@
-<p align="right"><img src="https://visitor-badge.laobi.icu/badge?page_id=Onion-Alien.onion-board" alt="visitors"></p>
-
-# Onion Board
+<h1>Onion Board <img align="right" src="https://hits.sh/github.com/Onion-Alien/onion-board.svg?view=total&label=total%20visits&color=6b8e23" alt="total visits"></h1>
 
 A free soundboard for Windows and Linux. Press a pad or a hotkey, even in-game, and **your
 friends in Discord or your game hear the sound**, with your voice or without it.
@@ -12,36 +10,53 @@ Or send it to your stream, or keep it to your own headphones.
 (64-bit PC, any distribution from Ubuntu 22.04 on; see [On Linux](#on-linux))
 
 <!-- release -->
-Version **1.9.2** · Windows 10 / 11 · free, no account, no ads, anonymous usage count you can switch off ·
-[VirusTotal: 68 of 68 clean](https://www.virustotal.com/gui/file/060bfb8754f52abe438ae50deead9c51b92ce16970ba983fa866aa119cbd31a6) ·
+Version **1.9.20** · Windows 10 / 11 · free, no account, no ads, anonymous usage count you can switch off ·
+[VirusTotal: 69 of 69 clean](https://www.virustotal.com/gui/file/8093c89458b7ecfcccd5a4122b1ae0ce53488394f59aa388e06b69c371783b1a) ·
 [what's new](CHANGELOG.md)
 <!-- /release -->
 
-![Onion Board's sound pads](docs/screenshots/sounds.png?v=5ee6a92c)
+![Onion Board's sound pads](docs/screenshots/sounds.png?v=5d4d4efc)
 
 | | |
 |---|---|
-| ![Voice changer and text-to-speech](docs/screenshots/voice.png?v=cfedced0) | ![Screen triggers](docs/screenshots/triggers.png?v=c9243921) |
+| ![Voice changer and text-to-speech](docs/screenshots/voice.png?v=c7aa5887) | ![Screen triggers](docs/screenshots/triggers.png?v=74911d4a) |
 | **Voice**: change your voice live, or type and a computer voice says it | **Triggers**: a sound the moment "YOU DIED" shows up in your game |
-| ![Send a program's sound](docs/screenshots/apps.png?v=65ad7857) | ![Setup at a glance](docs/screenshots/setup.png?v=97216a35) |
+| ![Send a program's sound](docs/screenshots/apps.png?v=8fc8871d) | ![Setup at a glance](docs/screenshots/setup.png?v=b52be90b) |
 | **Apps**: send one program's sound (music, a video) to your friends | **Setup**: one look tells you whether others can hear you |
 
 ## What it does
 
 - **Sounds into Discord and games.** By default they go straight into your own mic:
   one click in the app, and Discord and games hear them through the mic they already
-  use, with no virtual cable to install. Or use a free virtual cable, any other output
-  you pick (Voicemeeter, a mixer, a capture card, OBS), or nowhere, so only you hear
-  them. Your voice goes along, or tick it off and send only sounds.
-- **Hotkeys that work in-game**, MIDI pads, an in-game overlay, Stream Deck support,
-  and your pads on your phone with the optional Onion Pocket add-on.
-- **Add sounds from anywhere**: drag in files, or search YouTube and SoundCloud
-  inside the app.
+  use, with no virtual cable to install. Or, as a backup, the free virtual cable; or
+  any other output you pick (Voicemeeter, a mixer, a capture card, OBS); or nowhere,
+  so only you hear them. Your voice goes along, or tick it off and send only sounds.
+- **One-click sounds**: search YouTube, SoundCloud and Myinstants inside the app and
+  add a sound in one click, drag in files, or record one with your mic or from
+  whatever is playing.
+- **Hotkeys that work in-game**, an in-game overlay, MIDI pads, Stream Deck support,
+  and your pads on your phone with the optional Onion Pocket add-on. Open your game
+  and the board switches to that game's sounds by itself.
+- **Checks Discord for you.** Onion Board reads Discord's voice settings and shows a
+  bar when one of them would cut your sounds out, with the steps to fix it.
+- **Bring your board over** from Soundpad, Resanance, Soundux or EXP Soundboard:
+  sounds, names, categories and hotkeys, in one click.
 - **Effects on any sound**: trim, speed, pitch, bass boost, reverse. One-click
-  *Ear rape*, *Nightcore*, *Slowed + reverb*.
-- **Voice changer, text-to-speech** and live voice-to-speech.
+  *Deep fried*, *Nightcore*, *Slowed + reverb*.
+- **Voice changer, text-to-speech** (in 33 languages) and live voice-to-speech, plus
+  optional **AI voices** that make you sound like someone else, live on your own PC:
+  12 characters, or blend two into your own.
 - **Instant replay**: one key turns the last 30 seconds you heard into a pad.
-- **Screen triggers**, **world radio**, a **clean stream output for OBS**, and 31 themes.
+- **Share a program's sound** (music, a video) with your friends, and grab the bit you
+  want from it in the **clip editor**.
+- **Live speed, pitch and effects** on what's playing: your pads, the radio, or a
+  program you're sending.
+- **Screen triggers**, **world radio**, a **clean stream output for OBS**, 31 themes
+  and your own highlight colour.
+- **In your language**: the whole app comes in 32 languages (Settings → Appearance →
+  Language).
+- **Starts simple**: Sounds, Voice and Setup. The other tabs wait under *+ More
+  tabs*, and any tab you don't use can be switched off so it doesn't load at all.
 
 The full list is in [docs/FEATURES.md](docs/FEATURES.md).
 
@@ -77,22 +92,35 @@ Optional: if you never get it, nothing changes.
 
 1. **[Download `OnionBoardSetup.exe`](../../releases/latest/download/OnionBoardSetup.exe)**
    and double-click it. Leave the boxes as they are and click through to **Install**.
+
+   Or, if you use [winget](https://learn.microsoft.com/windows/package-manager/winget/),
+   install it from a terminal with no clicks (and update it later with
+   `winget upgrade OnionAlien.OnionBoard`; new versions reach winget a day or two
+   after the release):
+
+   ```
+   winget install OnionAlien.OnionBoard
+   ```
 2. **Follow Bun the bunny's four steps**: your mic, your headphones, where your
    sounds go, and what to set in Discord or your game.
 3. **Pick where your sounds go** (step 3 of Bun's guide, or later on the *Setup* tab →
-   Devices → *Send to others through*):
-   - **Straight into my mic** (the default): click **Put my sounds straight into my
+   Devices → *Send my sounds to*):
+   - **My mic** (the default): click **Put my sounds straight into my
      mic** and **Yes** when Windows asks (once). Discord and games keep your normal
      mic, so there's nothing to pick there. In Discord, set *User Settings → Voice &
-     Video → Input Profile* to **Studio** so it doesn't filter your sounds out.
-   - **The virtual cable** (the other way): installs the free VB-Cable; in Discord or
-     your game, set your microphone to `CABLE Output` (and Discord's *Input Profile*
-     to **Studio**).
-   - **Another device**: any output but your headphones, such as Voicemeeter, a
+     Video → Input Profile* to **Custom**, *Noise Suppression* to **None** and turn
+     *Echo Cancellation* off so it doesn't filter your sounds out. **Not Studio**: on
+     your mic, Studio makes Discord skip Onion Board, and none of your sounds get
+     through. Onion Board reads Discord's settings and warns you when one of them is
+     in the way.
+   - **A virtual cable** (the backup, if your mic won't take it; pick it by name): installs the free
+     VB-Cable; in Discord or your game, set your microphone to `CABLE Output` (and
+     Discord's *Input Profile* to **Studio**).
+   - **Any other device** by name: any output but your headphones, such as Voicemeeter, a
      mixer, a capture card or a second sound card. Nothing is installed. In OBS add
      it as an *Audio Output Capture*; in Voicemeeter or a mixer, send that input on
      to wherever it should go.
-   - **Nowhere**: only you hear your sounds (and the *Stream output* if you set one).
+   - **Nobody**: only you hear your sounds (and a device set to *Clean, for streaming* under *Also send to*).
      Nothing to change in Discord or your game.
 4. **Drag sounds onto the window** and double-click a pad to play it. Right-click a
    pad for a hotkey or **Effects…**.
@@ -117,20 +145,43 @@ yet. Your sounds and settings live in `~/.local/share/OnionBoard/`.
 
 ### Something's not right?
 
-- **Friends hear nothing:** the pill at the top should be green. Straight into your
-  mic, it reads *In your mic — Discord / games hear your sounds*, and Discord or the
+- **Friends hear nothing:** the pill at the top should have a tick (✓), not a warning
+  sign. Straight into your mic, it reads *In your mic — Discord / games hear your sounds*, and Discord or the
   game must be using that same mic. With the cable, it reads *Your mic in Discord /
-  games* and their app's microphone must be `CABLE Output`. With another device, it reads *Sending to:* and whatever sits on the other
-  end (OBS, Voicemeeter, your mixer) must be picking that device up. With *Nowhere*,
-  only you hear sounds, on purpose.
+  games* and their app's microphone must be `CABLE Output`. With another device, it
+  reads *Sending to:* and whatever sits on the other end (OBS, Voicemeeter, your
+  mixer) must be picking that device up. With *Nobody*, only you hear sounds, on
+  purpose.
 - **They hear sounds but not you:** tick **Others hear it** under *My mic*.
 - **Check it yourself:** *Setup → Record 6s → play back* records what others get (it
-  works any way but *Nowhere*).
-- **Switch how sounds go out any time:** *Setup → Devices → Send to others through*.
-- **Still stuck?** [Open an issue](../../issues/new/choose) and attach
+  works any way but *Nobody*).
+- **Switch how sounds go out any time:** *Setup → Devices → Send my sounds to*.
+- **More than one place at once** (streamers): *Setup → Devices → Also send to →
+  + Add a device*, once per extra output that should get a copy (− takes one off).
+- **Have the virtual cable from before?** Once your sounds are in your mic, the
+  *Setup* tab offers to remove it. Keep it if another program uses it.
+- **Still stuck?** Ask in the [Onion Board Discord](https://discord.gg/FhKGaWCWHM), or
+  [open an issue](../../issues/new/choose) and attach
   `%APPDATA%\OnionBoard\onionboard.log` (skim it first: it has your device names).
 
 Your sounds and settings live in `%APPDATA%\OnionBoard\` and survive reinstalls.
+
+### Is it safe?
+
+- **Why Windows warns you:** the app isn't code-signed yet, so Windows doesn't know
+  it. Every release is scanned on VirusTotal (the link is at the top).
+- **What needs admin:** only the one-click *straight into my mic* step. It adds a
+  small audio effect to your mic inside Windows' audio engine, backs up that mic's
+  settings first, and puts them back when you switch it off or uninstall. The details
+  are in [SECURITY.md](SECURITY.md#what-straight-into-my-mic-changes-on-your-pc).
+- **What goes online:** only what you ask for (searches, downloads, the radio), an
+  update check, and an anonymous daily count you can switch off. Every request is
+  listed in [SECURITY.md](SECURITY.md#what-the-app-does-on-the-network), and the app
+  shows each one live under *Settings → Connection → Network activity*.
+- **Getting rid of it:** uninstall it like any app. Your mic goes back the way it was;
+  your own sounds stay in `%APPDATA%\OnionBoard\` until you delete them.
+
+<a id="license"></a>
 
 ## Free, and it stays free
 

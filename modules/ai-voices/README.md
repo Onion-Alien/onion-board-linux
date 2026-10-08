@@ -4,7 +4,9 @@ Talk, and others hear a different person: your words, timing and tone in another
 voice, live, on your PC's CPU. It isn't part of Onion Board or its installer; the
 Voice tab's *Get AI voices* button downloads it (`AiVoices-module.zip` from this
 project's `ai-voices` release, checked against GitHub's SHA-256) and
-*Remove AI voices* deletes it again.
+*Remove AI voices* deletes it again. Its install (`install.bat` does the same) needs
+Python 3.12+ and makes its own `.venv` with the pinned `onnxruntime` and `numpy`;
+nothing of it runs inside the app.
 
 ## How it works
 
@@ -32,6 +34,12 @@ app: voice chain <- jitter buffer <- 24 kHz  <───  b"B" frames, 20 ms each
 200-speaker model, plus a formant and pitch setting, so no voice is any one real
 person. Never add a voice made to sound like a real, identifiable person.
 
+The app carries the same list (`soundboard/speech/aivoicelist.py`, a test keeps them
+equal) and writes it into the installed copy's `voices.json`, with the user's own
+voices, so a new blend of speakers the model already has reaches old downloads
+without a new release. A voice needing a speaker the model lacks is left out.
+`about` and `tags` are for the app's *All voices* window.
+
 ## Licences
 
 - Model design, training code and pretrained weights: [beatrice-trainer]
@@ -42,7 +50,7 @@ person. Never add a voice made to sound like a real, identifiable person.
   runtime is our own ONNX export (`tools/stream_model.py`).
 - onnxruntime: MIT licence.
 
-The model in `model/` isn't this project's own work: it's converted from Project
+The model in `model/` (in the released zip; never committed) isn't this project's own work: it's converted from Project
 Beatrice's pretrained models, which their repository releases under the MIT
 licence (code *and* pretrained models). Their licence travels with it:
 [LICENSE-beatrice.txt](LICENSE-beatrice.txt).

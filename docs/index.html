@@ -7,9 +7,13 @@
 <meta name="description" content="Free soundboard for Windows and Linux: play sounds into Discord and games through your mic. In-game hotkeys, an overlay, effects, a voice changer, text-to-speech, instant replay, and screen triggers that play a sound when something shows up, like YOU DIED.">
 <meta property="og:title" content="Onion Board: free soundboard for Discord and games">
 <meta property="og:description" content="Play sounds through your mic in Discord and games. Voice changer, text-to-speech, and screen triggers that play a sound when you die.">
-<meta property="og:image" content="https://onion-alien.github.io/onion-board/screenshots/sounds.png?v=5ee6a92c">
+<meta property="og:image" content="https://onion-alien.github.io/onion-board/screenshots/sounds.png?v=5d4d4efc">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/png" href="favicon.png" sizes="192x192">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0f1016">
 <link rel="canonical" href="https://onion-alien.github.io/onion-board/">
 <script type="application/ld+json">
 {"@context": "https://schema.org", "@type": "SoftwareApplication",
@@ -18,7 +22,7 @@
  "description": "Free soundboard for Windows and Linux: play sounds into Discord and games through your mic, with a voice changer, text-to-speech, in-game hotkeys and screen triggers.",
  "url": "https://onion-alien.github.io/onion-board/",
  "downloadUrl": "https://github.com/Onion-Alien/onion-board/releases/latest/download/OnionBoardSetup.exe",
- "screenshot": "https://onion-alien.github.io/onion-board/screenshots/sounds.png?v=5ee6a92c",
+ "screenshot": "https://onion-alien.github.io/onion-board/screenshots/sounds.png?v=5d4d4efc",
  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}
 </script>
 <style>
@@ -51,9 +55,11 @@
   .shots { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; }
   .shots figure { margin: 0; }
   .shots figcaption { color: var(--muted); font-size: 15px; margin-top: 6px; }
-  ol.steps { max-width: 640px; margin: 0 auto; padding-left: 22px; }
-  ol.steps li { margin: 6px 0; }
+  .steps { max-width: 640px; margin: 0 auto; padding-left: 22px; }
+  .steps li { margin: 6px 0; }
   .note { max-width: 640px; margin: 16px auto 0; color: var(--muted); font-size: 14px; }
+  h1 .logo { display: inline-block; width: 1.15em; height: 1.15em; border: 0; border-radius: 0;
+            vertical-align: -0.2em; margin-right: 0.25em; }
   footer { text-align: center; color: var(--muted); font-size: 14px; padding: 48px 0 40px; }
   @media (max-width: 440px) { .shots { grid-template-columns: 1fr; } }
 </style>
@@ -63,38 +69,39 @@
 <body>
 <div class="wrap">
   <header>
-    <h1><span>Onion Board</span></h1>
+    <h1><img class="logo" src="favicon.png" alt="" width="60" height="60"><span>Onion Board</span></h1>
     <p class="tag">A free soundboard for Windows and Linux. Press a pad or a hotkey, even in-game, and
       your friends in Discord or your game hear it through your mic.</p>
     <a class="dl" href="https://github.com/Onion-Alien/onion-board/releases/latest/download/OnionBoardSetup.exe" data-goatcounter-click="download-home-top">⬇ Download for Windows</a>
     <p class="small">🐧 Linux: <a href="https://github.com/Onion-Alien/onion-board/releases/latest/download/OnionBoard-x86_64.AppImage" data-goatcounter-click="download-home-linux">download the AppImage</a> (64-bit, Ubuntu 22.04 or newer and the like): make it executable and run it.</p>
     <!-- release -->
-    <p class="small">Version 1.9.2 · Windows 10 / 11 · free, no account, no ads, anonymous usage count you can switch off<br>
-      <a href="https://www.virustotal.com/gui/file/060bfb8754f52abe438ae50deead9c51b92ce16970ba983fa866aa119cbd31a6">VirusTotal: 68 of 68 clean</a> ·
+    <p class="small">Version 1.9.20 · Windows 10 / 11 · free, no account, no ads, anonymous usage count you can switch off<br>
+      <a href="https://www.virustotal.com/gui/file/8093c89458b7ecfcccd5a4122b1ae0ce53488394f59aa388e06b69c371783b1a">VirusTotal: 69 of 69 clean</a> ·
       <a href="https://github.com/Onion-Alien/onion-board/releases/latest">what's new</a></p>
     <!-- /release -->
-    <img class="hero" src="screenshots/sounds.png?v=5ee6a92c" width="1770" height="1080" alt="Onion Board's sound pads">
+    <img class="hero" src="screenshots/sounds.png?v=5d4d4efc" width="1770" height="1080" alt="Onion Board's sound pads">
   </header>
 
   <h2>What it does</h2>
   <div class="grid">
-    <div class="card"><b>🎤 Sounds through your mic</b><span>Into Discord or any game, with your voice or without it.</span></div>
-    <div class="card"><b>⌨️ Hotkeys that work in-game</b><span>Plus an overlay, MIDI pads and Stream Deck.</span></div>
-    <div class="card"><b>🔎 Sounds from anywhere</b><span>Drag in files, or search YouTube and SoundCloud in the app.</span></div>
-    <div class="card"><b>🎛️ Effects on any sound</b><span>Trim, speed, pitch, bass boost. One-click Ear rape and Nightcore.</span></div>
-    <div class="card"><b>🤖 Voice changer and TTS</b><span>Change your voice live, or type and a computer voice says it.</span></div>
-    <div class="card"><b>💀 Screen triggers</b><span>A sound the moment "YOU DIED" shows up, via the free <a href="https://onion-alien.github.io/onion-watch/">Onion Watch</a> add-on.</span></div>
-    <div class="card"><b>📱 Your pads on your phone</b><span>Scan a code, tap a pad, it plays on your PC. Run the radio and the speed, pitch and effects from it too. Nothing to install on the phone, via the free <a href="https://github.com/Onion-Alien/onion-pocket">Onion Pocket</a> add-on.</span></div>
-    <div class="card"><b>⏪ Instant replay</b><span>One key turns the last 30 seconds you heard into a pad.</span></div>
-    <div class="card"><b>📻 And more</b><span>World radio, app audio, a clean OBS output, 31 themes. <a href="https://github.com/Onion-Alien/onion-board/blob/main/docs/FEATURES.md">Full list</a></span></div>
+    <div class="card"><b>🎤 No virtual cable</b><span>Sounds go straight into the mic you already use in Discord and games, with your voice or without it.</span></div>
+    <div class="card"><b>🔎 One-click sounds</b><span>Search YouTube, SoundCloud and Myinstants in the app and add a sound in one click. Or drag in files.</span></div>
+    <div class="card"><b>⌨️ Hotkeys that work in-game</b><span>Plus an in-game overlay, MIDI pads and Stream Deck. Open your game and the board switches to its sounds.</span></div>
+    <div class="card"><b>📦 Bring your board over</b><span>Coming from Soundpad, Resanance, Soundux or EXP Soundboard? Your sounds and hotkeys come with you in one click.</span></div>
+    <div class="card"><b>🎛️ Effects on any sound</b><span>Trim, speed, pitch, bass boost. One-click Deep fried and Nightcore. Live on the radio and shared programs too.</span></div>
+    <div class="card"><b>🤖 Voice changer and TTS</b><span>Change your voice live, or type and a computer voice says it, in 33 languages. Optional AI voices: 12 characters, or blend your own.</span></div>
+    <div class="card"><b>✅ Checks Discord for you</b><span>Spots the Discord settings that would cut your sounds out and shows how to fix them.</span></div>
+    <div class="card"><b>🎙️ Record a sound</b><span>With your mic, or a bit of whatever is playing: a pad, a search result, the radio.</span></div>
+    <div class="card"><b>🌍 In your language</b><span>The whole app comes in 32 languages, plus 31 themes and your own highlight colour.</span></div>
+    <div class="card"><b>📻 And more</b><span>Instant replay, screen triggers, your pads on your phone, world radio, a clean OBS output. <a href="https://github.com/Onion-Alien/onion-board/blob/main/docs/FEATURES.md">Full list</a></span></div>
   </div>
 
   <h2>A closer look</h2>
   <div class="grid shots">
-    <figure><img src="screenshots/voice.png?v=cfedced0" alt="The Voice tab" loading="lazy"><figcaption>Voice changer and text-to-speech</figcaption></figure>
-    <figure><img src="screenshots/triggers.png?v=c9243921" alt="The Triggers tab" loading="lazy"><figcaption>Triggers: a sound when something shows up in your game</figcaption></figure>
-    <figure><img src="screenshots/apps.png?v=65ad7857" alt="The Apps tab" loading="lazy"><figcaption>Send one program's sound to your friends</figcaption></figure>
-    <figure><img src="screenshots/setup.png?v=97216a35" alt="The Setup tab" loading="lazy"><figcaption>Setup shows at a glance whether they can hear you</figcaption></figure>
+    <figure><img src="screenshots/voice.png?v=c7aa5887" alt="The Voice tab" loading="lazy"><figcaption>Voice changer and text-to-speech</figcaption></figure>
+    <figure><img src="screenshots/triggers.png?v=74911d4a" alt="The Triggers tab" loading="lazy"><figcaption>Triggers: a sound when something shows up in your game</figcaption></figure>
+    <figure><img src="screenshots/apps.png?v=8fc8871d" alt="The Apps tab" loading="lazy"><figcaption>Send one program's sound to your friends</figcaption></figure>
+    <figure><img src="screenshots/setup.png?v=b52be90b" alt="The Setup tab" loading="lazy"><figcaption>Setup shows at a glance whether they can hear you</figcaption></figure>
   </div>
 
   <h2>Get started</h2>
@@ -102,24 +109,43 @@
     <li><a href="https://github.com/Onion-Alien/onion-board/releases/latest/download/OnionBoardSetup.exe" data-goatcounter-click="download-home-steps">Download <code>OnionBoardSetup.exe</code></a> and run it.</li>
     <li>Bun the bunny asks which mic and headphones you use and sets the rest up.</li>
     <li>Click <b>Put my sounds straight into my mic</b> (Windows asks once). Discord and games keep
-      your normal mic, so there's nothing to pick there. Set Discord's <b>Input Profile</b> to
-      <b>Studio</b>, so it doesn't filter your sounds out.
-      Already use Voicemeeter, a mixer or OBS? Pick <b>Another device</b> under
-      <b>Send to others through</b> instead.</li>
+      your normal mic, so there's nothing to pick there. In Discord, set <b>Input Profile</b> to
+      <b>Custom</b>, <b>Noise Suppression</b> to <b>None</b> and turn <b>Echo Cancellation</b> off, so it
+      doesn't filter your sounds out (not Studio: on your mic, Studio skips Onion Board). Onion Board
+      warns you if one of them is in the way.
+      Already use Voicemeeter, a mixer or OBS? Pick it under
+      <b>Send my sounds to</b> instead, or add it under <b>Also send to</b>.</li>
   </ol>
-  <p class="note">Windows may warn you about the download. That's normal for a free app that isn't
-    code-signed: click <b>More info → Run anyway</b> (or <b>⋯ → Keep</b> in Edge / Chrome). The full
-    source is <a href="https://github.com/Onion-Alien/onion-board">on GitHub</a>.</p>
+  <h2>Is it safe?</h2>
+  <ul class="steps">
+    <li><b>Why Windows warns you:</b> the app isn't code-signed yet (a certificate costs money
+      every year), so Windows doesn't know it. Click <b>More info → Run anyway</b> (or <b>⋯ → Keep</b>
+      in Edge / Chrome). Every release is scanned on VirusTotal (the link is above).</li>
+    <li><b>What needs admin, and why:</b> only the one-click "straight into my mic" step. It adds a
+      small audio effect to your mic in Windows' audio engine, backs up your mic's settings first, and
+      puts them back when you switch it off or uninstall.</li>
+    <li><b>What goes online:</b> only what you ask for (searches, downloads, the radio), an update
+      check, and an anonymous daily count you can switch off. Every request is listed in
+      <a href="https://github.com/Onion-Alien/onion-board/blob/main/SECURITY.md#what-the-app-does-on-the-network">SECURITY.md</a>,
+      and the app shows them live under Settings → Connection → Network activity.</li>
+    <li><b>Getting rid of it:</b> uninstall it like any app in Windows' Settings. Your mic goes back
+      the way it was. Your own sounds stay in <code>%APPDATA%\OnionBoard</code> until you delete them.</li>
+    <li>The full source is <a href="https://github.com/Onion-Alien/onion-board">on GitHub</a>.</li>
+  </ul>
+  <p class="note">Use winget? <code>winget install OnionAlien.OnionBoard</code> installs it from a
+    terminal with no clicks.</p>
 
   <footer>
     <a href="https://github.com/Onion-Alien/onion-board">Source code</a> ·
     <a href="https://github.com/Onion-Alien/onion-board/releases">All versions</a> ·
+    <a href="https://discord.gg/FhKGaWCWHM">Join the Discord</a> ·
     <a href="https://tally.so/r/rjxjyM">Send feedback</a> ·
     <a href="https://github.com/Onion-Alien/onion-board/issues">Report a problem</a><br>
     <a href="discord-soundboard/">Play sounds through your mic in Discord</a> ·
     <a href="free-soundpad-alternative/">Free Soundpad and Voicemod alternative</a><br>
-    The app collects nothing. This site counts visits with GoatCounter: no cookies, nothing personal.
+    The app sends only an anonymous daily count (its version and a random ID), and you can switch it off. This site counts visits with GoatCounter: no cookies, nothing personal.
   </footer>
 </div>
+<script src="zoom.js" defer></script>
 </body>
 </html>

@@ -19,6 +19,8 @@ What the host gives it:
                       networks and local subnet only, after Windows' admin prompt,
                       which names Onion Board (soundboard.firewall). Waits; True if
                       added. Newer than REMOTE_API 1's first hosts: check for it
+  signed_requests     True: its server takes X-Sig, a signature made with the key,
+                      so a phone page needn't send the key itself (soundboard.remote)
   card(), button_row(), flash(), icon(), no_wheel()
                       Settings' own look, so the add-on's card matches the rest
 """
@@ -37,6 +39,7 @@ class RemoteHost:
     api_version = REMOTE_API[1]
     name = "Onion Board"
     actions = remote.ACTIONS
+    signed_requests = True
 
     def __init__(self, win, module_id: str):
         """`win` is the MainWindow: cfg, status, and remote.dispatch on it."""
@@ -69,8 +72,10 @@ class RemoteHost:
         unknown = set(actions) - set(remote.ACTIONS)
         if unknown:
             raise ValueError(f"no such actions: {', '.join(sorted(unknown))}")
-        return remote.RemoteControl(self.dispatch, self.win, actions=actions, page=page,
-                                    lan=True, name=name)
+        srv = remote.RemoteControl(self.dispatch, self.win, actions=actions, page=page,
+                                   lan=True, name=name)
+        srv.closed.connect(lambda why: self.warn(f"{name} is off: {why}."))
+        return srv
 
     @staticmethod
     def new_token() -> str:

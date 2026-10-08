@@ -46,6 +46,7 @@ Lethal Company's occlusion and walkie-talkie filters come from its decompiled
 - **Windows' default mic.** Voice SDKs ask Windows for the *default communication
   device*, which "Set as Default Device" doesn't change; the Setup tab's
   *Game has no microphone setting?* steps (shown on the cable route) now set both.
+  Straight into your mic there's nothing to switch: the game keeps the mic it has.
 
 - **Steam voice, measured** (`scripts/steam_voice_roundtrip.py`): Steamworks reports
   24 kHz as its voice rate, confirming the 12 kHz ceiling. Its capture gates the
@@ -69,6 +70,23 @@ Lethal Company's occlusion and walkie-talkie filters come from its decompiled
   cable recordings it matches what the second PC heard within 0.7 dB in every band. On *Automatic* Valorant sends only speech: test tones, noise, sweeps
   and speech-shaped noise were never transmitted. Its anti-cheat ignores injected key
   presses, so the app's *Auto push-to-talk* can't hold the key: hold it yourself.
+- **Fortnite, measured in a real party** (2026-10-08, main menu, open mic, Straight into
+  my mic; four 15 s songs per run, the second PC's Fortnite recorded with voice volume
+  at 100 %). Fortnite records the mic through the effect. Nothing was cut out in any
+  mode, the level arrived within 3 dB, and the bottom band (60 Hz) lost 1.5-5.5 dB. Its
+  automatic gain dips loud, steady songs by 8 dB or more some of the time, and no send
+  mode changed that:
+
+  | 8 dB+ dips | no mode | Epic Online Services | Vivox |
+  |---|---|---|---|
+  | high (monk vocals) | 16 % | 17 % | 9 % |
+  | low (bass-heavy) | 11 % | 15 % | 17 % |
+  | two others | 1 % | 1 % | 1 % |
+
+  At the second PC's default 28 % voice volume the same run arrived 10-13 dB quieter:
+  that is the listener's slider, not the chat. The real EOS SDK on one PC (two users in
+  a lobby voice room, manual audio) shows the same no-cut-outs and bass loss but only
+  ~3 % dips on the low song: Fortnite's own voice settings pump more than EOS defaults.
 - **A bass-heavy song in Valorant**: sent raw it arrived 7 dB quieter, most of that the
   lost sub-bass (the bottom band 8.5 dB down on the rest). Through the old *Game*
   destination mode (today's *Vivox*) the bass harmonics halved that loss (4 dB), but the mode's
@@ -197,7 +215,10 @@ front wins). A browser recording the cable gets the new *Browser voice (WebRTC)*
 the same 80 Hz cut as Epic Online Services, whose cleanup is the same WebRTC code (in
 the sweep above the browser profile measured −1.4 dB at 80 Hz and −1.3 at 90; the
 99-song numbers are below). With *Pick the mode by itself* ticked, the picker uses
-it as soon as it's found; with nothing listening the mode stays as it is.
+it as soon as it's found; with nothing listening the mode stays as it is. Since 1.9
+(sounds straight into your own mic) it looks at the programs recording your mic and,
+if you have one, the cable's far end too. The **Game** and **Voice chat** modes use
+the same answer to pick the exact profile by themselves.
 
 **Browser, Zoom and Teams on all 99 songs** (2026-10; same measure as the table above:
 median dB against the song played straight in, no mode → the Browser mode):

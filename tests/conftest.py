@@ -67,10 +67,6 @@ class _SilentOutputStream:
 if os.environ.get("ONIONBOARD_TEST_REAL_AUDIO") != "1":
     import sounddevice
     sounddevice.OutputStream = _SilentOutputStream
-    # Chromium (the Radio tab's globe) must never reach the default device either.
-    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-    if "--mute-audio" not in flags:
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --mute-audio".strip()
 
 
 
@@ -142,6 +138,14 @@ def _refuse_closed_ports_at_once():
 
 _refuse_closed_ports_at_once()
 
+# Hosted CI runners (shared cores, other test workers beside it) stall a thread
+# 10-30 ms on their own, as much as the hitches the wall-clock audio timing tests
+# measure: there they fail on unchanged code. They run on a real PC, where a hitch is
+# the only stall.
+real_pc_timing = pytest.mark.skipif(bool(os.environ.get("CI")),
+                                    reason="wall-clock audio timing: too noisy on CI")
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_this_pc: the relay refuses radio 127.x "
                             "(net.NEVER_THIS_PC) as in the app")
@@ -150,10 +154,13 @@ def pytest_configure(config):
 def pytest_xdist_auto_num_workers(config):
     """`-n auto` (pyproject's addopts): the whole suite runs on 4 workers, about a
     quarter of the time; a file or two runs in this process, where starting workers
-    would cost more than it saves. `-n 2` / `-n 0` on the command line override it."""
+    would cost more than it saves. `-n 2` / `-n 0` on the command line override it, and
+    so does PYTEST_XDIST_AUTO_NUM_WORKERS (xdist's own setting) for the whole suite."""
     picked = [a for a in config.args if Path(a.split("::")[0]).suffix == ".py"]
     if picked and len(picked) == len(config.args) and len(picked) <= 2:
         return 0
+    if (n := os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS", "")).isdigit():
+        return int(n)
     return min(4, os.cpu_count() or 1)
 
 
@@ -188,6 +195,14 @@ def process_events(app, until, timeout=8.0, step=0.02):
     return until()
 
 
+def devices_done(win, timeout=8.0):
+    """Until the window's device changes (picks, Re-scan) ran on the device thread
+    and came back to the UI thread."""
+    from PySide6.QtWidgets import QApplication
+    assert process_events(QApplication.instance(), lambda: not win._dev_waiting
+                          and not win.engine.devices.busy, timeout)
+
+
 @pytest.fixture
 def app_dir(tmp_path, monkeypatch):
     """Point library's config/sounds paths at a temp folder."""
@@ -210,6 +225,31 @@ def _never_touch_real_appdata(monkeypatch, tmp_path):
                  "CONFIG_PATH"):
         if getattr(library, name).is_relative_to(real):
             monkeypatch.setattr(library, name, tmp_path / "guard" / name.lower())
+    # modules that took their own copy of APP_DIR at import: app.py's commands set up
+    # the log there, and a test of one sent every later test's log lines (and crash
+    # reports) into the developer's real onionboard.log
+    for mod in ("soundboard.app", "soundboard.updates"):
+        m = sys.modules.get(mod)
+        if m is not None and Path(m.APP_DIR).is_relative_to(real):
+            monkeypatch.setattr(m, "APP_DIR", tmp_path / "guard" / "app_dir")
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_test_logging():
+    """applog.setup() (an app command under test) swaps the root logger's handlers:
+    put pytest's back afterwards and close the ones it made (the log's writer thread)."""
+    import logging
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    yield
+    for h in list(root.handlers):
+        if h not in handlers:
+            root.removeHandler(h)
+            h.close()
+    for h in handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+    root.setLevel(level)
 
 
 @pytest.fixture(autouse=True)
@@ -225,6 +265,32 @@ def _never_touch_the_real_mic(monkeypatch, tmp_path):
     monkeypatch.setattr(directmic, "_elevated", no_admin)
     monkeypatch.setattr(directmic, "installed_on", lambda: [])
     directmic.forget_status()
+
+
+@pytest.fixture(autouse=True)
+def _never_read_the_real_discord(monkeypatch, tmp_path):
+    """Discord's voice settings (soundboard.discordcfg) come from an empty folder: the
+    developer's own Discord must not put a banner in a test or a screenshot. Tests
+    write a fake store under discordcfg._appdata() when they need one."""
+    from soundboard import discordcfg
+    root = tmp_path / "guard" / "discord-appdata"
+    monkeypatch.setattr(discordcfg, "_appdata", lambda: root)
+
+
+@pytest.fixture(autouse=True)
+def _pictures_load_at_once(monkeypatch):
+    """Pad pictures are read on a worker thread in the app (thumbs.LOAD_ASYNC); tests
+    that check pictures and their caches get them at once, so a grab shows them. The
+    tests of the worker itself turn it back on."""
+    from soundboard import thumbs
+    monkeypatch.setattr(thumbs, "LOAD_ASYNC", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _not_a_dev_pc(monkeypatch):
+    """The developer's PCs set ONIONBOARD_NO_STATS (no usage count from them): the
+    tests run as on anyone's PC, so the usage count tests see it sent."""
+    monkeypatch.delenv("ONIONBOARD_NO_STATS", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +338,15 @@ def _switches_back_on():
     net.configure_features()
 
 
+@pytest.fixture(autouse=True)
+def _data_prefs_back_to_default(monkeypatch):
+    """Settings > Data & quality (soundboard.quality.current) is process-wide too: a
+    test that turns on Low data mode doesn't leave the next one without thumbnails."""
+    quality = sys.modules.get("soundboard.quality")
+    if quality is not None:
+        monkeypatch.setattr(quality, "current", quality.Prefs())
+
+
 class NoMidi:
     """soundboard.midi's winmm backend with no devices: tests never open the
     developer's real MIDI controllers (a DAW may be using them)."""
@@ -296,6 +371,9 @@ def _never_look_at_the_real_foreground():
     from soundboard import appaudio, voicesdk
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(voicesdk, "foreground_process", lambda: (0, ""))
+        # ...nor whether it fills the screen (no tip during a game, soundboard.tips)
+        from soundboard import tips
+        mp.setattr(tips, "fullscreen_in_front", lambda: False)
         # ...nor which output Windows has as its default (the headphones follow it)
         mp.setattr(appaudio, "default_output_name", lambda: None)
         # ...nor which devices it has (a failing device is re-scanned when it's listed)
@@ -318,6 +396,26 @@ def _never_touch_real_autostart(monkeypatch):
     that exercise autostart put their own fake winreg in."""
     from soundboard import autostart
     monkeypatch.setattr(autostart, "winreg", None)
+
+
+def own_module(monkeypatch, module, name: str, **fakes):
+    """Give `module` its own copy of the module it imported as `name` (time, threading,
+    ...) with `fakes` in it. Patching time.sleep or threading.Thread itself changes it
+    for every thread in the process: the threads earlier tests left running then spun
+    flat out (a 1 s test took 44 s, and a window's loader beside it missed its 15 s),
+    or a thread of something else was never started."""
+    import types
+    real = getattr(module, name)
+    copy = types.ModuleType(real.__name__)
+    copy.__dict__.update(vars(real))
+    copy.__dict__.update(fakes)
+    monkeypatch.setattr(module, name, copy)
+    return copy
+
+
+def own_time(monkeypatch, module, **fakes):
+    """own_module for `time`: sleep=..., monotonic=... for `module` alone."""
+    return own_module(monkeypatch, module, "time", **fakes)
 
 
 def us_key_char(vk: int) -> str:
@@ -411,6 +509,38 @@ def _no_windows_speech(request, monkeypatch):
     monkeypatch.setattr(tts.SapiTTS, "warm_up", lambda self: [])
 
 
+# What a test made and left running with a thread of Qt's or its own behind it, stopped
+# after the test as the app stops it when the tab goes: freed while that thread was
+# still handing it something, it crashed the test worker a few tests later (access
+# violation / abort, about 1 run in 100). (module, class, method that stops it)
+_STOP_AFTER_TEST = (("soundboard.radio", "RadioPlayer", "shutdown"),
+                    ("soundboard.ui.appspanel", "_Lister", "stop"))
+
+
+@pytest.fixture(autouse=True)
+def _stop_what_tests_left_running(monkeypatch):
+    import weakref
+    made = []
+    for mod_name, cls_name, stop in _STOP_AFTER_TEST:
+        mod = sys.modules.get(mod_name)
+        if mod is None:   # this test's module never imported it: none made here
+            continue
+        cls = getattr(mod, cls_name)
+
+        def tracked(self, *a, _init=cls.__init__, _stop=stop, **k):
+            _init(self, *a, **k)
+            made.append((weakref.ref(self), _stop))
+        monkeypatch.setattr(cls, "__init__", tracked)
+    yield
+    for ref, stop in made:
+        obj = ref()
+        if obj is not None:
+            try:
+                getattr(obj, stop)()
+            except RuntimeError:   # its C++ side is already gone (its tab was freed)
+                pass
+
+
 @pytest.fixture(autouse=True)
 def _free_test_windows():
     """Close and free the windows a test leaves behind. Qt keeps a closed top-level
@@ -437,19 +567,6 @@ def _free_test_windows():
             except RuntimeError:   # already gone on the C++ side
                 pass
     app.sendPostedEvents(None, QEvent.DeferredDelete)
-
-
-@pytest.fixture(autouse=True)
-def _no_result_stats_lookups(monkeypatch):
-    """Web search cards look up each YouTube hit's likes and comments on a thread
-    (ytsearch.SearchResults): never the real site from a test."""
-    from soundboard import ytdl
-
-    def offline(r):
-        raise ytdl.FetchError("offline in tests")
-    monkeypatch.setattr(ytdl, "stats", offline)
-    monkeypatch.setattr(ytdl, "_stats_paused_until", 0.0)   # a test's bot check stays in it
-    monkeypatch.setattr("soundboard.ui.ytsearch.STATS_GAP", 0)
 
 
 from platform_hooks import *  # noqa: E402,F401,F403 - Windows-only tests, Linux guards

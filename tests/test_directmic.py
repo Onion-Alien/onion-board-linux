@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import own_module, real_pc_timing
 from soundboard import directmic as dm
 from test_mainwindow import window  # noqa: F401  (fixture)
 
@@ -394,7 +395,68 @@ def test_stream_keeps_time_without_the_effect(ring_file):
     took = time.monotonic() - t0
     made = sum(calls)
     assert (took - 0.15) * dm.RATE < made < (took + 0.15) * dm.RATE
-    assert max(calls) <= dm.BLOCK
+    assert set(calls) == {dm.BLOCK}   # whole blocks, as a sound card's would come
+
+
+def test_stream_sleeps_between_blocks_when_nobody_listens(ring_file):
+    """Nobody records the mic: the thread wakes about once a block (10 ms), not every
+    2 ms (that was 500 wakeups a second, a third of the board's CPU while idle)."""
+    s = dm.DirectMicStream(lambda out, frames, t, status: out.fill(0), ring_file)
+    wakes = []
+    pump = s.pump
+    s.pump = lambda: (wakes.append(1), pump())[1]
+    s.start()
+    try:
+        time.sleep(1.0)
+    finally:
+        s.close()
+    assert 50 <= len(wakes) <= 150, len(wakes)
+
+
+def test_feed_looks_again_just_in_time(ring_file):
+    """When the thread looks again: just before the next mic block when it takes the
+    mic itself, just after it when the mic callback does (the thread is only the
+    stand-in then), every 2 ms once a block is due, and never more than a block away."""
+    s = dm.DirectMicStream(lambda out, frames, t, status: out.fill(0), ring_file)
+    try:
+        s.mic_live = True
+        now = time.perf_counter()
+        s._fed_at, s._fed_period, s._fed_here = now, dm.BLOCK_S, True
+        assert dm.BLOCK_S - dm.EARLY_S - 0.002 < s._wait() <= dm.BLOCK_S - dm.EARLY_S
+        s._fed_here = False   # the mic callback took it
+        assert dm.BLOCK_S < s._wait() <= dm.BLOCK_S + dm.POLL_S
+        s._fed_period = 0.003   # a mic with short blocks
+        assert s._wait() <= 0.003 + dm.POLL_S
+        s._fed_at = now - 1.0   # overdue: look every POLL_S
+        assert s._wait() == dm.POLL_S
+        s._fed_at = None        # mic just (re)started
+        assert s._wait() == dm.POLL_S
+        s.mic_live, s._due_at = False, time.perf_counter() + 0.007   # on its own clock
+        assert 0.005 < s._wait() <= 0.007
+        s._due_at = time.perf_counter() + 5.0
+        assert s._wait() == dm.BLOCK_S + dm.POLL_S
+        s._due_at = None        # the effect reads on its own clock: keep it topped up
+        assert s._wait() == dm.POLL_S
+    finally:
+        s.close()
+
+
+def test_two_blocks_at_once_still_wait_for_only_one(ring_file):
+    """After a hiccup two blocks of mic can come at once: the thread still looks again a
+    block later, not two (that would make the board late with the next one)."""
+    s = dm.DirectMicStream(lambda out, frames, t, status: out.fill(0), ring_file)
+    w = dm.RingWriter(ring_file)
+    try:
+        s.active = True
+        _publish(w, np.zeros((480, 2), np.float32))
+        s.pump()
+        _publish(w, np.zeros((960, 2), np.float32))
+        s.pump()
+        assert s._fed_period == dm.BLOCK_S
+        assert s._wait() <= dm.BLOCK_S + dm.POLL_S   # (pumped here: the mic callback's timing)
+    finally:
+        w.close()
+        s.close()
 
 
 def _publish(w: dm.RingWriter, x: np.ndarray, rate: int = 48000):
@@ -452,8 +514,39 @@ def test_direct_fifo_pads_once_then_keeps_up():
     for _ in range(5):
         f.write(np.full((480, 2), 2, np.float32))
         assert (f.read(480) == 2).all()
-    f.write(np.full((4000, 2), 3, np.float32))   # a pile-up: dropped to one read
-    assert len(f.read(480)) == 480 and f.count == 0
+    f.write(np.full((4000, 2), 3, np.float32))   # a stall: nothing reads it...
+    f.write(np.full((480, 2), 4, np.float32))    # ...so the next write drops it
+    assert (f.read(480) == 4).all() and f.count == 0
+
+
+def test_direct_fifo_keeps_a_late_wake_up_whole():
+    """The board's thread woke 100 ms late: it writes all that mic at once and renders
+    it in 10 ms reads. Every frame goes out, in order (dropping all but the last read
+    cut holes in the voice whenever the PC was busy)."""
+    from soundboard.engine import DirectFifo
+    f = DirectFifo()
+    x = np.arange(4800, dtype=np.float32)[:, None].repeat(2, axis=1)
+    f.write(x)
+    got = np.concatenate([f.read(480) for _ in range(10)])
+    assert np.array_equal(got, x) and f.count == 0
+
+
+def test_late_pump_sends_all_the_voice(ring_file):
+    """A late pump in the real engine: the voice sent is the mic it got, with no holes."""
+    from soundboard.engine import Engine
+    e = Engine()
+    e.main_direct = True
+    e.main_stream = object()   # "open": the mic goes to the send mix
+    voice = (0.3 * np.sin(np.arange(4800) / 7)).astype(np.float32)
+    e._mic(np.stack([voice, voice], 1), direct=True)
+    out = np.zeros((480, 2), np.float32)
+    sent = []
+    for _ in range(10):
+        e._cb_main(out, 480, None, None)
+        sent.append(out[:, 0].copy())
+    sent = np.concatenate(sent)
+    rms = np.sqrt((sent.reshape(10, 480) ** 2).mean(axis=1))
+    assert rms.min() > 0.1, rms   # every 10 ms has voice in it
 
 
 # ---------------------------------------------------------------------- the real effect
@@ -640,6 +733,233 @@ def test_replace_mode_sends_the_boards_voice_soon(ring_file, instances):
     assert max(lags) - min(lags) <= 480 + 48 * 5
 
 
+class Stalling(Echo):
+    """An Echo board that stalls for `stall` s at each of `at` (seconds of its output)."""
+
+    def __init__(self, at, stall, **kw):
+        super().__init__(**kw)
+        self.at, self.stall, self.made = list(at), stall, 0
+
+    def __call__(self, out, frames, t, status):
+        super().__call__(out, frames, t, status)
+        self.made += frames
+        if self.at and self.made >= self.at[0] * dm.RATE:
+            self.at.pop(0)
+            time.sleep(self.stall)
+
+
+@needs_host
+@pytest.mark.parametrize("stall", [0.03, 0.08])
+@realtime
+def test_a_late_board_is_filled_in_with_the_mic_from_then(ring_file, stall):
+    """Replace mode, the board late (a busy PC): the effect fills in with the clean mic
+    from the moment the board's audio was made from, so the voice goes on without a skip
+    or a repeat. (It used to fill in with the mic as it is now, a lead ahead: each
+    hiccup cut a bit out of the voice, then the resync played a bit twice.) Here the
+    board's voice is the clean mic itself: the output is the mic, a fixed time later,
+    sample for sample, hiccups and all."""
+    board = Stalling([0.9, 1.5], stall, gain=1.0)
+    (x,), _, _ = _run_host(ring_file, 48000, 1, 2.5, mic=0.3, mic_hz=-1, callback=board,
+                           mic_callback=board.mic, mode=dm.MODE_REPLACE)
+    lag, exact = _delay(x[:, 0], 48000, start_s=0.6, span_s=1.6)
+    assert lag <= 0.05 * 48000, lag / 48
+    assert exact > 0.98, exact
+
+
+@needs_host
+@realtime
+def test_the_feed_keeps_up_with_a_busy_board_while_mostly_asleep(ring_file):
+    """Replace mode with a busy thread beside the board (a UI at work): every block of
+    its voice is in time, sample for sample the mic a lead later, while the thread
+    wakes a couple of times a block instead of every 2 ms."""
+    board = Echo(gain=1.0)
+    stop = threading.Event()
+    wakes = []
+
+    def busy():
+        while not stop.is_set():
+            sum(i * i for i in range(20000))
+            time.sleep(0.001)
+
+    def during(s):
+        pump = s.pump
+
+        def counted():
+            if threading.current_thread().name == "direct-mic":
+                wakes.append(time.perf_counter())
+            return pump()
+        s.pump = counted
+        threading.Thread(target=busy, daemon=True).start()
+
+    try:
+        (x,), _, _ = _run_host(ring_file, 48000, 1, 4.0, mic=0.3, mic_hz=-1, callback=board,
+                               mic_callback=board.mic, mode=dm.MODE_REPLACE, during=during)
+    finally:
+        stop.set()
+    lag, exact = _delay(x[:, 0], 48000, start_s=0.6, span_s=3.0)
+    assert lag <= 0.05 * 48000, lag / 48
+    assert exact > 0.98, exact
+    assert len(wakes) / (wakes[-1] - wakes[0]) < 300   # was about 450 a second
+
+
+def _feed_beside_busy_ui(ring_file, taker, seconds, poll_every=None):
+    """A stand-in for the effect publishes a 10 ms block of clean mic in real time while
+    a UI thread beside the board keeps Python busy (at the app's GIL switch interval).
+    Returns the blocks the board took later than the 20 ms lead the effect reads behind
+    it (any later and the effect fills in with the clean mic: a gap in the sounds), how
+    long it took with those, and the feed thread's wakeups a second. `poll_every`: the
+    feed thread looks that often instead (how it was: every 2 ms)."""
+    import sys
+
+    from soundboard.app import SWITCH_S
+    block, block_s = dm.BLOCK, dm.BLOCK / dm.RATE
+    seen = {}   # block number -> when the board took it
+
+    def mic(x, rate):
+        now = time.perf_counter()
+        for k in np.unique(np.rint(x[:, 0] * 1e4).astype(int)):
+            seen.setdefault(int(k), now)
+
+    ring_file.write_bytes(dm.new_ring_bytes())
+    s = dm.DirectMicStream(lambda out, frames, t, status: out.fill(0.25), ring_file,
+                           mic_callback=mic)
+    if poll_every is not None:
+        s._wait = lambda: poll_every
+    w = dm.RingWriter(ring_file)
+    stop = threading.Event()
+    wakes = [0]
+    pump = s.pump
+
+    def counted():
+        if threading.current_thread() is s._thread:
+            wakes[0] += 1
+        return pump()
+    s.pump = counted
+
+    def ui():   # 50 ms of pure-Python work at a time: holds the GIL all it can
+        while not stop.is_set():
+            end = time.perf_counter() + 0.05
+            while time.perf_counter() < end:
+                sum(i * i for i in range(500))
+            time.sleep(0.002)
+
+    sent, blocks = {}, int(seconds / block_s)
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(SWITCH_S)
+    s.start()
+    threading.Thread(target=ui, daemon=True).start()
+    try:
+        t0 = time.perf_counter()
+        for k in range(1, blocks + 1):
+            while (d := t0 + k * block_s - time.perf_counter()) > 0:
+                time.sleep(d)
+            pos = w.mic_write_pos
+            w.mic[np.arange(pos, pos + block) % dm.MIC_CAPACITY] = k * 1e-4   # its number
+            h = w.h[0]
+            h["mic_rate"], h["mic_write_pos"], h["mic_tick"] = 48000, pos + block, dm._tick()
+            sent[k] = time.perf_counter()
+            if taker == "mic callback":
+                s.pump()
+        time.sleep(3 * block_s)
+        elapsed = time.perf_counter() - t0
+    finally:
+        stop.set()
+        s.close()
+        w.close()
+        sys.setswitchinterval(old)
+    # (the first 0.3 s: the stream starts on whichever block it sees first)
+    took = {k: seen[k] - sent[k] if k in seen else float("inf") for k in sent if k > 30}
+    late = sorted(k for k, t in took.items() if t >= dm.LEAD_S)
+    return late, [round(took[k] * 1e3, 1) for k in late[:5]], wakes[0] / elapsed
+
+
+@pytest.mark.parametrize("taker", ["feed", "mic callback"])
+@real_pc_timing
+@realtime
+def test_no_underruns_beside_a_busy_ui_thread(ring_file, taker):
+    """5 s of clean mic beside a busy UI thread: the board takes every block in time, as
+    often as it did when the feed thread looked every 2 ms (run alongside, the same way,
+    as the yardstick: on a PC this busy that one misses some too), whether the feed
+    thread takes the mic or the board's mic callback does, and the feed thread sleeps
+    between blocks."""
+    late, ms, rate = _feed_beside_busy_ui(ring_file, taker, 5.0)
+    if late:   # how often did looking every 2 ms miss, on this PC right now?
+        before, _, _ = _feed_beside_busy_ui(ring_file, taker, 5.0, poll_every=dm.POLL_S)
+        assert len(late) <= max(2, 2 * len(before)), (late[:5], ms, len(before))
+    assert rate < (350 if taker == "feed" else 150), rate   # was about 450 a second
+
+
+@needs_host
+@realtime
+def test_a_late_board_never_lets_a_muted_mic_out(ring_file):
+    """Replace mode, the mic muted on the board (it sends silence), the board late: the
+    effect's fill-in stays muted. (It used to put the plain mic out for the hiccup.)"""
+    board = Stalling([0.9, 1.4], 0.08, gain=0.0)
+
+    def during(s):
+        s.set_mic_gain(0.0)
+
+    (x,), _, _ = _run_host(ring_file, 48000, 1, 2.0, mic=0.3, mic_hz=-1, callback=board,
+                           mic_callback=board.mic, mode=dm.MODE_REPLACE, during=during)
+    assert np.abs(x[int(0.6 * 48000):, 0]).max() < 0.01
+
+
+def test_board_tells_the_effect_where_its_audio_came_from(ring_file):
+    """Each stretch the board renders on the mic's clock comes with the sync pair: ring
+    frame -> the clean-mic frame it was made from (minus the board's own voice delay)."""
+    w = dm.RingWriter(ring_file)
+    w._set("mic_rate", 48000)
+    w.close()
+    s = dm.DirectMicStream(lambda out, frames, t, st: out.fill(0), ring_file,
+                           voice_delay=lambda: 144.0)
+    try:
+        ring = s._ring
+        s.active = True
+        ring._mtick[0] = dm._tick()
+        ring._mwp[0] = 1000
+        s._pump()                      # starts here
+        ring._mtick[0] = dm._tick()
+        ring._mwp[0] = 1960
+        s._pump()                      # 960 frames of mic -> 960 rendered
+        assert ring.write_pos == 960
+        assert int(ring._get("sync_wp")) == 960 and int(ring._get("sync_mic")) == 1960 - 144
+        assert int(ring._get("sync_seq")) % 2 == 0
+    finally:
+        s.close()
+
+
+def test_engine_voice_delay_is_what_it_adds(ring_file):
+    """Engine._direct_voice_delay matches the delay the send mix really has on the voice
+    (limiter lookahead; a resampler's hold-back at other mic rates)."""
+    from soundboard.engine import Engine
+    for rate in (48000, 44100):
+        e = Engine()
+        e.main_direct = True
+        e.main_stream = object()
+        e.rates["mic"] = rate
+        e._reconfigure_mic_resamplers()
+        rng = np.random.default_rng(1)
+        x = (0.1 * rng.standard_normal(2 * rate)).astype(np.float32)
+        blk = rate // 100
+        out = np.zeros((480, 2), np.float32)
+        sent = []
+        for i in range(200):
+            b = x[i * blk:(i + 1) * blk]
+            e._mic(np.stack([b, b], 1), direct=True)
+            e._cb_main(out, 480, None, None)
+            sent.append(out[:, 0].copy())
+        y = np.concatenate(sent).astype(np.float64)
+        # the newest voice in y is the mic from `d` frames (at 48 kHz) before its end
+        d = e._direct_voice_delay()
+        import soxr
+        ref = x.astype(np.float64) if rate == 48000 else \
+            soxr.resample(x, rate, 48000, quality="VHQ")
+        tail = y[-24000:]   # (it settles over the first moments: the end is what counts)
+        lags = range(0, 4000)
+        k = max(lags, key=lambda lag: float(np.dot(tail, ref[len(y) - 24000 - lag:len(y) - lag])))
+        assert abs(k - d) <= 2, (rate, k, d)
+
+
 @needs_host
 @realtime
 def test_replace_mode_falls_back_to_the_mic_when_the_board_stops(ring_file):
@@ -784,6 +1104,87 @@ def test_effect_survives_a_fuzzed_ring(ring_file, seed):
     assert abs(y.mean() - 0.1) < 0.02 and y.max() > 0.5, (y.mean(), y.max())
 
 
+@needs_host
+@pytest.mark.parametrize("damage", ["truncated", "tiny", "empty", "capacity", "version"])
+def test_a_damaged_ring_file_leaves_the_mic_exactly_as_it_is(ring_file, damage):
+    """A ring file cut short, emptied or with a layout the effect doesn't know: it never
+    reads past what's there and hands on the mic untouched."""
+    raw = bytearray(ring_file.read_bytes())
+    if damage == "truncated":
+        raw = raw[:len(raw) // 2]   # the header promises more than the file has
+    elif damage == "tiny":
+        raw = raw[:100]
+    elif damage == "empty":
+        raw = bytearray()
+    elif damage == "capacity":
+        raw[12:16] = (3).to_bytes(4, "little")
+    else:
+        raw[4:8] = (99).to_bytes(4, "little")
+    ring_file.write_bytes(bytes(raw))
+    out = ring_file.parent / "out.f32"
+    env = dict(os.environ, ProgramData=str(ring_file.parent.parent.parent))
+    r = subprocess.run([str(HOST), str(DLL), str(out), "48000", "2", "0.3", "0.2"], env=env,
+                       capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert np.all(np.fromfile(out, np.float32) == np.float32(0.2))
+
+
+@needs_host
+@realtime
+def test_a_header_gone_bad_puts_the_mic_back_until_it_is_right(ring_file):
+    """The layout changing under a running effect (only junk does that: the board makes a
+    new file instead): the plain mic until it's right again, then the board is back."""
+    def during(s):
+        h = s._ring
+        time.sleep(0.8)
+        h._set("magic", 0)
+        time.sleep(0.8)
+        h._set("magic", dm.MAGIC)
+
+    (x,), _, _ = _run_host(ring_file, 48000, 2, 2.6, mic=0.1, during=during)
+    y = x[:, 0]
+    assert np.abs(y[int(0.4 * 48000):int(0.6 * 48000)] - 0.1).max() > 0.3   # board + mic
+    bad = y[int(1.0 * 48000):int(1.35 * 48000)]
+    assert np.all(bad == np.float32(0.1)), np.abs(bad - 0.1).max()        # the mic alone
+    assert np.abs(y[int(2.0 * 48000):int(2.5 * 48000)] - 0.1).max() > 0.3   # board back
+
+
+FUZZ_HOST = BUILD / "fuzzhost.exe"
+FUZZ_DLL = BUILD / "obmic_fuzz.dll"
+needs_fuzz = pytest.mark.skipif(not (FUZZ_HOST.is_file() and FUZZ_DLL.is_file()),
+                                reason="run scripts/build_directmic.py --fuzz")
+
+
+@needs_fuzz
+def test_a_fault_in_the_effect_puts_the_mic_back(tmp_path):
+    """The guard: a fault while the effect runs (the fuzz build's test switch) hands on
+    the block exactly as it came in, rests a moment, then the board is back."""
+    r = subprocess.run([str(FUZZ_HOST), str(FUZZ_DLL), str(tmp_path), "--selftest"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "SELFTEST OK" in r.stdout, r.stdout + r.stderr
+
+
+@needs_fuzz
+def test_lead_grows_just_enough_and_comes_back(tmp_path):
+    """fuzzhost --lead, block by block (no timing luck): a board late by a block once
+    takes the lead one step; late every other block, two steps (the same lag counted
+    again while a step was still owed took it to 50 ms); then back to the normal lead,
+    really read that far behind, with the board's sync pair and without."""
+    r = subprocess.run([str(FUZZ_HOST), str(FUZZ_DLL), str(tmp_path), "--lead"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "LEAD OK" in r.stdout, r.stdout + r.stderr
+
+
+@needs_fuzz
+def test_effect_survives_a_short_fuzz(tmp_path):
+    """A few seconds of fuzzhost (hostile, truncated and half-written ring files; the
+    effect with sanitizer traps): no crash, hang, caught fault or sound out of range.
+    scripts/fuzz_directmic.py runs it for longer."""
+    r = subprocess.run([str(FUZZ_HOST), str(FUZZ_DLL), str(tmp_path), "4", "12345"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "0 findings" in r.stdout, r.stdout[-3000:] + r.stderr
+
+
 def test_board_ignores_a_nonsense_mic_rate(ring_file):
     """A ring claiming a 1 Hz mic would make the board render a gigantic stretch for a
     handful of mic frames (a hang): such a rate doesn't count as a live mic."""
@@ -818,17 +1219,31 @@ def test_delay_shrinks_back_after_a_hiccup(ring_file, stall):
             time.sleep(stall)   # the board stalls (a GIL hog, a page fault storm)
 
     leads = {}
-
-    def during(s):
-        time.sleep(1.5)
-        leads["after"] = int(s._ring.live_slots()["lead"].max())
-        time.sleep(3.5)
-        leads["end"] = int(s._ring.live_slots()["lead"].max())
-        leads["late"] = s.late()
-
-    (x,), _, _ = _run_host(ring_file, 48000, 1, 6.0, callback=bursts, mode=dm.MODE_REPLACE,
-                           during=during)
     base = int(dm.LEAD_S * dm.RATE)
+
+    # "Once the board has kept time": each time it's late again (this Python board, on a
+    # PC busy with the rest of the suite, can be) the effect rightly keeps the bigger
+    # lead and starts counting again. So: back to normal within ~3 s of the last late
+    # block (2 s on time, then a quiet moment per 20 ms step), however long that takes.
+    def during(s):
+        lead = lambda: int(s._ring.live_slots()["lead"].max())  # noqa: E731
+        time.sleep(1.5)
+        leads["after"] = lead()
+        late, since, end = s.late(), time.monotonic(), time.monotonic() + 7.0
+        while time.monotonic() < end and lead() != base:
+            if s.late() != late:
+                late, since = s.late(), time.monotonic()
+            if time.monotonic() - since > 3.2:
+                leads["on time"] = "3.2 s and it didn't come back"
+                break
+            time.sleep(0.05)
+        else:
+            if lead() != base:
+                leads["on time"] = "never 3.2 s on end: the PC was too busy to tell"
+        leads["end"], leads["late"] = lead(), s.late()
+
+    (x,), _, _ = _run_host(ring_file, 48000, 1, 9.5, callback=bursts, mode=dm.MODE_REPLACE,
+                           during=during)
     assert leads["after"] > base, leads             # it rode the hiccup out
     assert leads["end"] == base, leads              # ...and came back
     assert np.all(np.isfinite(x)) and np.abs(x).max() <= 0.41
@@ -1091,6 +1506,72 @@ def test_nobody_goes_silent_before_the_mic_is_set_up(window, monkeypatch, state)
     assert w._main_name() is None   # no cable either: nothing to send into
 
 
+@pytest.mark.parametrize("state", ["ready", "missing", "wiped"])
+def test_on_the_mic_the_setup_tab_never_talks_about_the_cable(window, monkeypatch, state):  # noqa: F811
+    """Straight into the mic is the way: working or not set up yet, the Setup tab
+    doesn't say the cable is in use, or tell anyone to pick one. The cable comes up
+    only as the "Use the virtual cable instead" fallback button."""
+    w = window
+    _routes(w, monkeypatch, state)
+    monkeypatch.setattr(w, "_direct_not_running", lambda: False)
+
+    class S:
+        def stop(self):
+            pass
+        close = stop
+    w.engine.main_stream, w.engine.tap = S(), S()   # the cable still fed alongside
+    try:
+        w._show_route()
+        w._update_status()
+        for lbl in (w.flow_out, w.step_lbl, w.setup_hint, w.how_title, w.pill):
+            assert "cable" not in lbl.text().lower(), lbl.text()
+    finally:
+        w.engine.main_stream = w.engine.tap = None
+
+
+@pytest.mark.parametrize("state, dead", [("ready", True), ("wiped", True),
+                                         ("missing", False), ("other", False)])
+def test_effect_not_running_check_reads_no_registry(window, monkeypatch, state, dead):  # noqa: F811
+    """Checked every second on the UI thread: it uses the cached status instead of
+    walking the registry's recording devices each time."""
+    w = window
+    w.cfg.mic_device = "My mic"
+    monkeypatch.setattr(dm, "status", lambda name=None: state)
+
+    def registry(*_a):
+        raise AssertionError("walked the registry on the UI thread")
+    monkeypatch.setattr(dm, "endpoint_for", registry)
+    monkeypatch.setattr(dm, "installed_on", registry)
+    monkeypatch.setattr(w.engine, "effect_alive", lambda: False)
+    monkeypatch.setattr(w.engine, "mic_stream", object())
+    w._direct_dead_since = time.monotonic() - w.DIRECT_GRACE_S - 1
+    assert w._direct_not_running() is dead
+
+
+def test_an_older_working_mic_part_offers_the_update_as_optional(window, monkeypatch):  # noqa: F811
+    """Sounds in the mic with an older mic part: the tab says it's all set, and the
+    update is plainly optional (not a primary button, not a "needs fixing")."""
+    w = window
+    _routes(w, monkeypatch, "outdated", cables=())
+    monkeypatch.setattr(w, "_direct_not_running", lambda: False)
+
+    class S:
+        def stop(self):
+            pass
+        close = stop
+    w.engine.main_stream = S()
+    try:
+        w._show_route()
+        w._update_status()
+        assert w.setup_state == "ok"
+        step = w.step_lbl.text()
+        assert "Nothing to set" in step and "Optional" in step
+        assert w.btn_install.text().startswith("Optional")
+        assert w.btn_install.objectName() != "primary"
+    finally:
+        w.engine.main_stream = None
+
+
 @pytest.mark.parametrize("state", ["ready", "outdated"])
 def test_on_the_mic_the_cable_gets_the_same(window, monkeypatch, state):  # noqa: F811
     w = window
@@ -1117,9 +1598,58 @@ def test_saying_no_to_windows_keeps_the_mic_on_offer(window, monkeypatch, cables
     monkeypatch.setattr(QMessageBox, "warning", lambda *a: said.append(a[2]))
     w._mic_attached("My mic", "Windows' admin prompt was turned down (or didn't finish).")
     assert w.cfg.route == "mic" and w._main_name() == (cables[0] if cables else None)
-    assert ("virtual cable meanwhile" in said[0]) == bool(cables)
+    assert "cable" not in said[0].lower()   # the mic is the way; the cable just quietly helps
     assert "Try again" in said[0]
     assert "mic" in w.pill.text().lower()
+
+
+def test_a_slow_status_check_never_holds_up_the_window(monkeypatch):
+    """A 1.9.7 freeze: the window asks for the status every second, and re-checking it
+    stat()ed the ring file on the UI thread (6 s on a busy disk). After the first
+    answer the re-check runs on a thread and the last answer comes back meanwhile."""
+    import threading
+    import time
+    gate, calls, answer = threading.Event(), [], ["ready"]
+
+    def slow(name):
+        calls.append(name)
+        if len(calls) > 1:
+            gate.wait(5)   # the disk is busy
+        return answer[0]
+    monkeypatch.setattr(dm, "_status", slow)
+    dm.forget_status()
+    assert dm.status("My mic") == "ready"            # the first answer: worked out now
+    monkeypatch.setattr(dm, "STATUS_S", 0.0)          # ...and stale at once
+    answer[0] = "wiped"
+    start = time.monotonic()
+    for _ in range(5):
+        assert dm.status("My mic") == "ready"        # the last answer, no waiting
+    assert time.monotonic() - start < 0.5
+    assert len(calls) == 2                            # one re-check at a time
+    gate.set()
+    end = time.monotonic() + 5
+    while dm._status_busy and time.monotonic() < end:
+        time.sleep(0.01)
+    monkeypatch.setattr(dm, "STATUS_S", 60.0)
+    assert dm.status("My mic") == "wiped"
+
+
+def test_a_status_check_from_before_forget_status_is_dropped(monkeypatch):
+    import threading
+    import time
+    gate = threading.Event()
+    monkeypatch.setattr(dm, "_status", lambda name: "ready")
+    dm.forget_status()
+    dm.status(None)
+    monkeypatch.setattr(dm, "STATUS_S", 0.0)
+    monkeypatch.setattr(dm, "_status", lambda name: gate.wait(5) and "wiped")
+    dm.status(None)                  # a re-check starts...
+    dm.forget_status()               # ...then the user set it up again
+    gate.set()
+    end = time.monotonic() + 5
+    while dm._status_busy and time.monotonic() < end:
+        time.sleep(0.01)
+    assert None not in dm._status_cache   # the old re-check's answer wasn't kept
 
 
 def test_the_banner_never_sends_mic_users_to_the_cable(window, monkeypatch):  # noqa: F811
@@ -1138,6 +1668,206 @@ def test_the_banner_never_sends_mic_users_to_the_cable(window, monkeypatch):  # 
     w._update_flow()
     assert "virtual cable" not in w.pill.text()
     assert w.btn_attach.objectName() == "primary" and w.btn_install.objectName() != "primary"
+
+
+class _NoThread:
+    """threading.Thread stand-in: counts starts; runs the target there and then if
+    `run`, else never (the admin prompt still waiting)."""
+    started = 0
+    run = False
+
+    def __init__(self, target=None, **_kw):
+        self.target = target
+
+    def start(self):
+        type(self).started += 1
+        if type(self).run:
+            self.target()
+
+
+def _no_threads(monkeypatch, run=False):
+    from soundboard.ui import mainwindow as mw
+    t = type("T", (_NoThread,), {"started": 0, "run": run})
+    own_module(monkeypatch, mw, "threading", Thread=t)
+    return t
+
+
+def test_setting_up_the_mic_shows_it_and_takes_one_click(window, monkeypatch):  # noqa: F811
+    """Clicking the one-click button: it says "Setting up…" and ignores more clicks
+    until Windows has it running, instead of offering Repair again straight away."""
+    from soundboard.ui import busy
+    w = window
+    w._pill_short = False
+    _routes(w, monkeypatch, "missing")
+    w.cfg.mic_device = "My mic"
+    threads = _no_threads(monkeypatch)
+    w.attach_mic()
+    assert busy.is_busy(w.btn_install) and w.btn_install.text() == "Setting up…"
+    assert not w.btn_install.isHidden() and w.btn_usecable.isHidden()
+    assert "setting up" in w.pill.text().lower()
+    w.attach_mic()
+    w.btn_install.click()   # spam-clicked: still the one admin prompt
+    assert threads.started == 1
+    # done: Windows loads it, and until the effect runs it's "starting…", still held
+    monkeypatch.setattr(dm, "status", lambda name=None: "ready")
+    monkeypatch.setattr(type(w.engine), "effect_alive", lambda self: False)
+    w._mic_attached("My mic", "")
+    assert "starting" in w.flow_out.text() and busy.is_busy(w.btn_install)
+    assert "Repair" not in w.btn_install.text() and w.btn_usecable.isHidden()
+    w._settle_until = 0.0   # the wait is over: the button is a button again
+    w._update_flow()
+    assert not busy.is_busy(w.btn_install) and w._attach_release is None
+
+
+def test_setting_up_the_mic_shows_no_device_error_for_the_audio_restart(window, monkeypatch):  # noqa: F811
+    """Setting it up restarts Windows' audio, so the headphones drop for a moment and
+    come back by themselves: no "Audio device problem" meanwhile. Still failing once
+    the wait is over, it shows, in plain words."""
+    w = window
+    _routes(w, monkeypatch, "missing")
+    w.cfg.mic_device = "My mic"
+    _no_threads(monkeypatch)
+    w.attach_mic()
+    w.engine.errors["mon"] = "Device unavailable"
+    w._update_status()
+    assert "problem" not in w.status.text()
+    monkeypatch.setattr(dm, "status", lambda name=None: "ready")
+    w._mic_attached("My mic", "")
+    assert "problem" not in w.status.text()
+    w._settle_until = 0.0
+    w._update_status()
+    assert "headphones: Device unavailable" in w.status.text()
+    assert "mon:" not in w.status.text()
+
+
+def test_turning_windows_down_lets_go_of_the_button(window, monkeypatch):  # noqa: F811
+    from PySide6.QtWidgets import QMessageBox
+    from soundboard.ui import busy
+    w = window
+    _routes(w, monkeypatch, "missing")
+    w.cfg.mic_device = "My mic"
+    _no_threads(monkeypatch)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: None)
+    w.attach_mic()
+    w._mic_attached("My mic", "Windows' admin prompt was turned down (or didn't finish).")
+    assert not busy.is_busy(w.btn_install) and w._attach_release is None
+
+
+def _working_on_the_mic(w, monkeypatch, cables=(CABLE_IN,), vbcable=True):
+    from pathlib import Path
+    from soundboard import cableremove
+    _routes(w, monkeypatch, "ready", cables)
+    monkeypatch.setattr(w.engine, "main_stream", object())
+    monkeypatch.setattr(w, "_direct_not_running", lambda: False)
+    monkeypatch.setattr(cableremove, "setup_exe",
+                        lambda: Path("VBCABLE_Setup_x64.exe") if vbcable else None)
+    w._vb_setup = None            # looked up again (on a thread)
+
+
+def _flow_settled(w):
+    """_update_flow, then again once the thread looking for VB-Cable's setup is back."""
+    from PySide6.QtWidgets import QApplication
+
+    from conftest import process_events
+    w._update_flow()
+    assert process_events(QApplication.instance(), lambda: not w._vb_setup_asking, 3)
+    w._update_flow()
+
+
+def test_a_working_mic_offers_to_remove_the_cable(window, monkeypatch):  # noqa: F811
+    """Straight into the mic works: the cable is only the fallback, so it's offered for
+    removal (and no "also on the virtual cable" on the mic's line)."""
+    w = window
+    _working_on_the_mic(w, monkeypatch)
+    _flow_settled(w)
+    assert "virtual cable" not in w.flow_out.text()
+    assert "don't need the virtual cable" in w.rmcable_note.text()
+    assert not w.rmcable_note.isHidden() and "cable" not in w.step_lbl.text().lower()
+    assert not w.btn_rmcable.isHidden()
+    for cables, vbcable in (((), True), ((CABLE_IN,), False)):   # none, or not VB-Cable's
+        _working_on_the_mic(w, monkeypatch, cables, vbcable)
+        _flow_settled(w)
+        assert w.btn_rmcable.isHidden() and w.rmcable_note.isHidden()
+
+
+def test_redraws_never_look_for_the_cable_setup_on_the_ui_thread(window, monkeypatch):  # noqa: F811
+    """_update_flow runs on every status redraw (and each time you start / stop
+    talking): it checked Program Files for VB-Cable's setup every time, which stalls
+    on a slow disk. It's looked up once, on a thread, and again after a re-scan."""
+    from PySide6.QtWidgets import QApplication
+
+    from conftest import process_events
+    from soundboard import cableremove
+    w = window
+    _working_on_the_mic(w, monkeypatch)
+    gate, asked = threading.Event(), []
+    monkeypatch.setattr(cableremove, "setup_exe",
+                        lambda: (asked.append(1), gate.wait(3), Path("VBCABLE_Setup_x64.exe"))[2])
+    t0 = time.monotonic()
+    for _ in range(5):
+        w._update_flow()
+    assert time.monotonic() - t0 < 0.5
+    assert w.btn_rmcable.isHidden()          # not known yet: not offered
+    gate.set()
+    app = QApplication.instance()
+    assert process_events(app, lambda: not w.btn_rmcable.isHidden(), 3)   # shown when known
+    for _ in range(5):
+        w._update_flow()
+    assert len(asked) == 1                   # asked once, not on every redraw
+    monkeypatch.setattr(w.engine, "shutdown", lambda: None)
+    monkeypatch.setattr(w, "_init_devices", lambda: None)
+    monkeypatch.setattr(w, "_prepare_all", lambda: None)
+    w.refresh_devices()                      # devices re-scanned: looked up again
+    w._update_flow()
+    assert process_events(app, lambda: len(asked) == 2 and not w._vb_setup_asking, 3)
+
+
+def test_removing_the_cable(window, monkeypatch):  # noqa: F811
+    from soundboard import cableremove
+    from soundboard.ui import busy
+    w = window
+    _working_on_the_mic(w, monkeypatch)
+    said = []
+    monkeypatch.setattr(w, "toast", lambda text, kind="": said.append((text, kind)))
+    _no_threads(monkeypatch, run=True)
+    monkeypatch.setattr(cableremove, "remove", lambda: "Windows' admin prompt was turned down")
+    w.remove_cable()
+    assert not w._cable_gone and not busy.is_busy(w.btn_rmcable)
+    assert said[-1][1] == "warn"
+    monkeypatch.setattr(cableremove, "remove", lambda: None)
+    w.remove_cable()
+    assert w._cable_gone and w._tap_name() is None and not busy.is_busy(w.btn_rmcable)
+    assert "Restart" in said[-1][0]
+    w._update_flow()
+    assert w.btn_rmcable.isHidden() and w.rmcable_note.isHidden()
+
+
+@pytest.mark.parametrize("state", ["ready", "missing", "wiped"])
+def test_no_cable_or_speaker_hint_on_the_mic(window, monkeypatch, state):  # noqa: F811
+    """Straight into the mic has no "send into" device: the Devices card never warns
+    "that's a normal speaker, only you will hear the sounds" (it said so on 1.9.2)."""
+    w = window
+    _routes(w, monkeypatch, state)
+    w._update_status()
+    hint = w.setup_hint.text()
+    assert "speaker" not in hint and "virtual cable" not in hint and "only you" not in hint
+
+
+def test_cable_remover_finds_vb_audios_setup(tmp_path, monkeypatch):
+    from soundboard import cableremove
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "x86"))
+    assert cableremove.setup_exe() is None
+    assert "isn't on this PC" in cableremove.remove()
+    exe = tmp_path / "VB" / "CABLE" / "VBCABLE_Setup_x64.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    assert cableremove.setup_exe() == exe
+    ran = []
+    monkeypatch.setattr(dm, "run_elevated", lambda *a, **k: ran.append(a) or 0)
+    assert cableremove.remove() is None and ran == [(str(exe), "-u -h")]
+    monkeypatch.setattr(dm, "run_elevated", lambda *a, **k: None)
+    assert "turned down" in cableremove.remove()
 
 
 def test_cable_tap_plays_the_send_mix_on_the_cables_clock(monkeypatch):

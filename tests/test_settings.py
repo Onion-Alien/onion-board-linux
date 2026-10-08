@@ -5,7 +5,7 @@ import pytest
 
 from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QScrollArea
 
 from conftest import process_events
 from soundboard import net
@@ -137,6 +137,28 @@ def test_feedback_and_problem_buttons_only_open_the_browser(window, monkeypatch)
     d.close()
 
 
+def test_join_the_discord_comes_first_and_only_opens_the_browser(window, monkeypatch):  # noqa: F811
+    from soundboard import feedback
+    opened = []
+    monkeypatch.setattr(busy.QDesktopServices, "openUrl", lambda u: opened.append(u.toString()))
+    d = SettingsDialog(window, "help")
+    assert d.discord_btn.objectName() == "primary"
+
+    def rows(lay):   # every layout under the card's, depth first
+        yield lay
+        for i in range(lay.count()):
+            if lay.itemAt(i).layout() is not None:
+                yield from rows(lay.itemAt(i).layout())
+    row = next(r for r in rows(d.discord_btn.parentWidget().layout())
+               if r.indexOf(d.discord_btn) >= 0)
+    assert ([row.indexOf(b) for b in (d.discord_btn, d.feedback_btn, d.problem_btn)]
+            == sorted(row.indexOf(b) for b in (d.discord_btn, d.feedback_btn, d.problem_btn)))
+    d.discord_btn.click()
+    assert opened == [feedback.DISCORD_URL]
+    assert feedback.DISCORD_URL.startswith("https://discord.gg/")
+    d.close()
+
+
 def test_onion_watch_can_be_removed_from_settings(window, monkeypatch):  # noqa: F811
     from types import SimpleNamespace
 
@@ -199,7 +221,7 @@ def test_update_preferences_have_one_home_and_privacy_links_to_it(window, monkey
     try:
         def boxes(text):
             return [b for b in d.findChildren(QCheckBox) if b.text().startswith(text)]
-        assert len(boxes("Check once a day")) == len(boxes("Update automatically")) == 1
+        assert len(boxes("Check for updates")) == len(boxes("Update automatically")) == 1
         d.upd_chk.setChecked(not d.upd_chk.isChecked())
         assert d.upd_chk.isChecked() == window.cfg.update_check
         d.ytdlp_auto_box.setChecked(True)
@@ -346,7 +368,8 @@ def test_live_tabs_comes_first_on_appearance_tint_or_dot(window, qapp):  # noqa:
     assert d.live_green.isChecked() == window.cfg.live_tab_green
     card = d.live_green.parentWidget()
     assert card.findChild(QLabel).text() == "LIVE TABS"
-    assert card.parentWidget().layout().itemAt(0).widget() is card    # first on the page
+    # right under the language, above the themes
+    assert card.parentWidget().layout().itemAt(1).widget() is card
     d.live_dot.click()
     assert window.cfg.live_tab_green is False
     d.live_green.click()
@@ -412,4 +435,69 @@ def test_highlight_colour_slides_saves_and_resets(window, qapp, monkeypatch):  #
     finally:
         monkeypatch.undo()
         window.set_live_color("")
+        d.close()
+
+
+def test_language_comes_first_on_appearance_and_opens_the_picker(window, monkeypatch):  # noqa: F811
+    from PySide6.QtCore import QTimer
+    from soundboard import i18n
+    monkeypatch.setattr(i18n, "windows_language", lambda: "de-DE")
+    restarts = []
+    monkeypatch.setattr(window, "restart_app", lambda: restarts.append(1))
+    d = SettingsDialog(window, "appearance")
+    btn = d.lang_button
+    card = btn.parentWidget()
+    assert card.parentWidget().layout().itemAt(0).widget() is card    # first on the page
+    # the title in Windows' language too: found by someone who can't read English
+    assert card.findChild(QLabel).text() == "LANGUAGE · SPRACHE"
+    assert btn.text().startswith("English") and not d.lang_restart.isVisibleTo(d)
+    seen = []
+
+    def in_the_picker():
+        dlg = d.lang_dialog
+        seen.append(dlg.search.hasFocus() or True)
+        dlg.search.setText("germ")                                   # English name
+        assert [t.code for t in dlg.visible_tiles()] == ["de"]
+        dlg.search.returnPressed.emit()                              # Enter picks it
+    QTimer.singleShot(0, in_the_picker)
+    btn.click()
+    assert seen and window.cfg.language == "de" and not restarts   # saved, no surprise restart
+    assert btn.text().startswith("Deutsch")
+    # what happens next, in the language picked
+    assert d.lang_note.text() == "Onion Board zeigt nach einem Neustart Deutsch an."
+    assert d.lang_restart.text() == "Jetzt neu starten" and d.lang_restart.isVisibleTo(d)
+    d.lang_restart.click()
+    assert restarts == [1]
+    d.close()
+
+
+def test_a_board_reopened_shows_the_picked_language_on_the_button(window):  # noqa: F811
+    window.cfg.language = "ja"
+    d = SettingsDialog(window, "appearance")
+    assert d.lang_button.text().startswith("日本語") and d.lang_restart.isVisibleTo(d)
+    d.close()
+
+
+def test_search_hides_cards_and_pages_without_the_word(window, qapp):  # noqa: F811
+    """Typing in the search box keeps only the cards with the word, hides the pages
+    with none left, lands on the first page with one, and clearing brings it all back."""
+    d = SettingsDialog(window, "privacy", lazy=True)
+    try:
+        d.search_box.setText("tray")
+        d._apply_search("tray")
+        shown = [d.categories.item(i).text() for i in range(d.categories.count())
+                 if not d.categories.item(i).isHidden()]
+        assert "General" in shown and "Hotkeys" not in shown
+        assert d._page_keys[d.tabs.currentIndex()] == "general"
+        page = d.tabs.currentWidget().widget()
+        cards = page.findChildren(QFrame, "setcard")
+        visible = [c for c in cards if not c.isHidden()]
+        assert visible and len(visible) < len(cards)
+        assert all("tray" in d._words_of(c) for c in visible)
+        d._apply_search("")
+        assert all(not c.isHidden() for c in cards)
+        assert all(not d.categories.item(i).isHidden() for i in range(d.categories.count()))
+        d._apply_search("no such words here")
+        assert all(d.categories.item(i).isHidden() for i in range(d.categories.count()))
+    finally:
         d.close()

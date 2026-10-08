@@ -11,9 +11,10 @@ from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
                                QWidget)
 
-from soundboard import __version__, updates
+from soundboard import __version__, feedback, theme, updates
 from soundboard.ui import fit
 from soundboard.ui.panel import hint_label, icon_label
+from soundboard.i18n import _
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,93 @@ class Note:
 
 # newest first; add one per release that has something worth telling
 NOTES = (
+    Note("1.9.20", "Sort your pads, and a list view", (
+        ("plus", "Sort and list your pads",
+         "The button by the search box sorts A–Z, Newest or Most played, or shows the "
+         "pads as one-line rows with their hotkeys."),
+        ("plus", "Quick volume and more on a pad",
+         "Ctrl + mouse wheel over a pad sets its volume; right-click now has Rename, "
+         "Duplicate and Show the file."),
+        ("check", "Search in Settings",
+         "A box above the categories finds a setting by any word (Ctrl+F)."),
+    )),
+    Note("1.9.9", "Your language, and fewer freezes", (
+        ("plus", "Pick your language",
+         "Settings → Appearance → Language: 32 languages, each in its own name, with a "
+         "search."),
+        ("check", "Fewer freezes",
+         "A headset dropping out, a slow disk or a theme switch no longer freezes the "
+         "window."),
+        ("shield", "Says which app skips your sounds",
+         "With Straight into my mic, the warning bar names an app that records the mic "
+         "raw and so hears none of your sounds."),
+    ), page="appearance", page_label="Pick a language"),
+    Note("1.9.8", "Lighter, and a Discord to join", (
+        ("check", "Uses less memory",
+         "The 3D globe is gone (the flat map stays), so the app and its download are much "
+         "smaller and it holds far less memory and fewer threads while it sits there."),
+        ("shield", "Discord's automatic sensitivity is caught too",
+         "It kept cutting songs out in bursts in calls. The Fix Discord bar now says when "
+         "it's on and how to switch it off."),
+        ("plus", "Join the Discord",
+         "Chat, get help and hear about new versions: Join the Discord is in Settings and "
+         "the tray menu."),
+    )),
+    Note("1.9.7", "Your sounds get through Discord again", (
+        ("shield", "Discord no longer wipes out your sounds",
+         "Discord's noise suppression, Studio profile and Advanced Voice Activity were "
+         "cutting your sounds on Straight into my mic. A bar now says when one is on, "
+         "and Fix Discord shows what to switch."),
+        ("voice", "Six new AI voices",
+         "All voices shows every voice as a card with a sample, and Make your own voice "
+         "blends two of them."),
+        ("mic", "Record a sound",
+         "The new Record button records your mic or whatever is playing; cut the ends "
+         "and save it as a pad."),
+    )),
+    Note("1.9.6", "A new voice, and faster fixes", (
+        ("voice", "Secret detective",
+         "A disguised TV voice: yours plus a lined-up copy a fifth lower, thin and boxy "
+         "with a metallic ring. Every voice now has its own picture."),
+        ("sliders", "More ways to shape a voice",
+         "Tone has a Mid slider; Pitch & voice has Gap between voices, Blur on the new "
+         "voice and Voice size on my voice too. Your saved voices sound as before."),
+        ("shield", "Important fixes get a banner",
+         "When an update fixes something serious, a banner says what and offers Update "
+         "now. Updates are checked every 6 hours."),
+    )),
+    Note("1.9.5", "Only the tabs you use", (
+        ("sounds", "Switch off the tabs you don't use",
+         "Settings → Tabs: untick Radio, Apps, Triggers or Voice and that tab is gone and "
+         "doesn't load at all, so nothing of it runs. Tick it again to bring it back."),
+        ("mic", "No voice gaps in your mic",
+         "With your sounds going straight into your mic, your voice no longer drops out "
+         "or stutters when the PC is busy."),
+        ("check", "Trigger sounds clear on time",
+         "With Onion Watch 0.8.0, its Playing now bar clears the moment a trigger's "
+         "sound ends."),
+    ), "tabs", "Open Tabs"),
+    Note("1.9.4", "A clip editor that behaves", (
+        ("edit", "Copy and paste you can see",
+         "A click in the clip editor places the cursor, Ctrl+V says what it pasted and "
+         "where, and pasting straight after copying puts a second copy in after it."),
+        ("wave", "No more minutes of silence",
+         "Left open while nothing plays, the editor keeps only what the program actually "
+         "played: long gaps close up to half a second."),
+        ("shield", "A sturdier phone remote",
+         "Onion Pocket's connection can't be flooded by another device on your Wi-Fi, "
+         "and its key never goes in a web address."),
+        ("shield", "Phone remote stays off public Wi-Fi",
+         "On a network Windows calls Public (a café, a hotel), the phone remote doesn't "
+         "listen at all, and it switches itself off if the network turns Public."),
+        ("shield", "Your phone's key never crosses the Wi-Fi",
+         "With Onion Pocket 0.2.2 each tap is signed instead of carrying the key, so "
+         "nobody on your Wi-Fi can copy it or replay a tap. Older versions still work."),
+        ("plus", "Add-ons in one place",
+         "Settings → Add-ons & help lists Onion Watch and Onion Pocket, each with Check "
+         "for updates, Report a problem, Reinstall and Remove. Your triggers and "
+         "paired phones are kept."),
+    )),
     Note("1.9.3", "Your mic, start to finish", (
         ("check", "No cable box ticked for you",
          "The installer no longer ticks the virtual cable: your sounds go straight into "
@@ -34,6 +122,9 @@ NOTES = (
         ("mic", "Guides that name your mic",
          "The setup guide and the Discord and game steps now say to keep your own mic, "
          "and name it, instead of telling you to pick CABLE Output."),
+        ("cable", "Don't need the cable? Remove it",
+         "Once your sounds are in your mic, the Setup tab offers to uninstall the "
+         "virtual cable. Keep it if another program uses it."),
     ), "", ""),
     Note("1.9.1", "Your sounds go straight into your mic", (
         ("mic", "The main way now, for everyone",
@@ -165,7 +256,7 @@ class WhatsNewDialog(QDialog):
         fit.watch(self)
         self.mw = mw
         self.page = ""   # set when they pressed the settings button
-        self.setWindowTitle("What's new")
+        self.setWindowTitle(_("What's new"))
         self.setMinimumWidth(520)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
@@ -173,20 +264,30 @@ class WhatsNewDialog(QDialog):
         top = notes[0]
         lay.addWidget(_heading(top.headline))
         lay.addWidget(hint_label(
-            f"{'Updated to' if updated else 'New in'} Onion Board {__version__}. "
-            "Nothing changes until you want it to: everything works as before."))
+            _("Updated to Onion Board {version}. Nothing changes until you want it to: "
+              "everything works as before.", version=__version__) if updated else
+            _("New in Onion Board {version}. Nothing changes until you want it to: everything "
+              "works as before.", version=__version__)))
         for note in notes:
             for icon, title, text in note.items:
                 lay.addWidget(self._item(icon, title, text))
         lay.addStretch(1)   # any spare height goes here, not between the rows
+        chat = self.discord_link = QLabel(   # the theme's colour: Qt's own blue is dark
+            f'<a href="{feedback.DISCORD_URL}" style="color: {theme.T["accent"]};">'
+            f'{_("Chat about it on Discord")}</a>')
+        chat.setObjectName("hint")
+        chat.setToolTip(_("The Onion Board Discord server, in your browser"))
+        chat.setTextInteractionFlags(Qt.LinksAccessibleByMouse | Qt.LinksAccessibleByKeyboard)
+        chat.setOpenExternalLinks(True)
+        lay.addWidget(chat)
         buttons = QHBoxLayout()
-        notes_btn = QPushButton("Full release notes")
-        notes_btn.setToolTip("This version's page on GitHub, in your browser")
+        notes_btn = QPushButton(_("Full release notes"))
+        notes_btn.setToolTip(_("This version's page on GitHub, in your browser"))
         notes_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(
             f"https://github.com/{updates.REPO}/releases/tag/v{__version__}")))
         buttons.addWidget(notes_btn)
         buttons.addStretch(1)
-        close = QPushButton("Close")
+        close = QPushButton(_("Close"))
         close.clicked.connect(self.reject)
         buttons.addWidget(close)
         page = next((n for n in notes if n.page), None)

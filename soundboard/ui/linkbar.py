@@ -24,6 +24,7 @@ from soundboard.library import (SR, decode, fingerprint, import_file, level_gain
 from soundboard.ui import busy, icons
 from soundboard.ui.widgets import fmt_time
 from soundboard import errors
+from soundboard.i18n import _
 
 log = logging.getLogger(__name__)
 
@@ -78,21 +79,21 @@ class LinkBar(QFrame):
         self.info.setWordWrap(True)
         errors.linkify(self.info)   # an error's "Report it" link
         h.addWidget(self.info, 1)
-        self.btn_play = QPushButton("Play once")
-        self.btn_play.setToolTip("Download it and play it once, like a pad (others hear it "
-                                 "too) — it isn't added to your Sounds")
+        self.btn_play = QPushButton(_("Play once"))
+        self.btn_play.setToolTip(_("Download it and play it once, like a pad (others hear it "
+                                   "too) — it isn't added to your Sounds"))
         icons.set_icon(self.btn_play, "play", size=14)
         self.btn_play.clicked.connect(self.play_once)
-        self.btn_add = QPushButton("Add as sound")
+        self.btn_add = QPushButton(_("Add as sound"))
         self.btn_add.setObjectName("primary")
-        self.btn_add.setToolTip("Download its audio and add it to your Sounds (Enter)")
+        self.btn_add.setToolTip(_("Download its audio and add it to your Sounds (Enter)"))
         icons.set_icon(self.btn_add, "plus", "on_accent", size=14)
         self.btn_add.clicked.connect(self.add)
         # Tor mode, after the site turned Tor away even over new routes: only this click
         # makes one download go without Tor (ytdl.TorBlocked)
-        self.btn_direct = QPushButton("Try this one without Tor")
-        self.btn_direct.setToolTip("Download just this one link straight from the site, not "
-                                   "through Tor: the site will see your own address")
+        self.btn_direct = QPushButton(_("Try this one without Tor"))
+        self.btn_direct.setToolTip(_("Download just this one link straight from the site, not "
+                                     "through Tor: the site will see your own address"))
         self.btn_direct.clicked.connect(self._without_tor)
         self.btn_direct.hide()
         self._blocked = ""            # "add" / "play" that Tor couldn't do for this link
@@ -129,7 +130,7 @@ class LinkBar(QFrame):
                       theme.status("warn"))
             self._buttons()
             return
-        self._say(f"Looking up <b>{html.escape(self._host())}</b>…")
+        self._say(_("Looking up <b>{host}</b>…", host=html.escape(self._host())))
         self._looking = True   # until something else is said: the look-up's answer shows
         self._buttons()
         self._probe_timer.start()
@@ -172,8 +173,8 @@ class LinkBar(QFrame):
         ok = bool(self.url) and not self._busy and ytdl.site_allowed(self.url)
         self.btn_add.setEnabled(ok)
         self.btn_play.setEnabled(ok)
-        self.btn_add.setText("Adding…" if self._busy == "add" else "Add as sound")
-        self.btn_play.setText("Loading…" if self._busy == "play" else "Play once")
+        self.btn_add.setText(_("Adding…") if self._busy == "add" else _("Add as sound"))
+        self.btn_play.setText(_("Loading…") if self._busy == "play" else _("Play once"))
 
     def _drop_download(self):
         if self._got is not None:
@@ -214,7 +215,8 @@ class LinkBar(QFrame):
             return False
         self._queued = kind
         name = html.escape(self.title or self._host())
-        self._say(f"<b>{name}</b> is next: waiting for the download before it to finish…")
+        self._say(_("<b>{name}</b> is next: waiting for the download before it to finish…",
+                    name=name))
         return True
 
     def _without_tor(self):
@@ -250,12 +252,12 @@ class LinkBar(QFrame):
         gain = gain if self.cfg.level_volumes else 1.0
         v = self.engine.play(PLAY_ID, data, gain, mode="restart")
         if v is None:
-            self._say("No audio device is open — pick one in Setup.", theme.status("warn"))
+            self._say(_("No audio device is open — pick one in Setup."), theme.status("warn"))
         else:
-            self.played.emit(self.title or "Link", data, gain)
-            name = html.escape(self.title or "it")
-            self._say(f"▶ Playing <b>{name}</b> ({fmt_time(len(data) / SR)}) — "
-                      "<i>Add as sound</i> keeps it.")
+            self.played.emit(self.title or _("Link"), data, gain)
+            name = html.escape(self.title or _("it"))
+            self._say(_("▶ Playing <b>{name}</b> ({time}) — <i>Add as sound</i> keeps it.",
+                        name=name, time=fmt_time(len(data) / SR)))
 
     # ------------------------------------------------------------------ workers
     def _probe(self, url: str):
@@ -286,7 +288,8 @@ class LinkBar(QFrame):
                 return
             fp = fingerprint(str(path))
             if fp and fp in known:
-                raise ytdl.DownloadError(f"It's already in your Sounds as “{known[fp]}”.")
+                raise ytdl.DownloadError(_("It's already in your Sounds as “{name}”.",
+                                           name=known[fp]))
             meta, data = import_file(str(path), color)
             if (pic := thumbs.find_in(Path(path).parent)) is not None:
                 meta.image = thumbs.store(pic, meta.id)   # the video's thumbnail
@@ -297,25 +300,28 @@ class LinkBar(QFrame):
                     kept = ytdl.save_video(path, title or meta.name)
                     if kept:
                         videos.link(meta.id, kept)   # the player's Video button shows it
-                    saved = (f"Video saved in {kept.parent}." if kept else
-                             "No video was saved: this site only gave the sound.")
+                    saved = (_("Video saved in {folder}.", folder=kept.parent) if kept else
+                             _("No video was saved: this site only gave the sound."))
                 except OSError as e:
                     log.warning("couldn't keep the video of %s: %s", url, e)
-                    saved = f"The video couldn't be saved ({errors.plain(e)})."
+                    saved = _("The video couldn't be saved ({error}).",
+                              error=errors.plain(e))
             self._msg.emit("added", url, (meta, data, title, saved))
         except ytdl.TorBlocked as e:   # the bar offers to try it without Tor
             log.warning("link %s turned away over Tor for %s", kind, url)
             self._msg.emit("blocked", url, (kind, html.escape(
-                f"Couldn't {'add' if kind == 'add' else 'play'} it: {e}")))
+                _("Couldn't add it: {error}", error=e) if kind == "add" else
+                _("Couldn't play it: {error}", error=e))))
         except Exception as e:  # noqa: BLE001 - shown in the bar, logged
             log.warning("link %s failed for %s: %s", kind, url, e)
             # a bot check or rate limit is about the user's address, not yt-dlp
             hint = ("" if not isinstance(e, ytdl.FetchError) or auto_update
                     or ytdl.blocked_by_site(f"{e} {getattr(e, 'raw', '')}") else
-                    " A newer yt-dlp may fix this: Settings → Updates → Update now.")
+                    _(" A newer yt-dlp may fix this: Settings → Updates → Update now."))
             doing = "add" if kind == "add" else "play"
             # rich text: the plain words, and a "Report it" link when it's one for us
-            self._msg.emit("error", url, errors.html(e, f"Couldn't {doing} it: ",
+            before = _("Couldn't add it: ") if kind == "add" else _("Couldn't play it: ")
+            self._msg.emit("error", url, errors.html(e, before,
                                                      where=f"Couldn't {doing} a link")
                            + html.escape(hint))
         finally:
@@ -337,7 +343,8 @@ class LinkBar(QFrame):
             return
         if kind == "probe-error":
             if current and not self._busy and getattr(self, "_looking", False):
-                self._say(html.escape(f"Can't use this link: {payload}"), theme.status("error"))
+                self._say(html.escape(_("Can't use this link: {error}", error=payload)),
+                          theme.status("error"))
             return
         if kind == "title":
             if current:
@@ -346,7 +353,7 @@ class LinkBar(QFrame):
         if kind == "progress":
             self.progress.emit(url, payload)
             if current:
-                t = ("Adding…" if self._busy == "add" else "Loading…")
+                t = (_("Adding…") if self._busy == "add" else _("Loading…"))
                 t = t if payload < 0 else f"{t} {payload:.0%}"
                 (self.btn_add if self._busy == "add" else self.btn_play).setText(t)
             return
@@ -367,11 +374,12 @@ class LinkBar(QFrame):
             meta.name = (title or (current and self.title) or meta.name)[:40]
             self.sound_ready.emit(meta, data)
             if current:
-                self._say(f"✓ Added <b>{html.escape(meta.name)}</b> to your Sounds."
+                self._say(_("✓ Added <b>{name}</b> to your Sounds.",
+                            name=html.escape(meta.name))
                           + (f" {html.escape(saved)}" if saved else ""), theme.status("ok"))
             else:   # another link is showing now: still say this one made it
-                busy.toast(self.window(), f"✓ Added <b>{html.escape(meta.name)}</b> to your "
-                                          "Sounds.", "ok")
+                busy.toast(self.window(), _("✓ Added <b>{name}</b> to your Sounds.",
+                                            name=html.escape(meta.name)), "ok")
             self.done.emit(url, "add", True)
         elif kind == "play":
             path, data, gain = payload

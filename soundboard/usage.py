@@ -2,24 +2,39 @@
 
 Once a day the installed app sends one "still here" to the project's GoatCounter
 (a privacy-friendly counter): the version number and a random ID made on this PC, so
-the same person isn't counted twice. Also a one-off "first start", and "updated" when
-*Update now* installs a new version. Nothing else: no name, sounds, settings, devices,
-games or IP address in the message (GoatCounter sees the connection's address like any
-site does, and isn't sent it to keep or look up).
+the same person isn't counted twice. Also a one-off "first start" (with where they
+heard about the app, if they picked it on the installer's last page), and "updated" when
+*Update now* installs a new version. With the daily one: which tabs were opened since the
+last one (their names only). Soon after a start: how many problems there were since the
+last send, as counts, never the report itself: a crash report or a freeze saved
+(`crash/<version>`, `error/<version>`, `freeze/<version>`, with the error's type and
+the file and line of this app's own code it happened in, e.g. `error/1.9.8/KeyError@
+soundboard/engine.py:1090`: never its message or anything else from the report), or
+the last run ending without the app closing itself (`unclean-exit/<version>/<why>`:
+a hard crash, ended in Task Manager, a power cut; exitwatch.py works out which, on
+this PC). And `uninstall/<version>` when the uninstaller removes it.
+Nothing else: no name, sounds, settings, devices, games or IP address in the message
+(GoatCounter sees the connection's address like any site does, and isn't sent it to
+keep or look up).
 
 On unless switched off: the installer's "Count me in" box, or Settings > Privacy &
 security > Usage count (soundboard.net, so it also obeys Offline mode, a proxy and
 Tor). Copies from before it existed start with it off: they were installed as an app
-that sent nothing. A copy running from source never sends anything."""
+that sent nothing. A copy running from source never sends anything, and neither does
+one on a PC with ONIONBOARD_NO_STATS set (the developer's own PCs and test VMs:
+GoatCounter's "Ignore IPs" can't catch these sends, as they carry no IP)."""
 from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import sys
 import threading
 import time
 import urllib.request
 import uuid
+from pathlib import Path
 
 from soundboard import __version__, net, netlog
 
@@ -31,12 +46,26 @@ ENDPOINT = "https://onionalien.goatcounter.com/api/v0/count"
 # read or change anything; "" sends nothing
 TOKEN = "1mdp7aoiksvjn2e3oitmjdaqd1u33msk6p74g7samuec2tufwr"  # gitleaks:allow (count-only)
 EVERY_S = 24 * 3600
+# the installer's "Where did you hear about Onion Board?" picks; Other's typed answer
+# goes through heard_tag() too, and anything else is sent as "other-<words>" or not at all
+HEARD = ("youtube", "reddit", "github", "google", "friend")
+HEARD_ALIASES = {"yt": "youtube", "you tube": "youtube", "youtube.com": "youtube",
+                 "reddit.com": "reddit", "github.com": "github", "a friend": "friend",
+                 "friends": "friend", "google.com": "google", "x": "twitter",
+                 "twitter.com": "twitter", "tiktok.com": "tiktok", "tik tok": "tiktok"}
+HEARD_MAX = 24   # characters of a typed answer, after tidying
 TIMEOUT_S = 15
+# the tabs whose use is counted (mainwindow.TABS); anything else is never sent
+TABS = ("sounds", "radio", "apps", "triggers", "voice", "setup")
+RUNNING = "running.txt"     # in the app folder while the app runs (mark_running)
+MAX_PROBLEMS = 10           # problem events per send: a bug in a loop isn't 1000 hits
+VERSION_RE = r"[0-9][0-9A-Za-z.\-]{0,20}"
 
 
 def enabled() -> bool:
-    """Could anything be sent at all: the installed app, with a key."""
-    return bool(TOKEN) and bool(getattr(sys, "frozen", False))
+    """Could anything be sent at all: the installed app, with a key, not on a dev PC."""
+    return (bool(TOKEN) and bool(getattr(sys, "frozen", False))
+            and not os.environ.get("ONIONBOARD_NO_STATS"))
 
 
 def install_id(cfg) -> str:
@@ -46,20 +75,181 @@ def install_id(cfg) -> str:
     return cfg.stats_id
 
 
-def hits(cfg, now: float, event: str = "") -> list[dict]:
+def _wordlike(w: str) -> bool:
+    """A word, a short name ("tv") or a number: not keyboard mashing ("asdfgh")."""
+    return w.isdigit() or ((len(w) <= 3 or bool(re.search(r"[aeiouy]", w)))
+                           and not re.search(r"[^aeiouy\d]{5}", w))
+
+
+def heard_tag(text: str) -> str:
+    """The installer's answer as a short tag for the first-start event: one of HEARD,
+    "other-<a-few-words>" for a typed answer that reads like a name (a site, an app,
+    "discord server"), or "" for none. Typed text that doesn't look like that is
+    dropped, not sent: an email address, a link with a path, a number (a phone),
+    symbols, keyboard mashing or more than three words."""
+    t = " ".join(str(text or "").lower().split())
+    t = HEARD_ALIASES.get(t, t)
+    if t in HEARD:
+        return t
+    if (not t or len(t) > HEARD_MAX or "@" in t or "/" in t
+            or not re.fullmatch(r"[a-z0-9 .\-]+", t) or re.search(r"\d{3}", t)):
+        return ""
+    words = re.findall(r"[a-z0-9]+", t.replace(".com", ""))
+    if not 1 <= len(words) <= 3 or not all(_wordlike(w) for w in words):
+        return ""
+    for w in words:   # "a youtube video", "my friend", "google search"
+        w = HEARD_ALIASES.get(w, w)
+        if w in HEARD:
+            return w
+    return "other-" + "-".join(words)
+
+
+def _event(name: str, sid: str) -> dict:
+    return {"path": name, "title": name, "event": True, "session": sid}
+
+
+def hits(cfg, now: float, event: str = "", extra=()) -> list[dict]:
     """What a send would say: the daily "still here" for this version if one is due
-    (and "first-start" the first time ever), or the one `event`."""
+    (with "first-start" the first time ever, and the tabs opened since the last one),
+    or the one `event`. `extra` (problem events) go now, due or not."""
     sid = install_id(cfg)
     if event:
-        return [{"path": event, "title": event, "event": True, "session": sid}]
+        return [_event(event, sid)]
+    out = [_event(e, sid) for e in extra]
     if now - cfg.stats_sent < EVERY_S:
-        return []
-    out = [{"path": f"/app/{__version__}", "title": f"Onion Board {__version__}",
-            "session": sid}]
+        return out
+    out.insert(0, {"path": f"/app/{__version__}", "title": f"Onion Board {__version__}",
+                   "session": sid})
     if not cfg.stats_sent:
-        out.append({"path": "first-start", "title": "first-start", "event": True,
-                    "session": sid})
+        heard = heard_tag(cfg.stats_heard)
+        out.append(_event(f"first-start/heard-{heard}" if heard else "first-start", sid))
+    out += [_event(f"tab/{t}", sid) for t in cfg.stats_tabs if t in TABS]
     return out
+
+
+def tab_opened(cfg, key: str) -> None:
+    """Remember that tab `key` was opened, for the next daily count."""
+    tabs = cfg.stats_tabs if isinstance(cfg.stats_tabs, list) else []
+    if key in TABS and key not in tabs:
+        cfg.stats_tabs = [*tabs, key]
+
+
+# a stack line in a report: `File "...\soundboard\engine.py", line 1090, in ...`; only
+# our own files count, named from the package folder down (never the folder above it)
+_OUR_FRAME = re.compile(r'^\s*File "(?:[^"]*[\\/])?(soundboard(?:[\\/][a-z0-9_]+)?'
+                        r'[\\/][a-z0-9_]+\.py)", line (\d+)', re.M)
+_ANY_FRAME = re.compile(r'^\s*File ".*", line \d+', re.M)
+_ERROR_TYPE = re.compile(r"([A-Za-z_][\w.]*)(?::|$)")
+
+
+def _where(stack: str) -> str:
+    """`soundboard/engine.py:1090`: the deepest of our own lines in a report's stack
+    (the same file and line anyone can look up in the public source), or ""."""
+    frames = _OUR_FRAME.findall(stack)
+    if not frames:
+        return ""
+    file, line = frames[-1]
+    return f"{file.replace(chr(92), '/')}:{line}"
+
+
+def _error_type(stack: str) -> str:
+    """`KeyError` from the traceback's last line: the type only, never its message
+    (a message can hold a path, a device or a user name)."""
+    frames = list(_ANY_FRAME.finditer(stack))
+    if not frames:
+        return ""
+    for line in stack[frames[-1].end():].splitlines()[1:]:
+        if line.strip() and not line[:1].isspace():   # past the frame's code lines
+            m = _ERROR_TYPE.match(line)
+            name = m.group(1).rsplit(".", 1)[-1] if m else ""
+            return name if len(name) <= 40 else ""
+    return ""
+
+
+def _report_event(path: Path) -> str:
+    """`crash/1.9.6`, `error/1.9.6` or `freeze/1.9.6` for a saved report (applog.py),
+    then where it happened when the stack shows it: `error/1.9.6/KeyError@
+    soundboard/engine.py:1090`, `freeze/1.9.6@soundboard/directmic.py:184`."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read(64_000)
+    except OSError:
+        return ""
+    head = text[:600]
+    if head.startswith("Onion Board ended without closing"):   # exitwatch.py: counted
+        return ""                                          # as unclean-exit/ already
+    m = re.search(rf"^Version:\s*({VERSION_RE})\s*$", head, re.M)
+    ver = m.group(1) if m else __version__
+    # the stack only: never the log lines saved below it
+    stack = re.split(r"^Last \d+ log lines\s*$", text, maxsplit=1, flags=re.M)[0]
+    stack = stack.split("\n\n", 1)[-1]
+    where = _where(stack)
+    if "froze for" in head.split("\n", 1)[0]:
+        return f"freeze/{ver}" + (f"@{where}" if where else "")
+    kind = "crash" if re.search(r"^Fatal:", head, re.M) else "error"
+    etype = _error_type(stack)
+    tag = "@".join(p for p in (etype, where) if p)
+    return f"{kind}/{ver}" + (f"/{tag}" if tag else "")
+
+
+def problems(app_dir: Path, since: float) -> tuple[list[str], float]:
+    """Events for the crash / freeze reports saved in app_dir after `since` (a file
+    time), and the newest such time. Only the kind and version are read out."""
+    from soundboard.applog import REPORTS_DIR
+    out, newest = [], since
+    try:
+        files = sorted((f.stat().st_mtime, f.name, f)
+                       for f in (app_dir / REPORTS_DIR).glob("crash-*.txt"))
+    except OSError:
+        return [], since
+    for mtime, _name, f in files:
+        if mtime <= since:
+            continue
+        newest = max(newest, mtime)
+        ev = _report_event(f)
+        if ev and len(out) < MAX_PROBLEMS:
+            out.append(ev)
+    return out, newest
+
+
+def mark_running(app_dir: Path) -> str:
+    """At start: note that the app is running. Returns `unclean-exit/<version>` when the
+    last run never got to mark_stopped (it crashed hard, was ended in Task Manager, or
+    the PC lost power), else ""."""
+    path = app_dir / RUNNING
+    event = ""
+    try:
+        old = path.read_text(encoding="utf-8").strip()
+        if re.fullmatch(VERSION_RE, old):
+            event = f"unclean-exit/{old}"
+    except OSError:
+        pass
+    try:
+        path.write_text(__version__, encoding="utf-8")
+    except OSError:
+        pass
+    return event
+
+
+def mark_stopped(app_dir: Path) -> None:
+    """At a real quit (MainWindow.shutdown, also when Windows ends the session)."""
+    try:
+        (app_dir / RUNNING).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+_pending: list[str] = []   # an unclean exit found at start, for the next send
+
+
+def note(event: str) -> None:
+    """Send `event` with the next count."""
+    if event:
+        _pending.append(event)
+
+
+def uninstall_event() -> str:
+    return f"uninstall/{__version__}"
 
 
 def update_event(to: str) -> str:
@@ -81,24 +271,51 @@ def send(payload: list[dict]) -> bool:
         return False
 
 
-def maybe_send(cfg, saved=None, event: str = "") -> None:
+def maybe_send(cfg, saved=None, event: str = "", app_dir: Path | None = None) -> None:
     """The daily count if it's due (or `event` now), on a thread, when it's allowed.
-    `saved()` is called on that thread after cfg.stats_sent changed."""
+    Problems since the last send go too, due or not: note()d ones, and with `app_dir`
+    the reports saved there. `saved()` is called on that thread after cfg changed."""
     if not enabled() or not net.allowed(FEATURE):
         return
     now = time.time()
-    payload = hits(cfg, now, event)
+    extra, taken, newest = [], 0, 0.0
+    if not cfg.stats_problems_seen:   # first run with this: older reports aren't news
+        cfg.stats_problems_seen = now
+    if not event:
+        taken = len(_pending)
+        extra = _pending[:taken]
+        if app_dir is not None:
+            found, newest = problems(app_dir, cfg.stats_problems_seen)
+            extra += found
+        extra = extra[:MAX_PROBLEMS]
+    payload = hits(cfg, now, event, extra)
     if not payload:
         return
+    daily = not event and not payload[0].get("event")
+    tabs = [h["path"][4:] for h in payload if h["path"].startswith("tab/")]
     netlog.cause(FEATURE, "Anonymous usage count" + (f" ({event})" if event
-                                                     else " (once a day)"))
+                                                     else " (once a day)" if daily
+                                                     else " (problems)"))
 
     def run():
-        if send(payload) and not event:
+        if not send(payload) or event:
+            return
+        if daily:
             cfg.stats_sent = now
-            if saved is not None:
-                saved()
+            cfg.stats_tabs = [t for t in cfg.stats_tabs if t not in tabs]
+        del _pending[:taken]
+        cfg.stats_problems_seen = max(cfg.stats_problems_seen, newest)
+        if saved is not None:
+            saved()
     threading.Thread(target=run, daemon=True, name="usage-count").start()
+
+
+def send_now(cfg, event: str) -> bool:
+    """Send one `event` and wait for it (the uninstaller's `--uninstall-count`)."""
+    if not enabled() or not net.allowed(FEATURE):
+        return False
+    netlog.cause(FEATURE, f"Anonymous usage count ({event})")
+    return send(hits(cfg, time.time(), event))
 
 
 if sys.platform != "win32":   # Linux: counted apart (/app/linux/<version>)

@@ -9,6 +9,8 @@ from tests.conftest import process_events
 
 class FakeEngine:
     voice_chain = None
+    mic_stream = None   # a shown panel's meter asks: no mic here
+    level_mic = 0.0
 
     def play(self, *a, **k):
         pass
@@ -57,11 +59,10 @@ def test_editing_a_slider_switches_to_custom(panel):
     assert p.fx.spec()["effects"]["pitch"]["semitones"] == 6.5
 
 
-def test_power_switch_and_hear_button(panel):
+def test_power_switch(panel):
     p, _ = panel
-    seen, hear = [], []
+    seen = []
     p.fx_changed.connect(seen.append)
-    p.fx.hear_toggled.connect(hear.append)
     assert not p.fx.btn_power.isChecked() and "OFF" in p.fx.btn_power.text()
     p.fx.pick("Deep voice")                  # picking a voice turns it on
     assert p.fx.btn_power.isChecked() and "ON" in p.fx.btn_power.text()
@@ -69,10 +70,7 @@ def test_power_switch_and_hear_button(panel):
     p.fx.btn_power.setChecked(False)         # the switch turns it off, voice kept
     assert not seen[-1]["enabled"] and seen[-1]["preset"] == "Deep voice"
     assert not p.fx._tile["Deep voice"].isChecked()   # nothing looks selected while off
-    p.fx.btn_hear.setChecked(True)
-    assert hear == [True]
-    p.fx.set_hearing(False)                  # mirrored from the window: no echo back
-    assert hear == [True] and not p.fx.btn_hear.isChecked()
+    assert not hasattr(p.fx, "btn_hear")     # one switch for hearing it: the mixer's
 
 
 def test_saved_spec_loads_back(qapp, monkeypatch):
@@ -99,7 +97,7 @@ def test_live_voice_needs_the_addon_set_up(panel):
     # the repo's live-voice module has no .venv in a test checkout -> install hint
     m = p.speech.module
     if m is None or not m.installed:
-        assert p.speech.live_box.isHidden() and not p.speech.missing.isHidden()
+        assert p.speech.lang_box.isHidden() and not p.speech.missing.isHidden()
 
 
 def test_everything_spoken_lands_in_the_log(panel, monkeypatch):
@@ -134,7 +132,8 @@ def test_speak_in_offers_the_languages_and_downloads_only_on_request(panel, monk
     p, _ = panel
     s = p.speech
     codes = [s.cb_lang.itemData(i) for i in range(s.cb_lang.count())]
-    assert codes[0] == "" and set(codes[1:]) == {"zh", "es", "fr", "de", "ru"}
+    assert codes[0] == "" and {"zh", "es", "fr", "de", "ru", "ja", "pt-BR", "zh-TW"} <= set(codes)
+    assert len(codes) == 34
     assert s.tr_box.isHidden()                          # English: nothing to download
     assert not translation.base_dir().exists()          # and nothing was fetched
     got = []
@@ -323,7 +322,8 @@ def test_update_shows_progress_and_blocks_a_second_install(panel, qapp, monkeypa
         raise OSError("disk full")
 
     monkeypatch.setattr(mods, "install", boom)
-    monkeypatch.setattr(applog, "report", lambda **k: None)
+    reported = []
+    monkeypatch.setattr(applog, "report", lambda **k: reported.append(k))
     s._install()
     assert not s.b_update.isEnabled() and not s.b_install.isEnabled()
     s._install()                                   # a double-click: still one pip
@@ -331,6 +331,7 @@ def test_update_shows_progress_and_blocks_a_second_install(panel, qapp, monkeypa
     assert len(started) == 1 and not s.lbl_install.isHidden()
     assert "disk full" in s.lbl_install.text() and "again" in s.lbl_install.text()
     assert s.b_update.text() == "Update speech recognition"
+    assert reported == []   # a full disk is said on the card, not shown as a crash
 
 
 def test_no_update_button_without_the_addon(panel):
@@ -592,9 +593,10 @@ def _grid_order(fx):
 def test_random_voice_opens_fine_tune_with_what_it_set_lit_up(panel):
     import random
     p, _ = panel
-    assert not p.fx.btn_more.isChecked()
+    assert not p.fx.dlg.isVisible()
+    p.fx.btn_random.click()                  # the dice is in Make it yours
+    assert p.fx.dlg.isVisible() and p.fx.preset == "Custom"
     p.fx.randomize(random.Random(3))
-    assert p.fx.btn_more.isChecked() and p.fx.preset == "Custom"
     on = {t for t, r in p.fx.rows.items() if r.chk.isChecked() and t != "cleanup"}
     lit = {t for t, r in p.fx.rows.items() if r.is_fresh()}
     assert lit == on and "pitch" in lit
@@ -605,12 +607,12 @@ def test_random_voice_opens_fine_tune_with_what_it_set_lit_up(panel):
     assert not any(r.is_fresh() for r in p.fx.rows.values())
 
 
-def test_random_voice_is_the_last_tile_and_voices_have_pictures(panel):
+def test_my_own_mix_is_the_last_tile_and_voices_have_pictures(panel):
     from soundboard.ui import art
     p, _ = panel
     order = _grid_order(p.fx)
-    assert order[-1] == "Random voice" and order[-2] == "My own mix"
-    assert not p.fx.btn_random.isCheckable() and p.fx.btn_random not in p.fx.tiles.buttons()
+    assert order[-1] == "My own mix" and "Random voice" not in order
+    assert p.fx.btn_random.window() is p.fx.dlg     # Randomize lives in Make it yours
     assert not p.fx.btn_random.icon().isNull()
     if art.exists(art.voice_key("Robot")):          # the repo's pictures are used
         assert p.fx._tile["Robot"].property("art")
@@ -626,7 +628,7 @@ def test_save_as_a_voice_makes_a_tile_that_comes_back(panel, monkeypatch, qapp):
     p.fx.btn_save.click()
     assert asked == ["My voice"]
     assert p.fx.preset == "Squeaky" and p.fx._tile["Squeaky"].isChecked()
-    assert _grid_order(p.fx)[-2:] == ["Squeaky", "Random voice"]
+    assert _grid_order(p.fx)[-2:] == ["My own mix", "Squeaky"]
     assert p.fx.spec()["custom"] == mine           # "My own mix" is still that mix
     p.fx.pick("Robot")
     p.fx.pick("Squeaky")
@@ -719,7 +721,7 @@ def test_tiles_reflow_with_saved_voices(qapp, app_dir, monkeypatch):
     holder.show()
     fx.setGeometry(0, 0, 260, 1600)
     qapp.processEvents()
-    assert _grid_order(fx)[-3:] == ["A", "B", "Random voice"]
+    assert _grid_order(fx)[-3:] == ["My own mix", "A", "B"]
     assert max(b.geometry().right() for b in fx.tiles.buttons()) <= fx.width()
     holder.hide()
 
@@ -762,15 +764,6 @@ def test_delay_shows_what_the_effects_and_devices_add(panel):
     assert 5 < small < 20 and 50 < big < 100
     fx.set_device_delay(30.0)
     assert not fx.delay.isHidden() and f"{big + 30:.0f} ms" in fx.delay.text()
-
-
-def test_hear_my_voice_is_the_voice_alone(panel):
-    p, eng = panel
-    p.fx.btn_hear.setChecked(True)
-    assert eng.mon_voice_only is True
-    p.fx.btn_hear.setChecked(False)
-    p.fx.set_hearing(True)                        # the mixer's "Hear what they hear"
-    assert eng.mon_voice_only is False
 
 
 def test_switch_settings_and_cards_round_trip(panel):
@@ -873,3 +866,353 @@ def test_resizing_within_one_shape_does_no_layout_passes(panel, monkeypatch):
     assert len(shapes) == tried
     fx._fit_width(1100)
     assert (fx._short, fx._tile_cols) == (False, fx.COLS)
+
+
+def test_a_slider_step_lays_nothing_out_and_its_value_always_fits(panel, qapp):
+    """The value next to a slider is as wide as its widest value: one that changed
+    width laid out the card, its neighbours and the page again on every step."""
+    from PySide6.QtCore import QEvent, QObject
+    p, _ = panel
+    p.resize(1100, 800)
+    p.show()
+    p.fx.open_tweak()
+    p.fx.pick("Robot")
+    qapp.processEvents()
+    row = p.fx.rows["robot"]
+    s = row.sliders[0]
+    s.slider.setValue(s.slider.maximum())   # the first edit: Robot -> My own mix
+    qapp.processEvents()
+    hint = s.val.sizeHint()
+    fm = s.val.fontMetrics()
+
+    seen = []
+
+    class Layouts(QObject):
+        def eventFilter(self, o, e):
+            if e.type() == QEvent.LayoutRequest and o in (s, row, row.body):
+                seen.append(o)
+            return False
+    watch = Layouts()
+    qapp.installEventFilter(watch)
+    try:
+        for v in range(s.slider.minimum(), s.slider.maximum() + 1, 7):
+            s.slider.setValue(v)
+            qapp.processEvents()
+            assert s.val.sizeHint() == hint
+            assert fm.horizontalAdvance(s.val.text()) <= s.val.contentsRect().width()
+    finally:
+        qapp.removeEventFilter(watch)
+    assert seen == []   # was the slider's row, its card and up the page, every step
+    assert s.val.text() == s.text() and s.slider.accessibleDescription() == s.text()
+
+
+def test_every_value_a_slider_shows_fits_its_label(panel):
+    from soundboard.ui.voicepanel import param_text
+    p, _ = panel
+    p.show()
+    for row in p.fx.rows.values():
+        for s in row.sliders:
+            if s.slider is None:
+                continue
+            s.val.ensurePolished()
+            fm, room = s.val.fontMetrics(), s.val.sizeHint().width()
+            for i in range(s.steps + 1):
+                v = s.q.lo + (s.q.hi - s.q.lo) * i / s.steps
+                assert fm.horizontalAdvance(param_text(s.q, v)) <= room, (s.q.key, v)
+
+
+def test_cards_fold_away_and_stay_folded(qapp, monkeypatch):
+    monkeypatch.setattr(tts.SapiTTS, "warm_up", lambda self: [])
+    from soundboard.ui.voicepanel import VoicePanel
+    p = VoicePanel(FakeEngine(), {}, {"folded": ["ai", 7, "later"]})   # 7: junk
+    try:
+        assert p.ai.isHidden() and not p.fx.isHidden() and not p.speech.isHidden()
+        saved = []
+        p.speech_changed.connect(saved.append)
+        p._heads["fx"].arrow.click()                 # fold the voice changer
+        assert p.fx.isHidden() and saved[-1]["folded"] == ["ai", "fx", "later"]
+        p._heads["ai"].arrow.click()                 # and open the AI voices again
+        # "later": a newer version's card, kept for it
+        assert not p.ai.isHidden() and saved[-1]["folded"] == ["fx", "later"]
+        p.fx.pick("Robot")                           # folded, it still says it's on
+        assert p._heads["fx"].pill.text() == "On"
+    finally:
+        p.shutdown()
+        p.deleteLater()
+
+
+def test_the_voice_thats_on_speaks_the_language_picked(panel, monkeypatch):
+    """Speak in belongs to the whole tab: the AI voice gets the translated lines,
+    else the voice changer (real mic muted); text-to-speech's own Start wins."""
+    from types import SimpleNamespace
+    p, _ = panel
+    sp = p.speech
+    asked = []
+    monkeypatch.setattr(sp, "translate_for", asked.append)
+    p._sync_translate()
+    assert asked[-1] == "" and sp.ctl.dub is None             # English: nothing to do
+    de = SimpleNamespace(language="de", language_name="German")
+    monkeypatch.setattr(sp, "translating", lambda: de)
+    p._sync_translate()
+    assert asked[-1] == "" and "Turn on the AI voice" in sp.lbl_bg.text()
+    p.fx.pick("Robot")
+    assert asked[-1] == "fx" and sp.ctl.fx_always and sp.ctl.dub is None
+    assert "German, a few seconds late" in p._heads["fx"].pill.text()
+    monkeypatch.setattr(p.ai, "is_on", lambda: True)
+    p._sync_translate()
+    assert asked[-1] == "ai" and sp.ctl.dub is p.ai_controller and p.ai_controller.dub_on
+    sp.b_live.blockSignals(True)
+    sp.b_live.setChecked(True)
+    sp.b_live.blockSignals(False)
+    p._sync_translate()
+    assert asked[-1] == "" and sp.ctl.dub is None and not p.ai_controller.dub_on
+
+
+# ---------------------------------------------------------------- Make it yours window
+
+def test_the_card_is_just_the_switch_the_voices_and_one_button(panel):
+    p, _ = panel
+    fx = p.fx
+    on_card = [w for w in (fx.btn_power, fx.meter, fx.btn_tweak, *fx.tiles.buttons())]
+    assert all(w.window() is not fx.dlg for w in on_card)
+    for w in (fx.hero_box.parentWidget(), fx.btn_random, fx.btn_save, fx.btn_share,
+              fx.btn_import, fx.btn_bin, fx.more, *fx.rows.values()):
+        assert w.window() is fx.dlg
+    assert not fx.dlg.isModal() and not fx.dlg.isVisible()
+    fx.btn_tweak.click()
+    assert fx.dlg.isVisible()
+    fx.pick("Robot")                                  # the voices still work beside it
+    assert fx.preset == "Robot" and fx.btn_tweak.text().endswith("on")
+    fx.dlg.close()
+
+
+def test_my_own_mix_opens_make_it_yours(panel):
+    p, _ = panel
+    p.fx.pick("Custom")
+    assert p.fx.dlg.isVisible()
+    p.fx.dlg.close()
+
+
+def test_make_it_yours_remembers_its_size(panel, qapp):
+    from soundboard.ui.voicepanel import VoiceFxPanel
+    p, _ = panel
+    seen = []
+    p.fx.changed.connect(seen.append)
+    p.fx.open_tweak()
+    p.fx.dlg.resize(520, 480)
+    qapp.processEvents()
+    assert p.fx._fx_cols == 1                         # narrow: one effect a row
+    p.fx.dlg.close()
+    assert seen[-1]["panel_size"] == [520, 480]
+    again = VoiceFxPanel(voicefx.clean_spec(seen[-1]))
+    again.open_tweak()
+    assert (again.dlg.width(), again.dlg.height()) == (520, 480)
+    again.dlg.close()
+    again.deleteLater()
+
+
+def test_copy_and_import_a_share_code(panel, monkeypatch, qapp):
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QMessageBox
+    p, _ = panel
+    p.fx.pick("Chipmunk")
+    _ask(monkeypatch, "Squeaky")
+    p.fx.save_voice()
+    assert p.fx.btn_share.isEnabled()                # a saved voice is on
+    code = p.fx.copy_code("Squeaky")
+    assert QGuiApplication.clipboard().text() == code and code.startswith("OB1-")
+    sound = p.fx.spec()["effects"]
+    p.fx.pick("Robot")
+    assert not p.fx.btn_share.isEnabled()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a: asked.append(a[2]) or QMessageBox.Yes)
+    _ask(monkeypatch, code)
+    p.fx.btn_import.click()
+    # the name was taken: it comes in alongside, on, and sounding the same
+    assert "Squeaky (2)" in asked[0] and p.fx.preset == "Squeaky (2)"
+    assert list(p.fx.store.voices) == ["Squeaky", "Squeaky (2)"]
+    strip = {t: e for t, e in sound.items() if t != "cleanup"}
+    assert {t: e for t, e in p.fx.spec()["effects"].items() if t != "cleanup"} == strip
+
+
+def test_importing_junk_says_why_and_adds_nothing(panel, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    p, _ = panel
+    said = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: said.append(a[2]))
+    assert p.fx.import_code("OB1-not-a-real-code") == ""
+    assert said and not p.fx.store.voices
+    # a built-in voice's name gets "(shared)"; saying No adds nothing
+    from soundboard import savedvoices
+    code = savedvoices.share_code("Robot", {"robot": {"on": True}})
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.No)
+    assert p.fx.import_code(code) == "" and not p.fx.store.voices
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.Yes)
+    assert p.fx.import_code(code) == "Robot (shared)"
+
+
+def test_copy_from_a_tile_with_the_window_closed_says_so(panel, monkeypatch):
+    p, _ = panel
+    _ask(monkeypatch, "Mine", "Other")
+    p.fx.save_voice()
+    p.fx.save_voice()
+    p.fx.copy_code("Mine")
+    assert p.fx.undo_bar.isVisibleTo(p.fx) and p.fx.undo_bar.btn_undo.isHidden()
+    p.fx.delete_voice("Mine")                        # a real Undo shows its button again
+    assert not p.fx.undo_bar.btn_undo.isHidden()
+
+
+def test_make_it_yours_buttons_are_at_the_top(panel):
+    fx = panel[0].fx
+    tools = fx.btn_random.parentWidget()
+    for b in (fx.btn_save, fx.btn_share, fx.btn_import, fx.btn_bin):
+        assert b.parentWidget() is tools                     # one row of buttons...
+    assert fx.tweak.layout().indexOf(tools) == 0             # ...first in the window
+
+
+def test_effect_cards_fold_and_stay_folded(qapp, monkeypatch):
+    monkeypatch.setattr(tts.SapiTTS, "warm_up", lambda self: [])
+    from soundboard.ui.voicepanel import VoicePanel
+    p = VoicePanel(FakeEngine(), {}, {"folded": ["ai", "fx.echo"]})
+    try:
+        echo, radio = p.fx.rows["echo"], p.fx.rows["radio"]
+        assert echo.is_folded() and echo.desc.isHidden() and not radio.is_folded()
+        saved = []
+        p.speech_changed.connect(saved.append)
+        radio.chk.setChecked(True)
+        assert not radio.body.isHidden()
+        radio.arrow.click()                                  # fold it: just its title line
+        assert radio.body.isHidden() and radio.desc.isHidden() and radio.chk.isChecked()
+        assert saved[-1]["folded"] == ["ai", "fx.echo", "fx.radio"]
+        echo.chk.setChecked(True)                            # switching it on opens it
+        assert not echo.is_folded() and not echo.body.isHidden()
+        assert saved[-1]["folded"] == ["ai", "fx.radio"]
+        p.fx.pick("Robot")                                   # a voice pick leaves folds be
+        assert radio.is_folded() and not p.fx.rows["robot"].is_folded()
+    finally:
+        p.shutdown()
+        p.deleteLater()
+
+
+def test_effect_columns_stack_without_holes(panel, qapp):
+    """Two columns, each card under the shorter one: no hole beside a short card,
+    and the columns end close together, after a voice pick and after folding."""
+    fx = panel[0].fx
+    fx.open_tweak()
+    fx.dlg.resize(800, 700)
+
+    def check():
+        for _ in range(3):
+            qapp.processEvents()
+        assert fx._fx_cols == 2
+        cols = [[col.itemAt(i).widget() for i in range(col.count() - 1)]
+                for col in fx._fx_columns]
+        assert sorted(len(c) for c in cols)[0] >= 3
+        assert not any(lbl.isVisible() for lbl in fx._groups.values())
+        bottoms = []
+        for col in cols:
+            for a, b in zip(col, col[1:]):
+                assert b.y() - (a.y() + a.height()) == 10      # just the spacing
+            bottoms.append(col[-1].y() + col[-1].height())
+        tallest = max(c.height() for col in cols for c in col)
+        assert abs(bottoms[0] - bottoms[1]) <= tallest          # no long empty run
+
+    check()
+    fx.pick("Robot")
+    for t in ("radio", "helmet", "tone"):
+        fx.rows[t].chk.setChecked(True)
+    check()
+    for t in ("compressor", "distortion", "shout", "chorus", "echo"):
+        fx.rows[t].arrow.click()
+    check()
+    fx.dlg.resize(500, 700)                                   # one column: titles back
+    for _ in range(3):
+        qapp.processEvents()
+    assert fx._fx_cols == 1 and fx._groups["Character"].isVisible()
+    fx.dlg.close()
+
+
+def _remembered(names_langs, fp):
+    names = [n for n, _ in names_langs]
+    return tts.remember_voices(names, dict(names_langs), fp)
+
+
+def test_a_launch_with_the_same_windows_voices_starts_no_speech_helper(qapp, monkeypatch):
+    """The voice list is remembered with the Windows voices it was listed for: the
+    next launch shows it without starting PowerShell (~2 s, 85 MB) just to list them."""
+    from soundboard.speech import winvoices
+    from soundboard.ui.voicepanel import VoicePanel
+    fp = frozenset({"TTS_MS_EN-US_ZIRA_11.0", "TTS_MS_DE-DE_HEDDA_11.0"})
+    monkeypatch.setattr(winvoices, "fingerprint", lambda: fp)
+    started = []
+
+    class Helper:   # stands in for the PowerShell process
+        stdin = None
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+    def warm_up(self):
+        started.append(1)
+        self._proc = Helper()
+        return self.voices
+    monkeypatch.setattr(tts.SapiTTS, "warm_up", warm_up)
+    known = _remembered([("Microsoft Zira Desktop", "en-US"),
+                         ("Microsoft Hedda Desktop", "de-DE")], fp)
+    p = VoicePanel(FakeEngine(), {}, {"voice": "Microsoft Hedda Desktop",
+                                      tts.VOICE_CACHE: known})
+    sp = p.speech
+    try:
+        assert process_events(qapp, lambda: sp.cb_voice.count() == 3, timeout=5)
+        assert not started and not sp.ctl.tts.running
+        assert sp.cb_voice.currentData() == "Microsoft Hedda Desktop"
+        assert sp.ctl.tts.voice_for("de") == "Microsoft Hedda Desktop"
+        sp.ctl.speaker.voice = "Microsoft Hedda Desktop"
+        sp.ed.textEdited.emit("Hel")                 # typing a line: start it now
+        assert process_events(qapp, lambda: started and not sp._warming, timeout=5)
+        sp.ed.textEdited.emit("Hell")
+        process_events(qapp, lambda: False, timeout=0.2)
+        assert len(started) == 1                     # ...once, not per key
+    finally:
+        p.shutdown()
+        p.deleteLater()
+
+
+def test_other_windows_voices_list_them_again_and_remember_that(qapp, monkeypatch):
+    from soundboard.speech import winvoices
+    from soundboard.ui.voicepanel import VoicePanel
+    fp = frozenset({"TTS_MS_EN-US_ZIRA_11.0", "TTS_MS_FR-FR_JULIE_11.0"})
+    monkeypatch.setattr(winvoices, "fingerprint", lambda: fp)
+
+    def listed(self):   # what the helper's READY line gives
+        self.voices, self.voice_langs = ["Zira", "Julie"], {"Zira": "en-US", "Julie": "fr-FR"}
+        self.listed = (list(self.voices), dict(self.voice_langs))
+        return self.voices
+    monkeypatch.setattr(tts.SapiTTS, "warm_up", listed)
+    old = _remembered([("Zira", "en-US")], {"TTS_MS_EN-US_ZIRA_11.0"})   # before Julie
+    p = VoicePanel(FakeEngine(), {}, {tts.VOICE_CACHE: old})
+    saved = []
+    p.speech_changed.connect(saved.append)
+    try:
+        assert process_events(qapp, lambda: saved, timeout=5)
+        assert tts.remembered_voices(saved[-1][tts.VOICE_CACHE], fp) == (
+            ["Zira", "Julie"], {"Zira": "en-US", "Julie": "fr-FR"})
+    finally:
+        p.shutdown()
+        p.deleteLater()
+
+
+def test_remembered_voices_only_count_for_the_same_voices_and_a_sound_entry():
+    fp = frozenset({"A", "B"})
+    entry = tts.remember_voices(["Zira", "Hedda"], {"Zira": "en-US", "Hedda": "de-DE"}, fp)
+    assert tts.remembered_voices(entry, frozenset({"B", "A"})) == (
+        ["Zira", "Hedda"], {"Zira": "en-US", "Hedda": "de-DE"})
+    assert tts.remembered_voices(entry, frozenset({"A"})) is None      # one removed
+    assert tts.remembered_voices(entry, frozenset()) is None           # can't tell
+    for bad in (None, "x", {"fp": ["A", "B"]}, {"fp": ["A", "B"], "voices": [["Zira"]]},
+                {"fp": ["A", "B"], "voices": [[1, "en"]]}, {"fp": "AB", "voices": []}):
+        assert tts.remembered_voices(bad, fp) is None

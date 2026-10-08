@@ -125,6 +125,10 @@ def clean_spec(raw) -> dict:
     out["effects"] = effects(raw.get("effects"))
     if isinstance(raw.get("custom"), dict):   # "My own mix", kept while a preset is on
         out["custom"] = effects(raw["custom"])
+    size = raw.get("panel_size")   # the Make it yours window's [width, height]
+    if isinstance(size, list) and len(size) == 2 and all(
+            isinstance(n, int) and not isinstance(n, bool) for n in size):
+        out["panel_size"] = [min(max(size[0], 360), 4000), min(max(size[1], 300), 4000)]
     return out
 
 
@@ -195,6 +199,11 @@ class VoiceChain:
     def active(self) -> bool:
         return ((self.enabled and bool(self._effects)) or self.tap is not None or self.replace
                 or self.source is not None)
+
+    @property
+    def changes_voice(self) -> bool:
+        """Others hear another voice than yours (an effect, the AI voice, a replacement)."""
+        return (self.enabled and bool(self._effects)) or self.replace or self.source is not None
 
     def latency(self) -> float:
         """Seconds the effects that are on (and the AI voice) add to your voice right now."""
@@ -318,5 +327,20 @@ class VoiceChain:
 from soundboard.voicefx import builtin  # noqa: E402,F401  (registers the built-ins)
 from soundboard.voicefx.builtin import PRESET_ICONS, PRESETS  # noqa: E402
 
+_shown: tuple[str, dict[str, str]] = ("", {})   # (language, shown_texts()) last built
+
+
+def shown(text: str) -> str:
+    """How an effect's name, description, setting or slider-end word, or a built-in
+    voice's name, reads in the app's language. `text` is the English the code and the
+    saved settings use (it stays the key); an add-on's own text comes back as it is."""
+    global _shown
+    from soundboard import i18n
+    lang = i18n.current()
+    if _shown[0] != lang or not _shown[1]:
+        _shown = (lang, builtin.shown_texts())
+    return _shown[1].get(text, text)
+
+
 __all__ = ["Param", "Effect", "REGISTRY", "register", "defaults", "clean_spec", "VoiceChain",
-           "PRESETS", "PRESET_ICONS"]
+           "PRESETS", "PRESET_ICONS", "shown"]

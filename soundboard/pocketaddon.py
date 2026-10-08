@@ -75,6 +75,17 @@ def installed(dirs: list[Path] | None = None) -> ModuleInfo | None:
     return next((m for m in modules.discover(dirs) if m.id == MODULE_ID), None)
 
 
+def removable(info: ModuleInfo, base: Path | None = None) -> bool:
+    """Whether this copy is the one installed into `base` (the modules folder in
+    %APPDATA%), which MainWindow.remove_remote_addon can take out, rather than one
+    shipped with the app."""
+    base = base if base is not None else modules.search_dirs()[0]
+    try:
+        return info.path.resolve() == (base / MODULE_ID).resolve()
+    except OSError:
+        return False
+
+
 def _zip_version(path: Path) -> str:
     try:
         with zipfile.ZipFile(path) as z:
@@ -113,7 +124,7 @@ def fetch(offer: Offer, progress: Callable[[int, int], None] | None = None,
             raise updates.UpdateError(f"{offer.local} isn't there ({LOCAL_ENV})")
         return offer.local
     dest = updates.UPDATES_DIR / f"OnionPocket-module-{offer.version}.zip"
-    return updates.fetch(offer.url, offer.sha256, dest, (DOWNLOADS,), MAX_SIZE, "an add-on",
+    return updates.fetch(offer.url, offer.sha256, dest, (DOWNLOADS,), MAX_SIZE, "add-on",
                          offer.size, progress, cancelled, FEATURE)
 
 

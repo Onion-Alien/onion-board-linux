@@ -17,7 +17,8 @@
 ;         signature-checked by install-vbcable.ps1; Windows asks "Yes" once)
 ;       * FFmpeg for m4a / aac / video files (via winget; hidden when ffmpeg is
 ;         already there or winget isn't)
-;       * the add-on modules in ..\modules (retro voice effect, live voice-to-speech)
+;       * live voice-to-speech's set-up (its module itself always ships, like the
+;         other add-on modules in ..\modules but ai-voices)
 ;       * Tor, unticked: the installer doesn't carry it. A ticked box runs
 ;         OnionBoard.exe --get-tor, which downloads the Tor Project's Expert Bundle
 ;         (soundboard/torget.py: SHA-256 pinned, the saved proxy used) into
@@ -56,17 +57,20 @@
 AppId={{6B0B6E2F-6D63-4C1B-9E0B-5B8E3C2A71D4}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=Onion Board
+AppPublisher=Onion Alien
 AppPublisherURL=https://github.com/Onion-Alien/onion-board
 AppSupportURL=https://github.com/Onion-Alien/onion-board/issues
 AppUpdatesURL=https://github.com/Onion-Alien/onion-board/releases
 AppCopyright=Copyright (C) Onion Board contributors
+; Shown in Windows' installed-apps details (Comments / Contact)
+AppComments=A free soundboard: plays sounds through your mic into Discord and games
+AppContact=https://github.com/Onion-Alien/onion-board/issues
 ; Setup's own file details (Properties -> Details): a named, versioned installer rather
 ; than a blank one, which also helps machine-learning virus scanners that distrust those
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
-VersionInfoCompany=Onion Board
+VersionInfoCompany=Onion Alien
 VersionInfoDescription={#AppName} Setup
 VersionInfoCopyright=Copyright (C) Onion Board contributors
 DefaultDirName={localappdata}\Programs\{#AppExeName}
@@ -110,7 +114,7 @@ Name: "ffmpeg"; Description: "Play M4A, AAC and video files (the free FFmpeg, ab
 Name: "livevoice"; Description: "Set up live voice-to-speech now (needs Python, about 300 MB)"; GroupDescription: "Extra features (optional)"; Flags: unchecked
 Name: "tor"; Description: "Private connection (Tor): hides your internet address (about 22 MB)"; GroupDescription: "Privacy (optional)"; Flags: unchecked
 Name: "keepnetlog"; Description: "Keep a history of what Onion Board connects to (on this PC only)"; GroupDescription: "Privacy (optional)"; Flags: unchecked
-Name: "countme"; Description: "Count me in: an anonymous ""still here"" once a day, so we know people use it"; GroupDescription: "Privacy (optional)"
+Name: "countme"; Description: "Count me in: an anonymous ""still here"" once a day, and crash counts"; GroupDescription: "Privacy (optional)"
 Name: "desktopicon"; Description: "Put an Onion Board shortcut on my Desktop"; GroupDescription: "Shortcuts"
 
 [InstallDelete]
@@ -148,7 +152,8 @@ Filename: "{app}\{#AppExeName}.exe"; Parameters: "--keep-netlog"; \
 Filename: "{app}\{#AppExeName}.exe"; Parameters: "--usage-count off"; \
   StatusMsg: "Switching off the usage count..."; \
   Tasks: not countme; Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExeName}.exe"; Parameters: "--usage-count on"; \
+; It also passes on the last page's "Where did you hear about Onion Board?".
+Filename: "{app}\{#AppExeName}.exe"; Parameters: "--usage-count on{code:HeardArg}"; \
   StatusMsg: "Switching on the usage count..."; \
   Tasks: countme; Check: not WizardSilent; Flags: runhidden waituntilterminated
 ; The virtual cable is installed from CurStepChanged in [Code], so its exit code can
@@ -193,6 +198,8 @@ Type: filesandordirs; Name: "{app}\modules"
 [Code]
 const
   PrivacyURL = 'https://github.com/Onion-Alien/onion-board/blob/main/SECURITY.md#what-the-app-does-on-the-network';
+  UninstallFeedbackURL = 'https://tally.so/r/rjxjyM';   // feedback.py's FORM_URL
+  DiscordURL = 'https://discord.gg/FhKGaWCWHM';          // feedback.py's DISCORD_URL
 
 var
   PrivacyPage: TWizardPage;
@@ -207,6 +214,11 @@ var
   ImportBoxes: array of TNewCheckBox;
   ImportKeys: array of String; // soundboard/otherboards.py's key for each box
   ImportTop: Integer;          // where the next box goes
+  HeardPage: TWizardPage;      // "Where did you hear about Onion Board?": new installs
+  HeardRadios: array of TNewRadioButton;
+  HeardKeys: array of String;  // what each one sends (soundboard/usage.py's HEARD)
+  HeardOther: TNewEdit;        // Other's own answer
+  DiscordLink: TNewStaticText; // the Finished page's "Join the Onion Board Discord"
 
 // "net_offline": true in %APPDATA%\OnionBoard\config.json: the app is in Offline mode
 // already (a reinstall). A plain text search: json.dumps writes it on one line.
@@ -284,6 +296,42 @@ var
   Code: Integer;
 begin
   ShellExecAsOriginalUser('open', PrivacyURL, '', '', SW_SHOWNORMAL, ewNoWait, Code);
+end;
+
+// Only when clicked: the Finished page never opens it by itself
+procedure OpenDiscordLink(Sender: TObject);
+var
+  Code: Integer;
+begin
+  ShellExecAsOriginalUser('open', DiscordURL, '', '', SW_SHOWNORMAL, ewNoWait, Code);
+end;
+
+// The Finished page's link, under whatever is last there (the "Open Onion Board now"
+// box, or the restart choice): placed when the page shows, once those are laid out.
+procedure CreateDiscordLink;
+begin
+  DiscordLink := TNewStaticText.Create(WizardForm.FinishedPage);
+  DiscordLink.Parent := WizardForm.FinishedPage;
+  DiscordLink.Caption := 'Join the Onion Board Discord';
+  DiscordLink.Hint := 'Chat, get help and hear about new versions (opens in your browser)';
+  DiscordLink.ShowHint := True;
+  DiscordLink.Cursor := crHand;
+  DiscordLink.Font.Color := clHotLight;
+  DiscordLink.Font.Style := [fsUnderline];
+  DiscordLink.OnClick := @OpenDiscordLink;
+end;
+
+procedure PlaceDiscordLink;
+var
+  Bottom: Integer;
+begin
+  Bottom := WizardForm.FinishedLabel.Top + WizardForm.FinishedLabel.Height;
+  if WizardForm.RunList.Visible then
+    Bottom := WizardForm.RunList.Top + WizardForm.RunList.Height;
+  if WizardForm.NoRadio.Visible then
+    Bottom := WizardForm.NoRadio.Top + WizardForm.NoRadio.Height;
+  DiscordLink.Left := WizardForm.FinishedLabel.Left;
+  DiscordLink.Top := Bottom + ScaleY(12);
 end;
 
 // "Your privacy": what the app connects to, in plain words, before the boxes (so they
@@ -387,21 +435,158 @@ begin
   Later.AdjustHeight;
 end;
 
+procedure HeardOtherTyped(Sender: TObject);
+begin
+  if HeardOther.Text <> '' then
+    HeardRadios[GetArrayLength(HeardRadios) - 2].Checked := True;   // Other
+end;
+
+procedure AddHeardRadio(Key, Caption: String; var Top: Integer);
+var
+  I: Integer;
+  R: TNewRadioButton;
+begin
+  I := GetArrayLength(HeardRadios);
+  SetArrayLength(HeardRadios, I + 1);
+  SetArrayLength(HeardKeys, I + 1);
+  R := TNewRadioButton.Create(HeardPage);
+  R.Parent := HeardPage.Surface;
+  R.Top := Top;
+  R.Width := HeardPage.SurfaceWidth;
+  R.Height := ScaleY(17);
+  R.Caption := Caption;
+  HeardRadios[I] := R;
+  HeardKeys[I] := Key;
+  Top := Top + ScaleY(23);
+end;
+
+// The last page of a new install with Count me in ticked: where they heard about the
+// app, sent once with the first-start count (soundboard/usage.py heard_tag, which
+// drops a typed answer that doesn't look like a name). "Rather not say" is picked.
+procedure CreateHeardPage;
+var
+  Body, Note: TNewStaticText;
+  Top: Integer;
+begin
+  HeardPage := CreateCustomPage(ImportPage.ID, 'One last thing',
+    'Where did you hear about Onion Board?');
+  Body := TNewStaticText.Create(HeardPage);
+  Body.Parent := HeardPage.Surface;
+  Body.AutoSize := False;
+  Body.WordWrap := True;
+  Body.Width := HeardPage.SurfaceWidth;
+  Body.ShowAccelChar := False;
+  Body.Caption := 'It helps us know where people find it. Your pick goes once with the ' +
+    'anonymous Count me in, and nothing else is sent.';
+  Body.AdjustHeight;
+  Top := Body.Top + Body.Height + ScaleY(12);
+  AddHeardRadio('youtube', 'YouTube', Top);
+  AddHeardRadio('reddit', 'Reddit', Top);
+  AddHeardRadio('github', 'GitHub', Top);
+  AddHeardRadio('google', 'Google', Top);
+  AddHeardRadio('friend', 'A friend', Top);
+  AddHeardRadio('other', 'Other:', Top);
+  HeardOther := TNewEdit.Create(HeardPage);
+  HeardOther.Parent := HeardPage.Surface;
+  HeardOther.Left := ScaleX(70);
+  HeardOther.Top := HeardRadios[5].Top - ScaleY(3);
+  HeardOther.Width := ScaleX(200);
+  HeardOther.MaxLength := 40;
+  HeardOther.OnChange := @HeardOtherTyped;
+  HeardRadios[5].Width := HeardOther.Left - ScaleX(4);
+  AddHeardRadio('', 'Rather not say', Top);
+  HeardRadios[6].Checked := True;
+  Note := TNewStaticText.Create(HeardPage);
+  Note.Parent := HeardPage.Surface;
+  Note.AutoSize := False;
+  Note.WordWrap := True;
+  Note.Width := HeardPage.SurfaceWidth;
+  Note.Top := Top + ScaleY(6);
+  Note.ShowAccelChar := False;
+  Note.Caption := 'For Other, just a name like Discord or TikTok. Anything else ' +
+    '(an email address, a link, a number) is left out.';
+  Note.AdjustHeight;
+end;
+
+// A first install: no settings from an earlier one. An update already sent its
+// first-start, so it isn't asked.
+function IsNewInstall: Boolean;
+begin
+  Result := not FileExists(ExpandConstant('{userappdata}\OnionBoard\config.json'));
+end;
+
+function HeardShown: Boolean;
+begin
+#ifdef PREVIEW
+  Result := True;
+#else
+  Result := IsNewInstall and WizardIsTaskSelected('countme') and not WizardSilent;
+#endif
+end;
+
+// " --heard-from <answer>" for the "--usage-count on" entry, or nothing
+function HeardArg(Param: String): String;
+var
+  I: Integer;
+  V: String;
+begin
+  Result := '';
+  if not HeardShown then
+    exit;
+  V := '';
+  for I := 0 to GetArrayLength(HeardRadios) - 1 do
+    if HeardRadios[I].Checked then
+      V := HeardKeys[I];
+  if V = 'other' then
+  begin
+    V := Trim(HeardOther.Text);
+    StringChangeEx(V, '"', '', True);
+  end;
+  if V <> '' then
+    Result := ' --heard-from "' + V + '"';
+end;
+
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
 #ifdef PREVIEW
-  Result := PageID <> ImportPage.ID;
+  Result := (PageID <> ImportPage.ID) and (PageID <> HeardPage.ID);
 #else
-  Result := (PageID = ImportPage.ID) and (GetArrayLength(ImportBoxes) = 0);
+  Result := ((PageID = ImportPage.ID) and (GetArrayLength(ImportBoxes) = 0)) or
+    ((PageID = HeardPage.ID) and not HeardShown);
 #endif
 end;
 
 #ifdef PREVIEW
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
-  Result := CurPageID <> ImportPage.ID;   // a look at the page, never an install
+  Result := CurPageID <> HeardPage.ID;   // a look at the pages, never an install
 end;
 #endif
+
+// Next or Install on the pages before installing (there's no Ready page): Install on
+// whichever is last, which can change as Count me in is ticked.
+procedure UpdateInstallCaption;
+var
+  Last: Boolean;
+begin
+  if WizardForm.CurPageID = HeardPage.ID then
+    Last := True
+  else if WizardForm.CurPageID = ImportPage.ID then
+    Last := not HeardShown
+  else if WizardForm.CurPageID = wpSelectTasks then
+    Last := (GetArrayLength(ImportBoxes) = 0) and not HeardShown
+  else
+    exit;
+  if Last then
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall)
+  else
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonNext);
+end;
+
+procedure TasksClicked(Sender: TObject);
+begin
+  UpdateInstallCaption;
+end;
 
 procedure InitializeWizard;
 var
@@ -462,6 +647,9 @@ begin
   BunnyRight := Bunny.Left + Bunny.Width;
   WizardForm.TasksList.ShowHint := True;
   CreateImportPage;
+  CreateHeardPage;
+  CreateDiscordLink;
+  WizardForm.TasksList.OnClickCheck := @TasksClicked;
 end;
 
 // Offline mode ticked: untick the boxes that download (once, so ticking one again
@@ -500,9 +688,9 @@ var
 begin
   if (CurPageID <> wpWelcome) and (CurPageID <> wpFinished) then
     LayoutHeader;
-  // the import page is the last before installing (there's no Ready page)
-  if CurPageID = ImportPage.ID then
-    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
+  if CurPageID = wpFinished then
+    PlaceDiscordLink;
+  UpdateInstallCaption;
   if (CurPageID <> wpSelectTasks) or WizardSilent then
     exit;
   // The cable isn't needed (sounds go straight into the mic), so its box is unticked
@@ -670,8 +858,23 @@ var
   Setup, Mine: String;
   Code, Default: Integer;
 begin
+  // Done: one optional question, never in a silent uninstall. Only the browser opens
+  // the page (soundboard/feedback.py's form); nothing is sent unless they submit it.
+  if (CurUninstallStep = usPostUninstall) and not UninstallSilent then
+  begin
+    if MsgBox('Onion Board has been removed.' + #13#10#13#10 +
+        'Would you tell us why? It opens a short form in your browser (no account, ' +
+        'one question). Choose No to skip.', mbConfirmation, MB_YESNO) = IDYES then
+      ShellExec('open', UninstallFeedbackURL + '?version={#AppVersion}&from=uninstall',
+        '', '', SW_SHOWNORMAL, ewNoWait, Code);
+    exit;
+  end;
   if CurUninstallStep <> usUninstall then
     exit;
+  // the anonymous usage count's "uninstall/<version>" (soundboard/usage.py): the app
+  // sends it only if the count is switched on, and gives up after 15 s offline
+  Exec(ExpandConstant('{app}\{#AppExeName}.exe'), '--uninstall-count', '', SW_HIDE,
+       ewWaitUntilTerminated, Code);
   Setup := CableSetup;
   Mine := '';
   RegQueryStringValue(HKCU, 'Software\OnionBoard', 'InstalledCable', Mine);

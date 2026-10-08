@@ -86,6 +86,36 @@ def test_a_shared_helper_is_folded_into_the_program_that_started_it():
 
 
 @pytest.mark.skipif(not WIN, reason="Windows only")
+def test_one_process_at_a_time_gives_what_the_full_snapshot_gives():
+    """Who's listening looks up only the pids its sessions name (PidTable), not a
+    snapshot of every process: the rows, and so the names and trees, are the same."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        full = appaudio._process_table()
+        table = appaudio.PidTable()
+        for pid in (os.getpid(), child.pid, os.getppid()):
+            if pid in full:
+                assert table.get(pid) == full[pid] and pid in table
+        assert table[child.pid][0] == os.getpid()
+        assert appaudio.root_pid(child.pid, table) == appaudio.root_pid(child.pid, full)
+        assert table.snapshots == 0
+    finally:
+        child.kill()
+        child.wait()
+    assert child.pid not in appaudio.PidTable()          # gone, as in a fresh snapshot
+    assert appaudio.PidTable().get(0, (0, "")) == (0, "")
+
+
+def test_a_process_windows_wont_open_falls_back_to_the_full_snapshot(monkeypatch):
+    monkeypatch.setattr(appaudio, "_open_row", lambda pid: appaudio._DENIED)
+    monkeypatch.setattr(appaudio, "_process_table",
+                        lambda: {4: (0, "system"), 600: (4, "audiodg.exe")})
+    table = appaudio.PidTable()
+    assert table.get(600) == (4, "audiodg.exe") and 4 in table and 7 not in table
+    assert table.snapshots == 1                          # once, then it's all known
+
+
+@pytest.mark.skipif(not WIN, reason="Windows only")
 def test_list_apps_runs_and_never_lists_this_process():
     apps = appaudio.list_apps()
     assert isinstance(apps, list)
@@ -108,6 +138,77 @@ class _FakeMeter:
 
 
 @pytest.mark.skipif(not WIN, reason="Windows only")
+def test_list_apps_hands_over_the_process_list_it_was_made_from():
+    alive = {}
+    apps = appaudio.list_apps(strict=True, alive=alive)
+    assert isinstance(apps, list)
+    exe = os.path.basename(sys.executable).lower()
+    assert alive.get(os.getpid()) == exe            # what running() says, without a 2nd walk
+    assert set(appaudio.running()) & set(alive)
+
+
+@pytest.mark.skipif(not WIN, reason="Windows only")
+def test_peak_watcher_makes_the_tabs_list_on_its_own_rescan(monkeypatch):
+    """The Apps tab's list comes from the watcher's rescan while it runs: one walk of
+    the sessions and processes every 1.5 s, not three."""
+    import threading
+    scans, listed = [], []
+
+    def fake_list_apps(strict=False, alive=None, meters=None):
+        scans.append("list")
+        alive[7] = "music.exe"
+        meters[7] = [_FakeMeter(0.5)]
+        return ["apps"]
+
+    def fake_scan(meters=None):
+        scans.append("scan")
+        return []
+    monkeypatch.setattr(appaudio, "list_apps", fake_list_apps)
+    monkeypatch.setattr(appaudio, "_list_apps", fake_scan)
+    w = appaudio.PeakWatcher(interval=0.01, rescan=0.2)
+    assert not w.list_for(lambda *a: listed.append(a))   # not running: list it yourself
+    w.start()
+    done = threading.Event()
+    for _ in range(4):                                     # the tab, asking every 0.15 s
+        done.clear()
+        assert w.list_for(lambda apps, alive: (listed.append((apps, alive)), done.set()))
+        assert done.wait(2)
+        time.sleep(0.15)
+    assert listed == [(["apps"], {7: "music.exe"})] * 4
+    assert scans.count("list") == 4 and scans.count("scan") <= 1   # (its first, maybe)
+    assert w.peak(7) == pytest.approx(0.5)                 # and the levels from that listing
+    t = w._thread
+    w.stop()
+    assert not w.list_for(lambda *a: listed.append(a))
+    t.join(2)
+
+
+@pytest.mark.skipif(not WIN, reason="Windows only")
+def test_peak_watcher_never_leaves_an_ask_unanswered(monkeypatch):
+    """An ask the watcher can't serve (a failed listing, or stopped meanwhile) is
+    answered with None: the Apps tab would otherwise wait forever."""
+    def boom(**_):
+        raise appaudio.ComError(-1, "GetSessionEnumerator")
+    monkeypatch.setattr(appaudio, "list_apps", boom)
+    monkeypatch.setattr(appaudio, "_list_apps", lambda meters=None: [])
+    w = appaudio.PeakWatcher(interval=0.01, rescan=60)
+    w.start()
+    got = []
+    assert w.list_for(lambda *a: got.append(a))
+    deadline = time.monotonic() + 2
+    while not got and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(got) == 1 and got[0][0] is None
+    monkeypatch.setattr(appaudio, "list_apps", lambda **_: time.sleep(0.3) or [])
+    t = w._thread
+    assert w.list_for(lambda *a: got.append(a))
+    w._stop.set()             # it stops before (or while) serving that one
+    t.join(2)
+    assert len(got) == 2 and not w.list_for(lambda *a: got.append(a))
+    w.stop()
+
+
+@pytest.mark.skipif(not WIN, reason="Windows only")
 def test_peak_watcher_reads_meters_between_scans_and_releases_them(monkeypatch):
     made = []
 
@@ -127,10 +228,8 @@ def test_peak_watcher_reads_meters_between_scans_and_releases_them(monkeypatch):
     assert w.peak(42) == pytest.approx(0.5)
     for m in made:                                  # it keeps reading without rescanning
         m.v = 0.0
-    # the level falls by a fifth each pass, so it takes 11 passes to get under 0.05: a
-    # fixed 0.3 s got only 7 on a busy Windows runner (0.5 * 0.8 ** 7 = 0.105)
-    deadline = time.monotonic() + 2
-    while w.peak(42) >= 0.05 and time.monotonic() < deadline:
+    deadline = time.monotonic() + 3                 # (falls over a few reads: a busy PC
+    while w.peak(42) >= 0.05 and time.monotonic() < deadline:   # runs fewer of them)
         time.sleep(0.01)
     assert w.peak(42) < 0.05 and len(made) == 2
     t = w._thread
@@ -195,7 +294,9 @@ def test_a_quiet_program_is_handed_over_as_silence():
     appaudio._k32.CloseHandle(evt)
     n = sum(len(x) for x in got)
     assert not th.is_alive() and cap.error is None
-    assert took * SR - 0.1 * SR < n <= took * SR   # the gap, in real time
+    # the gap, in real time: never more, and most of it (the clock above starts before
+    # the thread, which a busy PC can start a good part of a second late)
+    assert 0.2 * SR < n <= took * SR
     assert not any(x.any() for x in got)
 
 

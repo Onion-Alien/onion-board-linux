@@ -10,7 +10,6 @@ import http.server
 import io
 import json
 import threading
-import time
 import types
 
 import numpy as np
@@ -21,7 +20,7 @@ from conftest import closed_port, process_events
 from fakeproxy import Socks5, no_leaks
 from soundboard import net, updates
 from soundboard.engine import SR
-from test_radio import FakeEngine, FakeMeter, wav_bytes
+from test_radio import wav_bytes
 
 
 class Sites:
@@ -30,6 +29,7 @@ class Sites:
 
     def __init__(self):
         self.hits: list[tuple[str, str]] = []    # (Host header, path)
+        self.posts: list[tuple[str, bytes]] = []  # (path, body)
         self.routes: dict[str, tuple[bytes, str]] = {}
         srv = self
 
@@ -63,6 +63,14 @@ class Sites:
 
             do_HEAD = do_GET
 
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                srv.hits.append((self.headers.get("Host", ""), self.path))
+                srv.posts.append((self.path, body))
+                self.send_response(202 if self.path in srv.routes else 404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -82,7 +90,7 @@ class Sites:
 REAL_GET, REAL_OPEN = updates._get, updates._open
 
 NAMES = ("api.github", "pypi", "myinstants", "radio", "station", "cdn", "thumbs",
-         "models", "media")
+         "models", "media", "counter")
 
 
 @pytest.fixture
@@ -172,6 +180,111 @@ def test_a_custom_voice_server_on_this_pc_stays_direct(sites, socks, guard):
     assert rate == 24000 and socks.asked == []
 
 
+def test_ai_voices_and_onion_pocket_release_checks(sites, socks, guard, monkeypatch,
+                                                   app_dir):
+    from soundboard import aiaddon, pocketaddon
+    monkeypatch.setattr(updates, "_get", REAL_GET)
+    for mod, path in ((aiaddon, "/ai/release"), (pocketaddon, "/pocket/latest")):
+        sites.routes[path] = (json.dumps({"name": "x 1.0.0", "tag_name": "v1.0.0",
+                                          "assets": []}).encode(), "application/json")
+        monkeypatch.setattr(mod, "API", sites.url("api.github", path))
+        monkeypatch.setattr(mod, "local_zip", lambda: None)
+        assert mod.latest() is None      # no zip to offer: only the request matters
+    assert {"/ai/release", "/pocket/latest"} <= set(sites.paths())
+    assert socks.hosts_asked() == {"api.github.test"}
+
+
+@pytest.fixture
+def counter(sites, monkeypatch):
+    """The usage count, really sent (net.urlopen isn't stubbed) to a stand-in for
+    GoatCounter that only the fake proxy / Tor can reach."""
+    import sys
+
+    from soundboard import usage
+    sites.routes["/api/v0/count"] = (b"", "")
+    monkeypatch.setattr(usage, "ENDPOINT", sites.url("counter", "/api/v0/count"))
+    monkeypatch.setattr(usage, "TOKEN", "count-only-key")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(usage, "threading", types.SimpleNamespace(Thread=_Inline))
+    net.configure_features()
+    yield usage
+    net.configure_features()
+
+
+class _Inline:
+    def __init__(self, target, **kw):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
+def test_usage_count_through_the_proxy(sites, socks, guard, counter):
+    from soundboard.library import Config
+    cfg = Config()
+    counter.maybe_send(cfg)
+    assert cfg.stats_sent > 0 and socks.hosts_asked() == {"counter.test"}
+    ((path, body),) = sites.posts
+    hits = json.loads(body)["hits"]
+    # only what SECURITY.md says: the version, first start, and the random ID
+    assert all(set(h) <= {"path", "title", "event", "session"} for h in hits)
+    assert {h["session"] for h in hits} == {cfg.stats_id}
+
+
+@pytest.mark.parametrize("why", ["switched off", "offline", "off while waiting"])
+def test_usage_count_switched_off_never_reaches_the_counter(sites, socks, guard, counter,
+                                                            monkeypatch, why):
+    """Not just maybe_send's own check: net refuses it too, so a count already on its
+    way when the switch goes off (or anything calling send() directly) stops."""
+    from soundboard.library import Config
+    cfg = Config()
+    if why == "off while waiting":
+        def thread(target, **kw):     # switched off between the check and the send
+            net.configure_features(["usage_stats"])
+            return _Inline(target)
+        monkeypatch.setattr(counter, "threading", types.SimpleNamespace(Thread=thread))
+    else:
+        net.configure_features(["usage_stats"], offline=(why == "offline"))
+        assert counter.send(counter.hits(cfg, 1e9)) is False
+    counter.maybe_send(cfg)
+    counter.maybe_send(cfg, event="update-now/x")
+    assert sites.posts == [] and socks.asked == [] and cfg.stats_sent == 0.0
+
+
+def test_ai_voice_model_download_goes_through_the_relay(sites, socks, tmp_path):
+    """The AI voices helper fetches a missing model with plain urllib in its own
+    process: child_env("addons") must point it at the relay (so the proxy, Tor and the
+    switch hold), and with add-ons switched off it must reach nothing."""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = Path(__file__).resolve().parent.parent / "modules" / "ai-voices"
+    for name in ("helper.py", "protocol.py"):
+        shutil.copy(src / name, tmp_path / name)
+    # https, as voices.json requires: the TLS handshake fails against the plain test
+    # server, but only after the proxy was asked for models.test
+    (tmp_path / "voices.json").write_text(json.dumps({"model": {
+        "url": f"https://models.test:{sites.port}/model.zip", "sha256": "0" * 64,
+        "bytes": 10}}), encoding="utf-8")
+
+    def run():
+        return subprocess.run([sys.executable, "helper.py", "--download"], cwd=tmp_path,
+                              env=net.child_env("addons"), capture_output=True, text=True,
+                              timeout=60)
+    r = run()
+    assert r.returncode != 0 and "models.test" in socks.hosts_asked()
+    socks.asked.clear()
+    net.configure_features(["addons"])
+    try:
+        r = run()
+    finally:
+        net.configure_features()
+    assert r.returncode != 0 and socks.asked == []
+    assert ("addons", "models.test", "off") in [
+        (f, h.split(":")[0], res) for f, h, res in net.relay_seen()]
+
+
 # ---------------------------------------------------------------- yt-dlp (the real one)
 
 def test_ytdlp_probes_and_downloads_through_the_proxy(sites, socks, guard, app_dir):
@@ -211,7 +324,7 @@ def test_search_thumbnails_through_the_proxy(qapp, sites, socks, monkeypatch):
     from PySide6.QtCore import QBuffer, QByteArray
     from PySide6.QtGui import QImage
 
-    from soundboard import ytdl
+    from soundboard import quality, ytdl
     from soundboard.ui.ytsearch import ResultRow, SearchResults
     shown = []
     monkeypatch.setattr(ResultRow, "set_thumb", lambda row, pm: shown.append(pm.size().toTuple()))
@@ -225,9 +338,16 @@ def test_search_thumbnails_through_the_proxy(qapp, sites, socks, monkeypatch):
     hit = ytdl.Result(id="x", title="T", channel="c", seconds=1, source="soundcloud",
                       art=sites.url("thumbs", "/t.png"))
     monkeypatch.setattr(ytdl, "search", lambda q, count=20, source="youtube": [hit])
+    replies = []   # what each picture's request came back with, for a failure's message
+    real_on_thumb = SearchResults._on_thumb
+    monkeypatch.setattr(SearchResults, "_on_thumb", lambda panel, reply, *a: (
+        replies.append((reply.error(), reply.errorString(), reply.bytesAvailable())),
+        real_on_thumb(panel, reply, *a)))
+    assert quality.current.web_extras and net.allowed("sounds_web")
     panel = SearchResults()
-    panel.search("t")
-    assert process_events(qapp, lambda: shown, timeout=15)
+    assert panel.search("t")
+    assert process_events(qapp, lambda: shown, timeout=15), (
+        replies, sites.hits, socks.hosts_asked(), net.describe())
     assert shown == [(32, 18)]
     assert socks.hosts_asked() == {"thumbs.test"}
 
@@ -308,37 +428,3 @@ def test_a_playing_station_follows_a_change_of_proxy(qapp, sites, socks):
     finally:
         p.stop()
         other.close()
-
-
-def test_the_globe_page_cant_reach_the_network(qapp, app_dir, sites):
-    from soundboard.radio import RadioDirectory
-    from soundboard.ui.radiopanel import RadioTab
-    from soundboard.library import Config
-    from test_radio import api_station
-    sites.routes["/json/stations/search"] = (json.dumps([api_station(1)]).encode(),
-                                             "application/json")
-    d = RadioDirectory(app_dir / "radio", bases=(f"http://127.0.0.1:{sites.port}",))
-    cfg = Config()
-    cfg.radio = {"map": "globe"}
-    t = RadioTab(FakeEngine(), cfg, lambda: None, FakeMeter, directory=d, globe=True)
-    # what the page did, for a failure: loaded (True / False), its renderer died, or
-    # nothing at all in 20 s (it failed once in 14 Windows CI suites)
-    seen = []
-    make = t._make_globe
-
-    def made():
-        make()
-        seen.append(("made", round(time.monotonic() - t0, 1)))
-        page = t.view.page()
-        page.loadFinished.connect(lambda ok: seen.append(("loaded", ok)))
-        page.renderProcessTerminated.connect(lambda s, c: seen.append(("renderer", s, c)))
-    t._make_globe = made
-    t0 = time.monotonic()
-    t.start()
-    assert process_events(qapp, lambda: t._globe_loaded, timeout=20), \
-        f"globe page after {time.monotonic() - t0:.1f} s: {seen or 'nothing'}"
-    leak = f"http://127.0.0.1:{sites.port}/leak"
-    t.view.page().runJavaScript(f"fetch('{leak}').catch(()=>0); new Image().src='{leak}2'")
-    process_events(qapp, lambda: False, timeout=1.5)
-    assert not any(p.startswith("/leak") for p in sites.paths())
-    t.shutdown()

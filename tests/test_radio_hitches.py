@@ -1,7 +1,6 @@
 """The Radio tab mustn't hold up the audio threads: Qt keeps Python's lock through
 each call into it, so one long call (drawing the whole map, loading the decoder) is
 a sound skipping on the cable."""
-import os
 import threading
 import time
 from pathlib import Path
@@ -9,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import real_pc_timing
 from soundboard import radio
 from soundboard.ui import flatmap
 from soundboard.ui.flatmap import LAND_PART, FlatMap
@@ -17,13 +17,6 @@ from soundboard.ui.flatmap import LAND_PART, FlatMap
 def outlines():
     raw = (radio.ASSET_DIR / radio.COUNTRIES).read_bytes()
     return radio.outline_rings(raw), radio.outline_labels(raw)
-
-
-# Hosted CI runners (2 shared cores, other test workers beside it) stall a thread
-# 10-15 ms on their own, as much as the hitch these measure: the timing tests there
-# fail on unchanged code. They run on a real PC, where a hitch is the only stall.
-real_pc_timing = pytest.mark.skipif(bool(os.environ.get("CI")),
-                                    reason="wall-clock audio timing: too noisy on CI")
 
 
 def quietest(measure, limit, tries=5):
@@ -54,6 +47,7 @@ def world_map(rings, labels, zoom=2.0):
     m = FlatMap()
     m.resize(1200, 700)
     m.set_land(rings, labels)
+    m.set_loading(False)   # no stations: Bun would wait on it (and move between grabs)
     m.zoom = zoom
     return m
 
@@ -232,27 +226,125 @@ def test_a_drag_only_copies_tiles_at_any_zoom(qapp):
         m.close()
 
 
+def test_a_new_zoom_shows_all_at_once_never_tile_by_tile(qapp):
+    """While a new zoom was drawn, its tiles showed one by one over the old ones
+    stretched tile by tile, and each stretched tile blurred into the background at
+    its edges: a grid of squares over the map. Now the last view stands in as one
+    picture, and the new zoom shows when all of it is drawn."""
+    rings, labels = outlines()
+    m = world_map(rings, labels, zoom=2.0)
+    m.set_points([{"id": f"s{i}", "la": -40.0 + i, "lo": -100.0 + 2 * i, "k": i}
+                  for i in range(80)])
+    m._reveal_t0 = None                        # (the first stations' pop-in: not here)
+    m.show()
+
+    def done():
+        m.grab()                               # (offscreen, repaint() may not paint)
+        end = time.monotonic() + 5
+        while m.busy() and time.monotonic() < end:
+            qapp.processEvents()
+            time.sleep(0.0005)
+        m.grab()
+        assert m._stable is not None and m._stable[0] == m._level()
+
+    done()
+    m._zoom_by(1.6)
+    def look():
+        img = m.grab().toImage()   # kept: constBits() points into it
+        return hash(bytes(img.constBits()))
+
+    seen = [look()]   # each different picture shown, in turn (this one starts it)
+    assert m.busy()
+    end = time.monotonic() + 5
+    while m.busy() and time.monotonic() < end:
+        h = look()
+        if not seen or seen[-1] != h:
+            seen.append(h)
+        for _ in range(5):
+            qapp.processEvents()
+            time.sleep(0.001)
+    assert not m.busy()
+    done()
+    final = look()
+    if seen[-1] != final:
+        seen.append(final)
+    # the old view (stretched), then the new one all at once (the ring round it may
+    # still be drawing then): nothing in between
+    assert len(seen) == 2, f"{len(seen)} different pictures"
+    m.close()
+
+
+def test_bun_waits_on_the_map_and_the_first_stations_pop_in(qapp):
+    from soundboard.ui import flatmap
+    m = FlatMap()
+    m.resize(600, 400)
+    m.show()
+    qapp.processEvents()
+    assert m._loading.isVisible()              # the map is there (it drags) with Bun on it
+    m.set_land([], [])
+    m.set_points([{"id": f"s{i}", "la": 0.0, "lo": float(i), "k": i} for i in range(50)])
+    assert not m._loading.isVisible() and m.revealing()
+    t = time.monotonic() - m._reveal_t0
+    shown = flatmap._pop((t - m._delay) / flatmap.POP_S)
+    assert (shown < 0.05).sum() > 40           # not all at once...
+    assert m._delay[-10:].mean() < m._delay[:10].mean()   # ...the most listened first
+    m.repaint()                                # (drawn live till they're all in)
+    end = time.monotonic() + flatmap.REVEAL_S + 2
+    while m.revealing() and time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.005)
+    assert not m.revealing()
+    m.set_points([])
+    m.show_message("The station directory can't be reached right now.")
+    m.set_loading(True)
+    assert not m._loading.isVisible()          # a message says what's wrong instead
+    m.close()
+
+
+def test_the_country_names_show_before_the_dots(qapp):
+    """The dots popped in over a map with no names, and the names came only once
+    they were all in. Now the names come first (even when the stations beat the land
+    in), and the dots after."""
+    from soundboard.ui import flatmap
+    rings, labels = outlines()
+    m = FlatMap()
+    m.resize(600, 400)
+    m.show()
+    m.set_points([{"id": f"s{i}", "la": 0.0, "lo": float(i), "k": i} for i in range(50)])
+    assert m.revealing() and m._reveal_t0 is None   # no dots till the land is in
+    m.set_land(rings, labels)
+    assert m._reveal_t0 > time.monotonic() + flatmap.NAMES_FIRST_S / 2
+    m.grab()
+    assert m._names_pic is not None                 # the names are on the map...
+    t = time.monotonic() - m._reveal_t0
+    assert (flatmap._pop((t - m._delay) / flatmap.POP_S) < 0.05).all()   # ...no dots yet
+    end = time.monotonic() + flatmap.NAMES_FIRST_S + flatmap.REVEAL_S + 2
+    while m.revealing() and time.monotonic() < end:
+        qapp.processEvents()
+        time.sleep(0.005)
+    assert not m.revealing() and m._names_pic is None
+    m.close()
+
+
 def test_the_decoder_is_loaded_off_the_ui_thread_once(qapp, monkeypatch):
     """Qt loaded FFmpeg (avcodec and co, tens of MB) as the first station started, on
     the UI thread and holding Python's lock: 10-60 ms, and the sounds playing skipped."""
     import ctypes
     import sys
 
-    import pytest
     if sys.platform != "win32":
         pytest.skip("Windows only")
     loaded = []
     monkeypatch.setattr(ctypes, "WinDLL",
                         lambda path: loaded.append((path, threading.current_thread().name)))
     monkeypatch.setattr(radio, "_preloaded", False)
-    p1, p2 = radio.RadioPlayer(), radio.RadioPlayer()
+    radio.preload_decoder()   # the Radio tab's first show calls it
+    radio.preload_decoder()   # and again: a no-op
     end = time.monotonic() + 5
     while not any("ffmpeg" in f.lower() for f, _ in loaded) and time.monotonic() < end:
         time.sleep(0.01)
     names = [Path(f).name.lower() for f, _ in loaded]
     assert names[0].startswith("avutil") and names[-1].startswith("ffmpeg")
     assert any(n.startswith("avcodec") for n in names)
-    assert len(names) == len(set(names))                       # once, for both players
+    assert len(names) == len(set(names))                       # once, for both calls
     assert all(t == "radio-preload" for _, t in loaded)        # never the UI thread
-    p1.deleteLater()
-    p2.deleteLater()

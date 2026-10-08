@@ -362,6 +362,62 @@ def test_voice_size_alone_keeps_the_pitch():
     assert _centroid(bigger) < _centroid(x) * 0.95
 
 
+def test_tone_mid_lifts_the_middle_only():
+    t = np.arange(SR) / SR
+    x = sum(np.sin(2 * np.pi * f * t) for f in (150, 1000, 7000)).astype(np.float32) * 0.1
+    y = _run("tone", {"mid": 9}, x)[SR // 2:]
+    sp_x = np.abs(np.fft.rfft(x[SR // 2:SR // 2 + len(y)]))
+    sp_y = np.abs(np.fft.rfft(y))
+    k = len(y) / SR
+    gain = {f: 20 * np.log10(sp_y[int(f * k)] / sp_x[int(f * k)]) for f in (150, 1000, 7000)}
+    assert gain[1000] == pytest.approx(9, abs=0.5)
+    assert abs(gain[150]) < 1.5 and abs(gain[7000]) < 1.5
+    # old saves have no "mid": it stays flat
+    assert voicefx.REGISTRY["tone"](SR, {"bass": 3}).p["mid"] == 0
+
+
+def test_voice_size_reshapes_the_blended_in_voice_too():
+    """Below 100% Mix your own voice is blended back in: "Voice size on my voice too"
+    changes it as well, or the speaker stays recognisable under the effect. Saves from
+    before the knob (no key) leave it as it was."""
+    x = _vowel()
+    y = _run("pitch", {"size": -4, "mix": 0.01, "under": 1}, x)   # almost all own voice
+    assert _f0(y) == pytest.approx(120, rel=0.03)
+    assert _centroid(y) > _centroid(x) * 1.05
+    old = _run("pitch", {"size": -4, "mix": 0.01}, x)
+    assert _centroid(old) == pytest.approx(_centroid(x), rel=0.03)
+
+
+def _onset(y, thr=0.05):
+    return int(np.argmax(np.abs(y) > thr * np.max(np.abs(y))))
+
+
+def test_gap_between_voices_lines_the_blended_in_voice_up():
+    """Below 100% Mix your own voice used to come out ~40 ms before the shifted one
+    (a slapback echo). Gap 0 holds it back to line up; no key (old saves) keeps it."""
+    x = np.concatenate([np.zeros(SR // 4, np.float32), _vowel(secs=0.6)])
+    wet = _run("pitch", {"semitones": -7, "mix": 1}, x)
+    old = _run("pitch", {"semitones": -7, "mix": 0.0001}, x)
+    together = _run("pitch", {"semitones": -7, "mix": 0.0001, "gap": 0}, x)
+    assert _onset(old) == pytest.approx(_onset(x), abs=48)
+    assert _onset(wet) - _onset(old) > SR * 0.03
+    assert _onset(together) == pytest.approx(_onset(wet), abs=SR * 0.004)
+
+
+def test_blur_puts_a_tail_on_the_new_voice_only():
+    """Blur reverbs the shifted voice, not the blended-in own voice; no key = none."""
+    x = np.concatenate([_vowel(secs=0.4), np.zeros(SR // 2, np.float32)])
+    tail = slice(int(SR * 0.55), int(SR * 0.75))   # after the voice and the shift's delay
+
+    def level(cfg):
+        return float(np.sqrt(np.mean(_run("pitch", cfg, x)[tail] ** 2)))
+
+    assert level({"semitones": -7}) < 1e-4
+    assert level({"semitones": -7, "blur": 0.6}) > 1e-3
+    # at almost 0% Mix only your own voice is left: Blur doesn't touch it
+    assert level({"semitones": -7, "mix": 0.001, "blur": 0.6}) < 1e-4
+
+
 def test_old_pitch_settings_sound_as_before():
     """No natural / size keys (old saves, sounds, music): no formant stage, old delay."""
     e = voicefx.REGISTRY["pitch"](SR, {"semitones": 5})
@@ -430,3 +486,25 @@ def test_every_preset_runs_and_reports_its_delay():
             assert np.all(np.isfinite(y))
         assert not ch.errors, name
         assert 0 <= ch.latency() < 0.1, name
+
+
+def test_every_built_in_text_can_be_translated():
+    """The built-in effects' names, descriptions, settings and slider ends and the voices'
+    names all have a line in voicefx.builtin.shown_texts(): the Voice tab translates
+    through it, while the English stays what settings and share codes keep."""
+    from soundboard import i18n
+    from soundboard.voicefx import builtin
+    table = builtin.shown_texts()
+    builtins = [c for c in REGISTRY.values() if c.__module__ == builtin.__name__]
+    texts = {t for c in builtins for t in (c.name, c.description)}
+    texts |= {t for c in builtins for q in c.params for t in (q.label, *q.ends) if t}
+    texts |= set(voicefx.PRESETS)
+    assert texts <= set(table), sorted(texts - set(table))
+    assert all(k == v for k, v in table.items())      # English: as written
+    try:
+        i18n.set_language(i18n.PSEUDO)
+        assert i18n.is_pseudo(voicefx.shown("Chipmunk"))
+        assert voicefx.shown("an add-on's own text") == "an add-on's own text"
+    finally:
+        i18n.set_language(i18n.ENGLISH)
+    assert voicefx.shown("Chipmunk") == "Chipmunk"

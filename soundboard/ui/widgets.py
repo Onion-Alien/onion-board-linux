@@ -11,8 +11,9 @@ from PySide6.QtCore import (QEvent, QMimeData, QObject, QPoint, QPointF, QRectF,
                             QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QDrag, QFont, QFontMetrics, QLinearGradient, QPainter,
                            QPainterPath, QPen)
-from PySide6.QtWidgets import (QAbstractButton, QGridLayout, QLabel, QScrollArea, QSlider,
-                               QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractButton, QGridLayout, QHBoxLayout, QLabel, QScrollArea,
+                               QSlider, QStackedWidget, QStyle, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from soundboard import midi, theme, thumbs
 from soundboard.eq import MAX_DB as EQ_MAX_DB
@@ -21,6 +22,7 @@ from soundboard.engine import SR
 from soundboard.library import AUDIO_EXTS, SoundMeta
 from soundboard.settings import pretty_key
 from soundboard.ui.bunnywidget import BunnyWidget
+from soundboard.i18n import _
 
 PAD_MIME = "application/x-soundboard-pad"
 
@@ -32,7 +34,7 @@ class Meter(QWidget):
         self._hot = False
         self._drawn = None        # (bar width in px, colour) as last painted
         self.setFixedHeight(8)
-        self.setAccessibleName("Level meter")
+        self.setAccessibleName(_("Level meter"))
 
     @property
     def hot(self) -> bool:
@@ -85,8 +87,8 @@ class EqCurve(QWidget):
         self.setFixedHeight(70)
         self.gains = [0.0] * 7
         self.on = False
-        self.setToolTip("Double-click to reset")
-        self.setAccessibleName("EQ curve")
+        self.setToolTip(_("Double-click to reset"))
+        self.setAccessibleName(_("EQ curve"))
         self._freqs = np.geomspace(30, 18000, 160)
 
     def set_gains(self, gains, on):
@@ -120,13 +122,14 @@ class EqCurve(QWidget):
         p.drawPath(path)
         if not self.on:   # on a little plate, so the flat line doesn't strike it through
             fm = p.fontMetrics()
-            plate = QRectF(0, 0, fm.horizontalAdvance("EQ off") + 14, fm.height() + 4)
+            off = _("EQ off")
+            plate = QRectF(0, 0, fm.horizontalAdvance(off) + 14, fm.height() + 4)
             plate.moveCenter(r.center())
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(theme.T["bg"]))
             p.drawRoundedRect(plate, plate.height() / 2, plate.height() / 2)
             p.setPen(QColor(theme.T["muted"]))
-            p.drawText(plate, Qt.AlignCenter, "EQ off")
+            p.drawText(plate, Qt.AlignCenter, off)
 
 
 class SeekSlider(QSlider):
@@ -241,6 +244,27 @@ class LoadingBar(QWidget):
         p.end()
 
 
+def paint_now_playing(p: QPainter, rect: QRectF, color: QColor, paused: bool = False,
+                      n: int = 4, t: float | None = None):
+    """A small "now playing" equalizer in `rect`: `n` bars bouncing with the clock (`t`,
+    seconds; now if None), or low and still while paused. Used wherever something
+    playing has to stand out at a glance: a web result's picture, the playing radio
+    station."""
+    t = time.monotonic() if t is None else t
+    gap = rect.width() / (n * 3 - 1)   # a bar is two gaps wide
+    bw = gap * 2
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(color)
+    for i in range(n):
+        f = 0.3 if paused else 0.25 + 0.75 * abs(math.sin(t * (2.3 + i * 0.9) + i * 1.7))
+        h = max(bw, rect.height() * f)
+        p.drawRoundedRect(QRectF(rect.left() + i * (bw + gap), rect.bottom() - h, bw, h),
+                          bw / 2, bw / 2)
+    p.restore()
+
+
 def fmt_time(s: float) -> str:
     s = max(0, int(s))
     return f"{s // 60}:{s % 60:02d}"
@@ -258,14 +282,16 @@ _FREQS = np.fft.rfftfreq(FFT_N, 1 / SR)
 
 
 class TabInfoCorner(QWidget):
-    """Give Qt's corner the tab row's height so its button is vertically centered."""
+    """Give Qt's corner the tab row's height so its buttons are vertically centered."""
 
-    def __init__(self, tabs, button):
+    def __init__(self, tabs, *buttons):
         super().__init__()
         self.tabs = tabs
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(button, 0, Qt.AlignVCenter)
+        layout.setSpacing(4)
+        for button in buttons:
+            layout.addWidget(button, 0, Qt.AlignVCenter)
 
     def sizeHint(self):
         size = super().sizeHint()
@@ -344,6 +370,7 @@ MINI_PAD_MIN_W = 96   # the mini player's two-a-row pads get no smaller than thi
 
 
 SLIM_PAD_H = 30      # a pad as a one-line row: the mini player when it's too small for cards
+LIST_ROW_W = 260     # the Sounds tab's list view: rows at least this wide, as many a line as fit
 
 
 def pad_height(width: int) -> int:
@@ -377,17 +404,22 @@ def pad_colours() -> dict[str, QColor]:
 class Pad(QAbstractButton):
     """One sound's button, painted by hand. It's a QAbstractButton so screen readers
     see a button with the sound's name, and it works from the keyboard: Tab / arrows
-    to move, Enter or Space to play, Ctrl+Space to pick, the Menu key for its menu."""
+    to move, Enter or Space to play, Ctrl+Space to pick, the Menu key for its menu,
+    F2 to rename it, Alt+Enter to edit it (Delete removes it: ui/padbatch.py)."""
     activated = Signal(str)     # play it (a double-click, Enter, a screen reader's press)
+    rename = Signal(str)        # F2: ask for a new name
+    edit = Signal(str)          # Alt+Enter: the Edit window
     chosen = Signal(str)        # a single click: select it (transport bar) without playing
     pick = Signal(str, bool)    # Ctrl+click / Ctrl+Space (False) or Shift+click (True)
     space = Signal(str)         # Space: pause / resume it if it's playing, else play it
     menu = Signal(str, QPoint)
     step = Signal(object, int, int)   # arrow key: this pad, columns, rows to move focus
+    nudge = Signal(str, int)    # Ctrl+wheel: its volume this many steps up (+) or down (-)
     single_click = False        # Settings: a click plays it (activated) instead of selecting
 
     def __init__(self, meta: SoundMeta, width: int):
         super().__init__()
+        self.setProperty("own_space", True)   # Space pauses / plays this pad (ui/spacekey.py)
         self.meta = meta
         self.progress = None     # None = not playing
         self.paused = False
@@ -411,6 +443,7 @@ class Pad(QAbstractButton):
         self._font_key = self.font().key()
         self._accent = (None, None)   # (meta.color, its QColor)
         self._foot = (None, None)     # (what the footer shows, its font, text and badge)
+        self._wheel = 0               # Ctrl+wheel turned less than a notch (touchpads)
         self.setFixedSize(width, pad_height(width))
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover)
@@ -428,28 +461,28 @@ class Pad(QAbstractButton):
         m = self.meta
         bits = []
         if self.progress is not None:
-            bits.append("paused" if self.paused else "playing")
+            bits.append(_("paused") if self.paused else _("playing"))
         if self.picked:
-            bits.append("selected")
+            bits.append(_("selected"))
         if self.state in ("loading", "rendering"):
-            bits.append("loading")
+            bits.append(_("loading"))
         elif self.state == "error":
-            bits.append("can't load the file")
+            bits.append(_("can't load the file"))
         else:
-            bits.append(f"{m.duration:.1f} seconds")
+            bits.append(_("{s} seconds", s=f"{m.duration:.1f}"))
         if m.hotkey:
-            bits.append(f"hotkey {pretty_key(m.hotkey)}")
+            bits.append(_("hotkey {key}", key=pretty_key(m.hotkey)))
         if m.loop:
-            bits.append("loops")
+            bits.append(_("loops"))
         if m.mode in ("overlap", "toggle", "solo"):
-            bits.append({"overlap": "presses overlap", "toggle": "press again stops",
-                         "solo": "stops the other sounds"}[m.mode])
+            bits.append({"overlap": _("presses overlap"), "toggle": _("press again stops"),
+                         "solo": _("stops the other sounds")}[m.mode])
         if m.hold:
-            bits.append("plays while its hotkey is held")
+            bits.append(_("plays while its hotkey is held"))
         if m.fx:
-            bits.append("effects")
+            bits.append(_("effects"))
         if m.tags:
-            bits.append("in " + ", ".join(m.tags))
+            bits.append(_("in {categories}", categories=", ".join(m.tags)))
         desc = ", ".join(bits)
         if (m.name, desc) != self._described:
             self._described = (m.name, desc)
@@ -475,8 +508,12 @@ class Pad(QAbstractButton):
         elif k == Qt.Key_Space and not mods:
             if not e.isAutoRepeat():
                 self.space.emit(self.meta.id)
+        elif k in (Qt.Key_Return, Qt.Key_Enter) and mods & Qt.AltModifier:
+            self.edit.emit(self.meta.id)
         elif k in (Qt.Key_Return, Qt.Key_Enter):
             self.activated.emit(self.meta.id)
+        elif k == Qt.Key_F2 and not mods:
+            self.rename.emit(self.meta.id)
         elif k == Qt.Key_Menu or (k == Qt.Key_F10 and mods & Qt.ShiftModifier):
             self.menu.emit(self.meta.id, self.mapToGlobal(self.rect().center()))
         elif k in arrows and not mods & (Qt.ControlModifier | Qt.AltModifier):
@@ -531,8 +568,8 @@ class Pad(QAbstractButton):
             f.setPointSizeF(8.5)
             flags = ("FX " if m.fx else "") + ("⟳ " if m.loop else "") + \
                 {"overlap": "⧉ ", "toggle": "⏯ ", "solo": "◉ "}.get(m.mode, "") + \
-                ("hold " if m.hold else "")
-            right = "❚❚ paused" if self.paused else f"{flags}{m.duration:.1f}s"
+                (_("hold") + " " if m.hold else "")
+            right = _("❚❚ paused") if self.paused else f"{flags}{m.duration:.1f}s"
             hk = m.hotkey and (midi.short(m.hotkey) if midi.is_midi(m.hotkey)
                                else pretty_key(m.hotkey))
             badge = None
@@ -621,6 +658,18 @@ class Pad(QAbstractButton):
                 self.activated.emit(self.meta.id)
             else:
                 self.chosen.emit(self.meta.id)
+
+    def wheelEvent(self, e):
+        """Ctrl+wheel: the sound's volume. A plain wheel still scrolls the pads."""
+        if not e.modifiers() & Qt.ControlModifier:
+            e.ignore()
+            return
+        self._wheel += e.angleDelta().y()
+        steps = int(self._wheel / 120)
+        if steps:
+            self._wheel -= steps * 120
+            self.nudge.emit(self.meta.id, steps)
+        e.accept()
 
     def mouseDoubleClickEvent(self, e):
         if Pad.single_click:   # a quick second click is just another click
@@ -734,10 +783,10 @@ class Pad(QAbstractButton):
         if self.state in ("loading", "rendering"):
             p.setPen(muted)
             p.drawText(foot, Qt.AlignLeft | Qt.AlignVCenter,
-                       "applying effects…" if self.state == "rendering" else "loading…")
+                       _("applying effects…") if self.state == "rendering" else _("loading…"))
         elif self.state == "error":
             p.setPen(_ERROR_ON_PIC if on_pic else C["error_text"])   # readable on light
-            p.drawText(foot, Qt.AlignLeft | Qt.AlignVCenter, "can't load file")
+            p.drawText(foot, Qt.AlignLeft | Qt.AlignVCenter, _("can't load file"))
         else:
             p.setPen(muted)
             p.drawText(foot, Qt.AlignRight | Qt.AlignVCenter, right)
@@ -754,13 +803,15 @@ class Pad(QAbstractButton):
         """The pad's picture fitted to `r` in real pixels with its shade drawn on, or
         None. thumbs.fitted caches it by picture, size, screen and shade, so a resize,
         a press, a new picture, another screen or the mouse over it each get their own
-        and nothing is scaled on an ordinary paint."""
+        and nothing is scaled on an ordinary paint. None (the plain card) while the
+        file is still being read."""
         if not self.meta.image:
             return None
         dpr = self.devicePixelRatioF()
         return thumbs.fitted(self.meta.image, math.ceil(r.width() * dpr),
                              math.ceil(r.height() * dpr), dpr,
-                             PIC_SHADE_HOVER if self.hover else PIC_SHADE, PAD_RADIUS)
+                             PIC_SHADE_HOVER if self.hover else PIC_SHADE, PAD_RADIUS,
+                             waiter=self)   # read off the UI thread: repainted when in
 
     def _paint_slim(self):
         """A one-line row: accent dot, name, duration; progress along the bottom."""
@@ -810,15 +861,31 @@ class Pad(QAbstractButton):
         p.setFont(f)
         fm = p.fontMetrics()
         if self.state in ("loading", "rendering"):
-            right, rc = ("applying…" if self.state == "rendering" else "loading…"), T["muted"]
+            right = _("applying…") if self.state == "rendering" else _("loading…")
+            rc = T["muted"]
         elif self.state == "error":
-            right, rc = "can't load", "#ff6b6b"
+            right, rc = _("can't load"), "#ff6b6b"
         else:
-            right = "❚❚" if self.paused else f"{self.meta.duration:.1f}s"
+            m = self.meta
+            flags = ("⟳ " if m.loop else "") + \
+                {"overlap": "⧉ ", "toggle": "⏯ ", "solo": "◉ "}.get(m.mode, "")
+            right = "❚❚" if self.paused else f"{flags}{m.duration:.1f}s"
             rc = T["muted"]
         rw = fm.horizontalAdvance(right) + 4
         p.setPen(QColor(rc))
         p.drawText(r.adjusted(0, 0, -9, 0), Qt.AlignRight | Qt.AlignVCenter, right)
+        hk = self.meta.hotkey and (midi.short(self.meta.hotkey) if midi.is_midi(self.meta.hotkey)
+                                   else pretty_key(self.meta.hotkey))
+        if hk and r.width() >= 200:   # the key as a badge left of the length, room allowing
+            bw = fm.horizontalAdvance(hk) + 10
+            if bw <= r.width() * 0.4:
+                box = QRectF(r.right() - 9 - rw - 4 - bw, r.center().y() - 9, bw, 18)
+                p.setPen(Qt.NoPen)
+                p.setBrush(pad_colours()["badge"])
+                p.drawRoundedRect(box, 5, 5)
+                p.setPen(pad_colours()["badge_text"])
+                p.drawText(box, Qt.AlignCenter, hk)
+                rw += bw + 8
         f.setBold(True)
         p.setFont(f)
         text_r = r.adjusted(24, 0, -14 - rw, 0)
@@ -863,9 +930,9 @@ class PadGrid(QWidget):
     reorder = Signal(str, int)   # sound id, new index
     files_dropped = Signal(list)
     image_dropped = Signal(str, str)   # sound id, picture file dropped on its pad
-    HOW_TO = ("Drop sound files here\nor click  ＋ Add sounds\n\n"
-              "mp3 · wav · ogg · flac\nm4a · even video files")
-    NO_MATCH = "No sounds match the search\nor this category"
+    HOW_TO = _("Drop sound files here\nor click  ＋ Add sounds\n\n"
+               "mp3 · wav · ogg · flac\nm4a · even video files")
+    NO_MATCH = _("No sounds match the search\nor this category")
 
     def __init__(self):
         super().__init__()
@@ -873,11 +940,13 @@ class PadGrid(QWidget):
         self.pad_w = 150         # the size picked (Pad size); narrower only when it won't fit
         self.two_up = False      # the mini player: two smaller pads a row rather than one
         self.slim = False        # a tiny mini player: one-line rows instead of cards
+        self.listed = False      # the list view (Sounds tab): one-line rows in columns
         self.grid = QGridLayout(self)
         self.grid.setSpacing(10)
         self.grid.setContentsMargins(4, 4, 4, 4)
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.setAcceptDrops(True)
+        self.setAttribute(Qt.WA_OpaquePaintEvent)   # see event()
         # no sounds yet: Bun waits (sadly) above the how-to, and cheers up when
         # files are dragged over
         self.empty = QWidget()
@@ -886,11 +955,11 @@ class PadGrid(QWidget):
         ev.setSpacing(0)
         self.bun = BunnyWidget(
             height=96, pad=16, sad=0.9,
-            lines=("add a sound?", "pleeease?", "it's so quiet…", "drop one on me!",
-                   "just one sound?", "I'm bored…"),
-            hope_lines=("yes! drop it!", "ooh, for me?!"),
-            joy_lines=("yay!!", "↑ Add sounds!", "hehe!"))
-        self.bun.setToolTip("Bun is waiting for some sounds")
+            lines=(_("add a sound?"), _("pleeease?"), _("it's so quiet…"),
+                   _("drop one on me!"), _("just one sound?"), _("I'm bored…")),
+            hope_lines=(_("yes! drop it!"), _("ooh, for me?!")),
+            joy_lines=(_("yay!!"), _("↑ Add sounds!"), _("hehe!")))
+        self.bun.setToolTip(_("Bun is waiting for some sounds"))
         ev.addWidget(self.bun, 0, Qt.AlignHCenter)
         self.empty_text = QLabel(self.HOW_TO)
         self.empty_text.setAlignment(Qt.AlignCenter)   # short lines: fits the mini player
@@ -900,6 +969,7 @@ class PadGrid(QWidget):
         self._cols = 0
         self._shape = None       # (columns, pad width) last laid out
         self._placed = None      # (columns, the pads shown) in the grid now
+        self._slots: dict[Pad, tuple[int, int]] = {}   # the pads in the grid: row, column
 
     def minimumSizeHint(self):
         # never wider than the scroll area around it: the pads fit themselves to its
@@ -910,10 +980,15 @@ class PadGrid(QWidget):
     def sizeHint(self):
         return QSize(0, super().sizeHint().height())
 
-    def set_pads(self, pads):
+    def set_pads(self, pads, layout: bool = True):
+        """The pads, in order. `layout`: lay them out now (False: the caller filters
+        them next, and that lays them out)."""
+        keep = set(pads)   # (one gone from the list is taken out of the grid by _place)
+        self._slots = {p: at for p, at in self._slots.items() if p in keep}
         self.pads = pads
         self._shape = self._placed = None
-        self.relayout(force=True)
+        if layout:
+            self.relayout(force=True)
 
     def set_pad_width(self, w: int):
         self.pad_w = w
@@ -927,11 +1002,24 @@ class PadGrid(QWidget):
     def set_slim(self, on: bool):
         if on != self.slim:
             self.slim = on
-            self.grid.setSpacing(4 if on else 10)
+            self._spacing()
             self.relayout(force=True)
 
+    def set_listed(self, on: bool):
+        if on != self.listed:
+            self.listed = on
+            self._spacing()
+            self.relayout(force=True)
+
+    def _spacing(self):
+        self.grid.setSpacing(4 if self.slim else 6 if self.listed else 10)
+
+    def rows(self) -> bool:
+        """Pads drawn as one-line rows: the list view, or a tiny mini player."""
+        return self.slim or self.listed
+
     def pad_h(self, w: int) -> int:
-        return SLIM_PAD_H if self.slim else pad_height(w)
+        return SLIM_PAD_H if self.rows() else pad_height(w)
 
     def fit_width(self, room: int, slim: bool | None = None) -> tuple[int, int]:
         """(columns, pad width) for `room` pixels: the picked size, but never wider than
@@ -939,6 +1027,12 @@ class PadGrid(QWidget):
         Slim rows take the whole width, one a row."""
         if self.slim if slim is None else slim:
             return 1, max(1, room)
+        if self.listed and slim is None:   # the mini player's rows take the whole width
+            if self.two_up:
+                return 1, max(1, room)
+            sp = 6
+            cols = max(1, (room + sp) // (LIST_ROW_W + sp))
+            return cols, max(1, (room - sp * (cols - 1)) // cols)
         sp = 10
         w = max(1, min(self.pad_w, room))
         if self.two_up and (room + sp) // (w + sp) < 2 and room - sp >= 2 * MINI_PAD_MIN_W:
@@ -979,10 +1073,16 @@ class PadGrid(QWidget):
         if shown and placed == self._placed:
             return   # the same pads in the same columns: only their size changed
         self._placed = placed if shown else None
-        while self.grid.count():
-            it = self.grid.takeAt(0)
-            if it.widget() and it.widget() is not self.empty:
-                it.widget().setParent(self)
+        want = {p: (i // cols, i % cols) for i, p in enumerate(shown)}
+        # only the pads that move are taken out and put back, and only the ones whose
+        # filter changed are shown or hidden: a category click redid all of them, even
+        # the hundreds out of sight
+        slots, grid = self._slots, self.grid
+        for i in reversed(range(grid.count())):   # from the end: each take is cheap
+            it = grid.itemAt(i).widget()
+            if it not in want or slots.get(it) != want[it]:   # (Bun's never wanted)
+                grid.takeAt(i)
+                slots.pop(it, None)
         if not shown:
             # every pad filtered out showed nothing at all: Bun says why instead
             for p in self.pads:
@@ -990,23 +1090,41 @@ class PadGrid(QWidget):
             self.empty_text.setText(self.NO_MATCH if self.pads else self.HOW_TO)
             # across the whole width, however wide that is now (a fixed width here kept
             # the grid as wide as the window once was: a shrunk window showed nothing)
-            self.grid.setAlignment(Qt.AlignTop)
-            self.grid.addWidget(self.empty, 0, 0)
+            grid.setAlignment(Qt.AlignTop)
+            grid.addWidget(self.empty, 0, 0)
             self.empty.show()
             return
-        self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.empty.hide()
         self.empty_text.setText(self.HOW_TO)
-        i = 0
+        for p, at in want.items():
+            if p not in slots:
+                # into the grid first: a new pad has no parent yet, and showing it then
+                # flashed it up on the desktop as a little window of its own
+                grid.addWidget(p, *at)
+                slots[p] = at
         for p in self.pads:
-            if p.property("filtered"):
+            if p in want:
+                if p.isHidden():
+                    p.show()
+            elif not p.isHidden():
                 p.hide()
-                continue
-            # into the grid first: a new pad has no parent yet, and showing it then
-            # flashed it up on the desktop as a little window of its own
-            self.grid.addWidget(p, i // cols, i % cols)
-            p.show()
-            i += 1
+
+    def event(self, e):
+        done = super().event(e)
+        if e.type() in (QEvent.Polish, QEvent.StyleChange, QEvent.ParentChange):
+            # opaque: it paints the page colour behind itself (paintEvent), so a scroll
+            # copies what's on screen and only the strip that came into view is drawn.
+            # See-through, every pad in view was painted again on each wheel step. Qt
+            # clears the flag when the scroll area adopts it and on each restyle (a
+            # theme change), so it's set again after those
+            self.setAttribute(Qt.WA_OpaquePaintEvent)
+        return done
+
+    def paintEvent(self, e):
+        # the same colour the page behind it shows; read on each paint, so a theme
+        # change (theme.apply repaints every widget) follows
+        QPainter(self).fillRect(e.rect(), QColor(theme.T["bg"]))
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
