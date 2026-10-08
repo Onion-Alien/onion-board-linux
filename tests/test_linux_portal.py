@@ -188,6 +188,29 @@ def test_hotkeys_are_bound_pressed_held_and_let_go(bus):
         fake.close()
 
 
+def test_nothing_is_bound_while_binding_is_held(bus):
+    """At start-up linux/ui.py holds binding until the app's windows are up, so the
+    desktop's dialog opens on top of them (GNOME's opened under them, unseen)."""
+    fake = FakePortal()
+    failed = []
+    portal.may_bind.clear()
+    s = portal.Shortcuts(lambda a: None, lambda a: None, failed.append)
+    try:
+        assert s.wait_ready(5) and s.alive
+        s.register({"f9": "play:boom"})
+        time.sleep(0.6)
+        assert fake.bound == [] and failed == []
+        s.register({"f9": "play:boom", "ctrl+f1": "stop"})   # the newest set wins
+        portal.may_bind.set()
+        assert _until(lambda: failed) and failed == [[]]
+        (asked,) = fake.bound
+        assert {sid for sid, _o in asked} == {"combo-f9", "combo-ctrl_f1"}
+    finally:
+        portal.may_bind.set()
+        s.stop(5)
+        fake.close()
+
+
 def test_the_app_writes_the_desktop_file_the_portal_needs_and_names_its_shortcuts(
         bus, monkeypatch):
     # Plasma 6.6's portal refused "onionboard" ("App info not found"): an AppImage

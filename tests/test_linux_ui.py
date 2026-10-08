@@ -342,6 +342,31 @@ def test_the_outputs_open_after_the_window_is_up_at_start(qapp, app_dir, server,
         _close(qapp, w)
 
 
+def test_hotkeys_go_to_the_desktop_after_the_window_is_up_at_start(qapp, app_dir, server,
+                                                                    monkeypatch):
+    """GNOME's "allow these shortcuts?" dialog has no parent: asked for before the
+    window and the setup guide showed, it opened under them and nobody saw it."""
+    from soundboard.linux import portal, ui
+    w = _starting_window(qapp, monkeypatch, [])
+    try:
+        assert not portal.may_bind.is_set()
+        _wait(qapp, ui.BIND_AFTER_MS / 1000 + 0.3)
+        assert portal.may_bind.is_set()
+    finally:
+        portal.may_bind.set()
+        _close(qapp, w)
+
+
+def test_a_tests_window_binds_at_once(qapp, app_dir, server):
+    from soundboard.linux import portal
+    from soundboard.ui import mainwindow
+    w = mainwindow.MainWindow()
+    try:
+        assert portal.may_bind.is_set()
+    finally:
+        _close(qapp, w)
+
+
 def test_an_output_picked_while_held_back_stays(qapp, app_dir, server, monkeypatch):
     from soundboard.linux import ui
     calls = []

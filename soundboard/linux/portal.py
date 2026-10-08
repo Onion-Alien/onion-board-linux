@@ -44,6 +44,12 @@ POLL_S = 0.25           # how often the thread looks for a changed set of hotkey
 describe: Callable[[str], str] = str
 REGISTER_TRIES = 5      # the portal may not have noticed a just-written .desktop file
 REGISTER_WAIT_S = 0.4
+# Set = binding may start. linux/ui.py clears it while the app starts and sets it once
+# its windows are up: GNOME's "allow these shortcuts?" dialog has no parent, so one
+# opened before the window (and the first start's setup guide) ended up under them,
+# unseen, and the hotkeys never came (Ubuntu 26.04, GNOME 50).
+may_bind = threading.Event()
+may_bind.set()
 
 # winkeys MOD_* -> the XDG shortcuts spec's modifier names
 _MODS = ((0x2, "CTRL"), (0x1, "ALT"), (0x4, "SHIFT"), (0x8, "LOGO"))
@@ -261,7 +267,10 @@ class Shortcuts:
             handles.append(conn.filter(rule, queue=signals))
         while not self._quit.is_set():
             with self._lock:
-                mapping, self._pending = self._pending, None
+                if may_bind.is_set():
+                    mapping, self._pending = self._pending, None
+                else:
+                    mapping = None
             if mapping is not None:
                 for sid in list(down):   # a key held across a change: let it go
                     if sid in actions:

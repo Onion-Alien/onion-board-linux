@@ -28,6 +28,10 @@ MAKE = "✚  Make it now (free, no download)"
 FAILED = ("Couldn't make the virtual cable: Onion Board needs PipeWire or PulseAudio, "
           "and their pactl tool (the pulseaudio-utils package). The log has the details.")
 OUTPUTS_AFTER_MS = 800   # at start-up, the outputs open this long after the window is built
+# at start-up, the hotkeys go to the desktop this long after the window is built: after
+# it shows and after the first start's setup guide (app.py, 400 ms), so the desktop's
+# "allow these shortcuts?" dialog opens on top of them (portal.may_bind)
+BIND_AFTER_MS = 1500
 # the engine's output setters held back at start-up, and the name each one sets
 _OUTPUT_SETTERS = ("set_main_device", "set_tap_device", "set_mon_device", "set_obs_device")
 _KEYS = {"set_main_device": "main", "set_mon_device": "mon", "set_obs_device": "obs"}
@@ -91,14 +95,22 @@ def patch_main_window(cls):
         from soundboard.ui import splash
         # the app starting (its splash is up; not a test's window): the outputs open
         # once the window is up, see _init_devices
-        _held = [] if splash._splash is not None else None
+        starting = splash._splash is not None
+        _held = [] if starting else None
+        if starting:
+            portal.may_bind.clear()
+        from PySide6.QtCore import QTimer
         try:
             orig_init(self, *a, **k)
+        except BaseException:
+            portal.may_bind.set()
+            raise
         finally:
             held, _held = _held, None
         if held:
-            from PySide6.QtCore import QTimer
             QTimer.singleShot(OUTPUTS_AFTER_MS, self, lambda: _open_held(self, held))
+        if starting:
+            QTimer.singleShot(BIND_AFTER_MS, self, portal.may_bind.set)
         # no Triggers tab until Onion Watch, the add-on it holds, runs on Linux (it
         # captures the screen with Windows' own APIs); hidden, not removed, so
         # everything that looks the tab up still finds it
