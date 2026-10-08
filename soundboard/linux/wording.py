@@ -181,6 +181,9 @@ PHRASES += update_phrases(bool(getattr(sys, "frozen", False)), os.environ.get("A
 WHOLE: dict[str, str] = {
     "Windows default": "Default voice",   # the Voice tab's voice list
     "I've installed it — check again": "Check again",   # the Setup tab: nothing to install
+    # the Setup tab's cable card (_update_flow sets it on every refresh): Linux makes
+    # the cable itself (linux/vcable.py), nothing is downloaded or installed
+    "Install the free virtual cable": "Make the virtual cable",
     "Windows": "Super", "Left Windows": "Left Super", "Right Windows": "Right Super",
 }
 

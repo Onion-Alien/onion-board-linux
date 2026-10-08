@@ -59,10 +59,24 @@ def window(qapp, app_dir, server):
 
 def test_main_window_makes_the_cable(window, server):
     w, toasts = window
-    assert w.btn_install.text() == "Make the virtual cable"
     w.install_cable()
     assert server["installs"] == 1 and server["cable"]
     assert toasts[-1][0] == "ok" and vcable.SOURCE_DESC in toasts[-1][1]
+
+
+def test_cable_card_says_make_not_install_on_every_refresh(window, server):
+    """_update_flow sets the button's text on each refresh: on the cable route with no
+    cable it must still say make (Linux makes it), never Windows' install words."""
+    w, _ = window
+    w.cfg.route = "cable"
+    w.virtual_mic = None
+    w._update_flow()
+    assert not w.btn_install.isHidden()
+    assert w.btn_install.text() == "Make the virtual cable"
+    assert "Install" not in w.btn_install.text()
+    w.cfg.route = "mic"   # the same button on the mic route keeps the mic's words
+    w._update_flow()
+    assert "cable" not in w.btn_install.text()
 
 
 def test_main_window_says_when_it_cant(window, server):

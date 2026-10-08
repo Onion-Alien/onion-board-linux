@@ -99,8 +99,6 @@ def patch_main_window(cls):
         if held:
             from PySide6.QtCore import QTimer
             QTimer.singleShot(OUTPUTS_AFTER_MS, self, lambda: _open_held(self, held))
-        if getattr(self, "btn_install", None) is not None:
-            self.btn_install.setText("Make the virtual cable")
         # no Triggers tab until Onion Watch, the add-on it holds, runs on Linux (it
         # captures the screen with Windows' own APIs); hidden, not removed, so
         # everything that looks the tab up still finds it

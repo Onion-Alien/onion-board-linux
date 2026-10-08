@@ -32,6 +32,7 @@ def test_short_texts_are_reworded_only_when_whole():
     from soundboard.linux.wording import linux
     assert linux("Windows default") == "Default voice"
     assert linux("Windows default output") == "Windows default output"
+    assert linux("Install the free virtual cable") == "Make the virtual cable"
 
 
 def test_hotkeys_name_the_super_key():
