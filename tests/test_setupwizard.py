@@ -414,6 +414,32 @@ def test_steam_guide_text_has_its_spaces(wizard):
     g.done(0)
 
 
+def test_a_closed_guide_ignores_the_mic_being_set_up_later(qapp, app_dir, devices,
+                                                           monkeypatch):
+    """Closed and freed (run_setup's free_dialog), then "Put my sounds straight into
+    my mic" pressed on the Setup tab: the window's mic_attached must not reach the
+    gone guide (it raised "Internal C++ object already deleted", a crash report)."""
+    import sys
+
+    from soundboard.ui.crashdialog import free_dialog
+    raised = []
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: raised.append(exc[1]))
+    w = main.MainWindow()
+    try:
+        wiz = setupwizard.SetupWizard(w)
+        wiz.reject()
+        free_dialog(wiz)
+        w.mic_attached.emit("Desk Mic", "")
+        qapp.processEvents()
+        assert raised == []
+    finally:
+        from PySide6.QtCore import QEvent
+        w._load_thread.join(15)
+        w.close()
+        w.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def _close(qapp, w, wiz):
     from PySide6.QtCore import QEvent
     wiz.done(0)

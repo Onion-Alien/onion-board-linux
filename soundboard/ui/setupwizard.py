@@ -351,7 +351,9 @@ class SetupWizard(QDialog):
         self.btn_attach.setStyleSheet("padding:12px; font-size:12pt;")
         self.btn_attach.clicked.connect(self.attach_mic)
         v.addWidget(self.btn_attach)
-        self.win.mic_attached.connect(lambda *_: self.recheck_cable(rescan=False))
+        # a method, let go of in done(): a lambda outlived the closed, freed guide
+        self.win.mic_attached.connect(self._mic_attached)
+        self._mic_hooked = True
         self.cable_status = _label("")
         self.cable_status.setStyleSheet("font-size:12pt; padding:12px;")
         v.addWidget(self.cable_status)
@@ -564,8 +566,14 @@ class SetupWizard(QDialog):
             return
         super().reject()
 
+    def _mic_attached(self, *_):
+        self.recheck_cable(rescan=False)
+
     def done(self, r):
         self.timer.stop()
+        if self._mic_hooked:   # (done() can come twice)
+            self._mic_hooked = False
+            self.win.mic_attached.disconnect(self._mic_attached)
         if r != QDialog.Accepted:
             for k, v in self._saved_devices.items():   # keep what they had, unless
                 if k not in self._user_picked:         # they picked another one here
